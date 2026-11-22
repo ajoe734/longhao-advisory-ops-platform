@@ -1,0 +1,25 @@
+{
+  "event_id": "5bcffc6c-f91e-564a-b849-08b2ed1fa42c",
+  "event_type": "contract.effective",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M02",
+  "aggregate_type": "contract",
+  "aggregate_id": "f0392b34-676a-5749-8883-a3a8299fc185",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "contract.effective:synthetic-1",
+  "classification": "customer_confidential",
+  "payload_sha256": "e1341ec96a67fbde6152d7a0eb46d4d0feec068238653a828d2ab76722c56676",
+  "payload": {
+    "contract_id": "f0392b34-676a-5749-8883-a3a8299fc185",
+    "customer_id": "44bffd49-7fd0-5e7c-88d8-d9c83134c813",
+    "effective_at": "2026-11-22T00:00:00Z",
+    "service_starts_at": "2026-11-22T00:00:00Z",
+    "service_ends_at": "2026-12-22T00:00:00Z"
+  }
+}

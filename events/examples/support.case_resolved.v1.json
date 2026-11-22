@@ -1,0 +1,23 @@
+{
+  "event_id": "8e3ad3a9-a526-509e-bf92-b81c428c9dd7",
+  "event_type": "support.case_resolved",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M13",
+  "aggregate_type": "service_case",
+  "aggregate_id": "34c25b88-faec-5ca3-bb39-b1d3f0d33571",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "support.case_resolved:synthetic-1",
+  "classification": "customer_confidential",
+  "payload_sha256": "c9b9b812929c54d751f6a35f6390026e87ec6c95906caa4cc9531a64e5e2a8ed",
+  "payload": {
+    "case_id": "34c25b88-faec-5ca3-bb39-b1d3f0d33571",
+    "customer_id": null,
+    "resolution_record_id": "cb9ddf05-6879-5a69-a1a4-779318d77dbf"
+  }
+}

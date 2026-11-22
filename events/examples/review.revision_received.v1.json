@@ -1,0 +1,25 @@
+{
+  "event_id": "143a178f-3bf9-5687-bb66-cbf5056bc0da",
+  "event_type": "review.revision_received",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M06",
+  "aggregate_type": "review_case",
+  "aggregate_id": "fcff1566-7fe0-5add-ac5f-a63ce7a07dfa",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "review.revision_received:synthetic-1",
+  "classification": "research_confidential",
+  "payload_sha256": "d21b6c5cd26fed44bfb73ff4c7034f681243984999e4288093b5bde0a6ba4d32",
+  "payload": {
+    "review_case_id": "fcff1566-7fe0-5add-ac5f-a63ce7a07dfa",
+    "revision_id": "0e1a1033-b7e9-537b-a14e-4a3e53bf6889",
+    "candidate_id": "2aefda2b-eda3-5a9b-aad8-557b55633a4c",
+    "result_content_sha256": "baac558c223960bb925b25a161bee91781fe3e69e3dbc334d4612e734623efe0",
+    "stale": false
+  }
+}

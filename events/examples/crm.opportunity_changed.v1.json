@@ -1,0 +1,24 @@
+{
+  "event_id": "cd92d893-2f18-554d-9834-41e9ad189358",
+  "event_type": "crm.opportunity_changed",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M10",
+  "aggregate_type": "opportunity",
+  "aggregate_id": "2f14046c-add5-5b06-a671-b6e5a4ecc8bd",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "crm.opportunity_changed:synthetic-1",
+  "classification": "customer_confidential",
+  "payload_sha256": "a3fded45a786d7959af01407bdea4cac5b580b2633460dd1a7c6c4e238f1891a",
+  "payload": {
+    "opportunity_id": "2f14046c-add5-5b06-a671-b6e5a4ecc8bd",
+    "customer_id": "44bffd49-7fd0-5e7c-88d8-d9c83134c813",
+    "state": "open",
+    "owner_id": "fff95a62-0757-5c23-b0c2-8f7448282439"
+  }
+}

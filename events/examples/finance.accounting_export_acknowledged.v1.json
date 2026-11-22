@@ -1,0 +1,24 @@
+{
+  "event_id": "a9652a31-c3d9-52b6-986c-2439507534ca",
+  "event_type": "finance.accounting_export_acknowledged",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M14",
+  "aggregate_type": "accounting_export",
+  "aggregate_id": "bb6cf521-87ec-5891-8a81-1419dfcc0b06",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "finance.accounting_export_acknowledged:synthetic-1",
+  "classification": "internal",
+  "payload_sha256": "f48871b8a358ee1283f7ab224ebe37b410cb7f1b413ad9f9ce417801a1868456",
+  "payload": {
+    "export_id": "bb6cf521-87ec-5891-8a81-1419dfcc0b06",
+    "status": "accepted",
+    "acknowledgement_id": "f5a6dda2-bd6b-5cd4-bb2f-1ec1ff70b485",
+    "export_sha256": "03fffcefa321a952ed559d76ed882bf304ded3bdf938d1dea7ca802e5df9686a"
+  }
+}

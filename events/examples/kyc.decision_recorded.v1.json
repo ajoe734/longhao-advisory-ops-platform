@@ -1,0 +1,24 @@
+{
+  "event_id": "c0d958e3-3573-549a-b7da-cda14d47ab41",
+  "event_type": "kyc.decision_recorded",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M03",
+  "aggregate_type": "kyc_submission",
+  "aggregate_id": "99d75db9-0a2f-5b07-8877-2b168c8a5fdd",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "kyc.decision_recorded:synthetic-1",
+  "classification": "customer_confidential",
+  "payload_sha256": "59d227a631483b33805ea7c79007171489dd8f180de8a2ff9b33989b5bca39a7",
+  "payload": {
+    "submission_id": "99d75db9-0a2f-5b07-8877-2b168c8a5fdd",
+    "application_id": "816937f0-d01c-5f35-bc3f-885a8d9a28af",
+    "decision": "approved",
+    "next_review_due_at": null
+  }
+}

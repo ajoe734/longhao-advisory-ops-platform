@@ -1,0 +1,25 @@
+{
+  "event_id": "d3cc3f5b-0959-51dd-9d3a-c29dc44edb11",
+  "event_type": "ownership.assignment_changed",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M11",
+  "aggregate_type": "maintenance_assignment",
+  "aggregate_id": "15e71202-cdd1-5046-9210-0cefcbacf0fa",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "ownership.assignment_changed:synthetic-1",
+  "classification": "customer_confidential",
+  "payload_sha256": "02c9a2ddd0e4cb02bfd9cdff88e5b2a5429cafea9142c47804fc74c522223607",
+  "payload": {
+    "assignment_id": "15e71202-cdd1-5046-9210-0cefcbacf0fa",
+    "customer_id": "44bffd49-7fd0-5e7c-88d8-d9c83134c813",
+    "salesperson_id": null,
+    "effective_at": "2026-11-22T00:00:00Z",
+    "state": "active"
+  }
+}

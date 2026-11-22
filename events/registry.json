@@ -1,0 +1,789 @@
+[
+  {
+    "event_type": "customer.created",
+    "schema_version": "1.0.0",
+    "producer": "M01",
+    "consumers": [
+      "M10",
+      "M13"
+    ],
+    "aggregate_type": "customer",
+    "classification": "customer_confidential",
+    "purpose": "建立CRM主檔投影，不帶直接個資。",
+    "schema": "schemas/customer.created.v1.schema.json",
+    "example": "examples/customer.created.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "customer.identity_linked",
+    "schema_version": "1.0.0",
+    "producer": "M01",
+    "consumers": [
+      "M09"
+    ],
+    "aggregate_type": "customer",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/customer.identity_linked.v1.schema.json",
+    "example": "examples/customer.identity_linked.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "application.created",
+    "schema_version": "1.0.0",
+    "producer": "M01",
+    "consumers": [
+      "M02",
+      "M10"
+    ],
+    "aggregate_type": "application",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/application.created.v1.schema.json",
+    "example": "examples/application.created.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "application.customer_signed",
+    "schema_version": "1.0.0",
+    "producer": "M02",
+    "consumers": [
+      "M01",
+      "M03",
+      "M04",
+      "M10"
+    ],
+    "aggregate_type": "application",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/application.customer_signed.v1.schema.json",
+    "example": "examples/application.customer_signed.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "application.company_decided",
+    "schema_version": "1.0.0",
+    "producer": "M02",
+    "consumers": [
+      "M01",
+      "M10",
+      "M14"
+    ],
+    "aggregate_type": "application",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/application.company_decided.v1.schema.json",
+    "example": "examples/application.company_decided.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "contract.effective",
+    "schema_version": "1.0.0",
+    "producer": "M02",
+    "consumers": [
+      "M10",
+      "M11",
+      "M14"
+    ],
+    "aggregate_type": "contract",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/contract.effective.v1.schema.json",
+    "example": "examples/contract.effective.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "contract.terminated",
+    "schema_version": "1.0.0",
+    "producer": "M02",
+    "consumers": [
+      "M09",
+      "M10",
+      "M11",
+      "M14"
+    ],
+    "aggregate_type": "contract",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/contract.terminated.v1.schema.json",
+    "example": "examples/contract.terminated.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "entitlement.changed",
+    "schema_version": "1.0.0",
+    "producer": "M02",
+    "consumers": [
+      "M08",
+      "M09",
+      "M10"
+    ],
+    "aggregate_type": "entitlement",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/entitlement.changed.v1.schema.json",
+    "example": "examples/entitlement.changed.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "kyc.decision_recorded",
+    "schema_version": "1.0.0",
+    "producer": "M03",
+    "consumers": [
+      "M02",
+      "M04"
+    ],
+    "aggregate_type": "kyc_submission",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/kyc.decision_recorded.v1.schema.json",
+    "example": "examples/kyc.decision_recorded.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "suitability.assessed",
+    "schema_version": "1.0.0",
+    "producer": "M03",
+    "consumers": [
+      "M02"
+    ],
+    "aggregate_type": "suitability_assessment",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/suitability.assessed.v1.schema.json",
+    "example": "examples/suitability.assessed.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "aml.case_changed",
+    "schema_version": "1.0.0",
+    "producer": "M04",
+    "consumers": [
+      "M04"
+    ],
+    "aggregate_type": "aml_case",
+    "classification": "aml_restricted",
+    "purpose": "僅AML隔離topic可訂閱；一般CRM不見case存在與內容。",
+    "schema": "schemas/aml.case_changed.v1.schema.json",
+    "example": "examples/aml.case_changed.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "business_clearance.changed",
+    "schema_version": "1.0.0",
+    "producer": "M04",
+    "consumers": [
+      "M02"
+    ],
+    "aggregate_type": "business_clearance",
+    "classification": "customer_confidential",
+    "purpose": "安全摘要不含名單命中、申報或調查原因。",
+    "schema": "schemas/business_clearance.changed.v1.schema.json",
+    "example": "examples/business_clearance.changed.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "research.candidate_received",
+    "schema_version": "1.0.0",
+    "producer": "M05",
+    "consumers": [
+      "M05"
+    ],
+    "aggregate_type": "research_candidate",
+    "classification": "research_confidential",
+    "purpose": "",
+    "schema": "schemas/research.candidate_received.v1.schema.json",
+    "example": "examples/research.candidate_received.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "research.candidate_validated",
+    "schema_version": "1.0.0",
+    "producer": "M05",
+    "consumers": [
+      "M06"
+    ],
+    "aggregate_type": "research_candidate",
+    "classification": "research_confidential",
+    "purpose": "",
+    "schema": "schemas/research.candidate_validated.v1.schema.json",
+    "example": "examples/research.candidate_validated.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "review.revision_requested",
+    "schema_version": "1.0.0",
+    "producer": "M06",
+    "consumers": [
+      "M06"
+    ],
+    "aggregate_type": "review_case",
+    "classification": "research_confidential",
+    "purpose": "",
+    "schema": "schemas/review.revision_requested.v1.schema.json",
+    "example": "examples/review.revision_requested.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "review.revision_received",
+    "schema_version": "1.0.0",
+    "producer": "M06",
+    "consumers": [
+      "M07"
+    ],
+    "aggregate_type": "review_case",
+    "classification": "research_confidential",
+    "purpose": "",
+    "schema": "schemas/review.revision_received.v1.schema.json",
+    "example": "examples/review.revision_received.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "report.version_frozen",
+    "schema_version": "1.0.0",
+    "producer": "M07",
+    "consumers": [
+      "M07"
+    ],
+    "aggregate_type": "report_version",
+    "classification": "research_confidential",
+    "purpose": "",
+    "schema": "schemas/report.version_frozen.v1.schema.json",
+    "example": "examples/report.version_frozen.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "report.signature_verified",
+    "schema_version": "1.0.0",
+    "producer": "M07",
+    "consumers": [
+      "M08"
+    ],
+    "aggregate_type": "report_version",
+    "classification": "research_confidential",
+    "purpose": "同交易持久化 verified signature 與 outbox；M08驗證簽章狀態後自動發布，無第二人工發布。",
+    "schema": "schemas/report.signature_verified.v1.schema.json",
+    "example": "examples/report.signature_verified.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "report.signature_revoked",
+    "schema_version": "1.0.0",
+    "producer": "M07",
+    "consumers": [
+      "M08",
+      "M09"
+    ],
+    "aggregate_type": "signature",
+    "classification": "research_confidential",
+    "purpose": "",
+    "schema": "schemas/report.signature_revoked.v1.schema.json",
+    "example": "examples/report.signature_revoked.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "publication.created",
+    "schema_version": "1.0.0",
+    "producer": "M08",
+    "consumers": [
+      "M09"
+    ],
+    "aggregate_type": "publication",
+    "classification": "research_confidential",
+    "purpose": "",
+    "schema": "schemas/publication.created.v1.schema.json",
+    "example": "examples/publication.created.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "publication.withdrawn",
+    "schema_version": "1.0.0",
+    "producer": "M08",
+    "consumers": [
+      "M09",
+      "M13"
+    ],
+    "aggregate_type": "publication",
+    "classification": "research_confidential",
+    "purpose": "",
+    "schema": "schemas/publication.withdrawn.v1.schema.json",
+    "example": "examples/publication.withdrawn.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "publication.corrected",
+    "schema_version": "1.0.0",
+    "producer": "M08",
+    "consumers": [
+      "M09",
+      "M13"
+    ],
+    "aggregate_type": "publication",
+    "classification": "research_confidential",
+    "purpose": "",
+    "schema": "schemas/publication.corrected.v1.schema.json",
+    "example": "examples/publication.corrected.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "delivery.status_changed",
+    "schema_version": "1.0.0",
+    "producer": "M09",
+    "consumers": [
+      "M08",
+      "M13"
+    ],
+    "aggregate_type": "delivery",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/delivery.status_changed.v1.schema.json",
+    "example": "examples/delivery.status_changed.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "crm.opportunity_changed",
+    "schema_version": "1.0.0",
+    "producer": "M10",
+    "consumers": [
+      "M10"
+    ],
+    "aggregate_type": "opportunity",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/crm.opportunity_changed.v1.schema.json",
+    "example": "examples/crm.opportunity_changed.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "crm.conversion_decided",
+    "schema_version": "1.0.0",
+    "producer": "M10",
+    "consumers": [
+      "M12"
+    ],
+    "aggregate_type": "conversion",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/crm.conversion_decided.v1.schema.json",
+    "example": "examples/crm.conversion_decided.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "crm.suppression_changed",
+    "schema_version": "1.0.0",
+    "producer": "M10",
+    "consumers": [
+      "M09",
+      "M10"
+    ],
+    "aggregate_type": "suppression",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/crm.suppression_changed.v1.schema.json",
+    "example": "examples/crm.suppression_changed.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "ownership.assignment_changed",
+    "schema_version": "1.0.0",
+    "producer": "M11",
+    "consumers": [
+      "M10",
+      "M12",
+      "M13"
+    ],
+    "aggregate_type": "maintenance_assignment",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/ownership.assignment_changed.v1.schema.json",
+    "example": "examples/ownership.assignment_changed.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "ownership.pool_entered",
+    "schema_version": "1.0.0",
+    "producer": "M11",
+    "consumers": [
+      "M10"
+    ],
+    "aggregate_type": "pool_entry",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/ownership.pool_entered.v1.schema.json",
+    "example": "examples/ownership.pool_entered.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "ownership.employee_departed",
+    "schema_version": "1.0.0",
+    "producer": "M11",
+    "consumers": [
+      "M01",
+      "M10",
+      "M11"
+    ],
+    "aggregate_type": "employee",
+    "classification": "internal",
+    "purpose": "",
+    "schema": "schemas/ownership.employee_departed.v1.schema.json",
+    "example": "examples/ownership.employee_departed.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "commission.run_calculated",
+    "schema_version": "1.0.0",
+    "producer": "M12",
+    "consumers": [
+      "M12"
+    ],
+    "aggregate_type": "commission_run",
+    "classification": "internal",
+    "purpose": "",
+    "schema": "schemas/commission.run_calculated.v1.schema.json",
+    "example": "examples/commission.run_calculated.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "commission.run_approved",
+    "schema_version": "1.0.0",
+    "producer": "M12",
+    "consumers": [
+      "M14"
+    ],
+    "aggregate_type": "commission_run",
+    "classification": "internal",
+    "purpose": "",
+    "schema": "schemas/commission.run_approved.v1.schema.json",
+    "example": "examples/commission.run_approved.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "commission.adjustment_recorded",
+    "schema_version": "1.0.0",
+    "producer": "M12",
+    "consumers": [
+      "M14"
+    ],
+    "aggregate_type": "commission_adjustment",
+    "classification": "internal",
+    "purpose": "",
+    "schema": "schemas/commission.adjustment_recorded.v1.schema.json",
+    "example": "examples/commission.adjustment_recorded.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "support.case_opened",
+    "schema_version": "1.0.0",
+    "producer": "M13",
+    "consumers": [
+      "M10",
+      "M13"
+    ],
+    "aggregate_type": "service_case",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/support.case_opened.v1.schema.json",
+    "example": "examples/support.case_opened.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "support.case_escalated",
+    "schema_version": "1.0.0",
+    "producer": "M13",
+    "consumers": [
+      "M13"
+    ],
+    "aggregate_type": "service_case",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/support.case_escalated.v1.schema.json",
+    "example": "examples/support.case_escalated.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "support.case_resolved",
+    "schema_version": "1.0.0",
+    "producer": "M13",
+    "consumers": [
+      "M10"
+    ],
+    "aggregate_type": "service_case",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/support.case_resolved.v1.schema.json",
+    "example": "examples/support.case_resolved.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "finance.payment_confirmed",
+    "schema_version": "1.0.0",
+    "producer": "M14",
+    "consumers": [
+      "M02",
+      "M10"
+    ],
+    "aggregate_type": "payment",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/finance.payment_confirmed.v1.schema.json",
+    "example": "examples/finance.payment_confirmed.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "finance.revenue_recognized",
+    "schema_version": "1.0.0",
+    "producer": "M14",
+    "consumers": [
+      "M12"
+    ],
+    "aggregate_type": "revenue_recognition",
+    "classification": "internal",
+    "purpose": "",
+    "schema": "schemas/finance.revenue_recognized.v1.schema.json",
+    "example": "examples/finance.revenue_recognized.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "finance.refund_confirmed",
+    "schema_version": "1.0.0",
+    "producer": "M14",
+    "consumers": [
+      "M02",
+      "M10",
+      "M12",
+      "M13"
+    ],
+    "aggregate_type": "refund",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/finance.refund_confirmed.v1.schema.json",
+    "example": "examples/finance.refund_confirmed.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "finance.accounting_export_acknowledged",
+    "schema_version": "1.0.0",
+    "producer": "M14",
+    "consumers": [
+      "M14"
+    ],
+    "aggregate_type": "accounting_export",
+    "classification": "internal",
+    "purpose": "",
+    "schema": "schemas/finance.accounting_export_acknowledged.v1.schema.json",
+    "example": "examples/finance.accounting_export_acknowledged.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "audit.legal_hold_changed",
+    "schema_version": "1.0.0",
+    "producer": "M14",
+    "consumers": [
+      "M14"
+    ],
+    "aggregate_type": "legal_hold",
+    "classification": "internal",
+    "purpose": "",
+    "schema": "schemas/audit.legal_hold_changed.v1.schema.json",
+    "example": "examples/audit.legal_hold_changed.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "support.response_status_changed",
+    "schema_version": "1.0.0",
+    "producer": "M13",
+    "consumers": [
+      "M13"
+    ],
+    "aggregate_type": "service_response",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/support.response_status_changed.v1.schema.json",
+    "example": "examples/support.response_status_changed.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "customer.profile_updated",
+    "schema_version": "1.0.0",
+    "producer": "M01",
+    "consumers": [
+      "M03",
+      "M04"
+    ],
+    "aggregate_type": "customer",
+    "classification": "customer_confidential",
+    "purpose": "僅欄位代碼，不攜直接個資；必要時觸發重評。",
+    "schema": "schemas/customer.profile_updated.v1.schema.json",
+    "example": "examples/customer.profile_updated.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "customer.consent_changed",
+    "schema_version": "1.0.0",
+    "producer": "M01",
+    "consumers": [
+      "M09",
+      "M10"
+    ],
+    "aggregate_type": "customer",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/customer.consent_changed.v1.schema.json",
+    "example": "examples/customer.consent_changed.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "research.candidate_superseded",
+    "schema_version": "1.0.0",
+    "producer": "M05",
+    "consumers": [
+      "M06",
+      "M07"
+    ],
+    "aggregate_type": "research_candidate",
+    "classification": "research_confidential",
+    "purpose": "舊review標記stale，不可自動覆寫或沿用簽章。",
+    "schema": "schemas/research.candidate_superseded.v1.schema.json",
+    "example": "examples/research.candidate_superseded.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "kyc.refresh_required",
+    "schema_version": "1.0.0",
+    "producer": "M03",
+    "consumers": [
+      "M02",
+      "M10"
+    ],
+    "aggregate_type": "kyc_submission",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/kyc.refresh_required.v1.schema.json",
+    "example": "examples/kyc.refresh_required.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "finance.payment_failed",
+    "schema_version": "1.0.0",
+    "producer": "M14",
+    "consumers": [
+      "M10"
+    ],
+    "aggregate_type": "payment",
+    "classification": "customer_confidential",
+    "purpose": "",
+    "schema": "schemas/finance.payment_failed.v1.schema.json",
+    "example": "examples/finance.payment_failed.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  },
+  {
+    "event_type": "contract.service_ended",
+    "schema_version": "1.0.0",
+    "producer": "M02",
+    "consumers": [
+      "M11",
+      "M10",
+      "M14"
+    ],
+    "aggregate_type": "contract_service",
+    "classification": "customer_confidential",
+    "purpose": "單一服務終止；M11需重新查全部付費服務，不能據此直接判定全部中斷。",
+    "schema": "schemas/contract.service_ended.v1.schema.json",
+    "example": "examples/contract.service_ended.v1.json",
+    "ordering_key": "tenant_id:aggregate_type:aggregate_id",
+    "delivery_semantics": "at_least_once",
+    "dedup_key": "consumer:tenant_id:event_id"
+  }
+]

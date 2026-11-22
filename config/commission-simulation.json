@@ -1,0 +1,44 @@
+{
+  "purpose": "synthetic_examples_only",
+  "production_enabled": false,
+  "eligible_revenue": "100000.000000",
+  "hypothetical_base_pool_rate": "0.03",
+  "cases": [
+    {
+      "id": "Y1_SELF",
+      "marketing": "3000",
+      "sales": "0",
+      "retained": "0"
+    },
+    {
+      "id": "Y2_SELF",
+      "marketing": "1500",
+      "sales": "0",
+      "retained": "1500"
+    },
+    {
+      "id": "Y3_AUTO",
+      "marketing": "750",
+      "sales": "0",
+      "retained": "2250"
+    },
+    {
+      "id": "Y1_ASSISTED",
+      "marketing": "900",
+      "sales": "2100",
+      "retained": "0"
+    },
+    {
+      "id": "Y2_ASSISTED_A",
+      "marketing": "450",
+      "sales": "2100",
+      "retained": "450"
+    },
+    {
+      "id": "Y2_ASSISTED_B",
+      "marketing": "450",
+      "sales": "1050",
+      "retained": "1500"
+    }
+  ]
+}

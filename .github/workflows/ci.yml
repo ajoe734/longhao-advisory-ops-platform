@@ -1,18 +1,55 @@
-name: ci
+name: Specification and database verification
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  docs-and-security-baseline:
+  contracts-and-documentation:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Check for accidental secrets
-        uses: gitleaks/gitleaks-action@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, verified 2026-11-22
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5, verified 2026-11-22
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python scripts/validate_docs.py
+      - run: python scripts/validate_contracts.py
+      - run: python scripts/validate_sql.py
+      - run: python -m pytest -q mocks/test_server.py
+      - run: python scripts/check_public_repository.py
+      - name: Validate fourteen-worktree dispatch plan
+        run: python scripts/prepare_worktrees.py --base HEAD
+      - name: Check tracked whitespace
+        run: git show --format= --check HEAD
+  database-runtime-and-isolation:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Check whitespace
-        run: git diff --check
+          POSTGRES_PASSWORD: ci-disposable-only
+          POSTGRES_DB: longhao_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d longhao_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # Disposable CI credentials; never used for real customers or production.
+      LONGHAO_TEST_DATABASE_URL: postgresql://postgres:ci-disposable-only@localhost:5432/longhao_test
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Apply migrations, seed and business/RLS/role assertions on normal PostgreSQL
+        run: python database/tools/verify_database.py --dsn-env LONGHAO_TEST_DATABASE_URL

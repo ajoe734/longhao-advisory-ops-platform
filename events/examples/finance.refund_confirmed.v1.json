@@ -1,0 +1,25 @@
+{
+  "event_id": "e35acab5-0639-59e9-90c6-4a2cea46a238",
+  "event_type": "finance.refund_confirmed",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M14",
+  "aggregate_type": "refund",
+  "aggregate_id": "75657deb-8256-533c-94b4-2fd9356a7e5d",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "finance.refund_confirmed:synthetic-1",
+  "classification": "customer_confidential",
+  "payload_sha256": "1b2e3b87434f6fc977d8b1b990420f7be076f4a74329247a4b3a7f37fa3754d7",
+  "payload": {
+    "refund_id": "75657deb-8256-533c-94b4-2fd9356a7e5d",
+    "contract_id": "f0392b34-676a-5749-8883-a3a8299fc185",
+    "original_payment_id": "8f1f9901-19f7-5607-807d-e634ed83ab9f",
+    "allocation_snapshot_id": "f6d87af3-6559-57cb-a521-ddf189121361",
+    "confirmed_at": "2026-11-22T00:00:00Z"
+  }
+}

@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.example.invalid/longgood/finance.revenue_recognized.v1.schema.json",
+  "title": "finance.revenue_recognized",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "event_type": {
+      "const": "finance.revenue_recognized",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0",
+      "type": "string"
+    },
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "producer": {
+      "const": "M14",
+      "type": "string"
+    },
+    "aggregate_type": {
+      "const": "revenue_recognition",
+      "type": "string"
+    },
+    "aggregate_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "aggregate_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "sequence_no": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+      "description": "UTC RFC3339；不得用來源交易時間倒填發布時間。"
+    },
+    "emitted_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+      "description": "UTC RFC3339；不得用來源交易時間倒填發布時間。"
+    },
+    "correlation_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "causation_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "uuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "idempotency_key": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "classification": {
+      "const": "internal",
+      "type": "string"
+    },
+    "payload_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "recognition_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "contract_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "contract_service_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "policy_version": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "service_period_start": {
+          "type": "string",
+          "format": "date"
+        },
+        "service_period_end": {
+          "type": "string",
+          "format": "date"
+        },
+        "posted_journal_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "recognition_id",
+        "contract_id",
+        "contract_service_id",
+        "policy_version",
+        "service_period_start",
+        "service_period_end",
+        "posted_journal_id"
+      ]
+    }
+  },
+  "required": [
+    "event_id",
+    "event_type",
+    "schema_version",
+    "tenant_id",
+    "producer",
+    "aggregate_type",
+    "aggregate_id",
+    "aggregate_version",
+    "sequence_no",
+    "occurred_at",
+    "emitted_at",
+    "correlation_id",
+    "causation_id",
+    "idempotency_key",
+    "classification",
+    "payload_sha256",
+    "payload"
+  ],
+  "description": "LongGood內部已持久化事實；consumer不得直接相信事件即可越過自身授權與版本檢查。"
+}

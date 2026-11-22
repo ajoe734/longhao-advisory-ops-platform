@@ -1,0 +1,24 @@
+{
+  "event_id": "1737701f-9ac9-518e-8d2f-a5915cd33ea0",
+  "event_type": "support.response_status_changed",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M13",
+  "aggregate_type": "service_response",
+  "aggregate_id": "1c96a70c-ab0c-504d-9618-b452d7d088f3",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "support.response_status_changed:synthetic-1",
+  "classification": "customer_confidential",
+  "payload_sha256": "9533601134afae3dad8a57032e7ab4973864babfa0f94fb0fb6e20e88a914ca6",
+  "payload": {
+    "response_id": "1c96a70c-ab0c-504d-9618-b452d7d088f3",
+    "case_id": "34c25b88-faec-5ca3-bb39-b1d3f0d33571",
+    "state": "queued",
+    "receipt_id": null
+  }
+}

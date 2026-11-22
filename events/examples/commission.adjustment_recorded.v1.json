@@ -1,0 +1,24 @@
+{
+  "event_id": "526fe9a9-1322-5bec-be51-e02951ff4fce",
+  "event_type": "commission.adjustment_recorded",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M12",
+  "aggregate_type": "commission_adjustment",
+  "aggregate_id": "8150f977-6518-56b9-bdc7-f8b1ab6b010c",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "commission.adjustment_recorded:synthetic-1",
+  "classification": "internal",
+  "payload_sha256": "6269ef7fcb6d20237034ba079739a1c9f0918759ff9533fb61e132ece0662502",
+  "payload": {
+    "adjustment_id": "8150f977-6518-56b9-bdc7-f8b1ab6b010c",
+    "original_entry_id": "5108c309-524d-5ed2-accb-11e6bdcc5100",
+    "refund_id": "75657deb-8256-533c-94b4-2fd9356a7e5d",
+    "original_recipient_id": null
+  }
+}

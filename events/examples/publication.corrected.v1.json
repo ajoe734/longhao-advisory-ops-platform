@@ -1,0 +1,23 @@
+{
+  "event_id": "50d89686-2b86-5412-9fce-fae3760313f5",
+  "event_type": "publication.corrected",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M08",
+  "aggregate_type": "publication",
+  "aggregate_id": "42563731-a918-572d-a9b4-fe67ecd1dcd1",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "publication.corrected:synthetic-1",
+  "classification": "research_confidential",
+  "payload_sha256": "292f655b29f98249d6c6b63803822ae1eca81b8be8d057b9a18c8fa0b5bb00d8",
+  "payload": {
+    "publication_id": "42563731-a918-572d-a9b4-fe67ecd1dcd1",
+    "replacement_publication_id": "5e129db4-bfbb-535d-b104-092d7385aa81",
+    "replacement_report_version_id": "0ad258f4-d52f-5d47-9aba-c27529147477"
+  }
+}

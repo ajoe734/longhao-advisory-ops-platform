@@ -1,0 +1,26 @@
+{
+  "event_id": "dc3bab36-2793-5f6a-94a1-c569edd5e6e1",
+  "event_type": "entitlement.changed",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M02",
+  "aggregate_type": "entitlement",
+  "aggregate_id": "64779136-5834-5474-a8ad-c2da7340a8d3",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "entitlement.changed:synthetic-1",
+  "classification": "customer_confidential",
+  "payload_sha256": "80ca171e0047c44a5d54fa78d2e622864c5f755be8a9f8e1751acaed89a82999",
+  "payload": {
+    "entitlement_id": "64779136-5834-5474-a8ad-c2da7340a8d3",
+    "customer_id": "44bffd49-7fd0-5e7c-88d8-d9c83134c813",
+    "contract_id": "f0392b34-676a-5749-8883-a3a8299fc185",
+    "state": "locked",
+    "decision_id": "2808c8db-b3b4-5657-9478-1547f5672e05",
+    "valid_until": "2026-12-22T00:00:00Z"
+  }
+}

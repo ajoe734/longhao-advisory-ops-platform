@@ -1,0 +1,335 @@
+version: 1.0.0
+purpose: API讀模型與命令儲存映射；不是允許跨module任意寫表。
+conventions:
+  version: 主aggregate CAS版次；投影不可用讀取時間或隨機數假造。
+  state: 預設對應authority.status；特殊欄位在下方列出。
+  tenant_id: 來自可信principal，不接受client跨租戶覆蓋。
+  allowed_actions: 後端role加scope加資格加SoD加當下狀態計算，不直存作永久授權。
+  money: API十進位字串對應numeric(20,6)，幣別明確映射，不用float。
+  compound_queries: 只能由擁有權服務或受限read model取得；不能為湊response給CRM讀AML表。
+  asynchronous_jobs: >-
+    若以下resource為job projection，core.job_lease.checkpoint保存帶schema版本的工作進度；
+    完成結果另寫immutable core.object_asset及core.audit_event，不隨lease過期刪除。
+    worker checkpoint不是財務核准或付款authority；核准仍保存在業務或稽核決策證據。
+resources:
+  Customer:
+    owner: M01
+    authority: [customer.customer]
+    mappings:
+      display_name: pii_ciphertext經受權解密取顯示名稱
+      masked_email: 受權服務解密後遮罩，禁止通用SQL投影明文
+      masked_phone: 受權服務解密後遮罩
+      merged_into_customer_id: customer.customer.merged_into_id
+      maintenance_owner_id: 透過M11取得當下assignment，不可因此取得舊交易獎金
+      original_marketing_attribution_id: M10最初有效attribution snapshot
+  ExternalIdentity:
+    owner: M01
+    authority: [customer.external_identity]
+    mappings:
+      subject_hash: subject_hmac
+      state: verified_at及受控撤銷決策的投影
+  MergeCase:
+    owner: M01
+    authority: [customer.merge_case]
+    mappings: {proposer_id: proposed_by, reviewer_id: reviewed_by}
+  Application:
+    owner: M01
+    authority: [customer.application]
+    projection_dependencies: [contract.customer_signature, contract.acceptance_decision, contract.company_acceptance, contract.contract]
+    mappings:
+      customer_signed_at: 已驗證customer_signature.customer_signed_at
+      company_accepted_at: company_acceptance.accepted_at，拒絕及補件不是accepted
+      kyc_status: M03安全狀態投影
+      suitability_status: M03安全狀態投影
+      business_clearance: M04.safe clearance，禁止case_id/名單/申報資料
+      payment_status: M14.payment狀態投影；不能由browser付款回傳直接更新
+    write_rule: M02發布application.customer_signed與application.company_decided，M01消費後更新自身application.status。
+  Consent:
+    owner: M01
+    authority: [customer.consent]
+    mappings: {document_version: notice_version, document_sha256: evidence_asset_id所指固定證據之hash}
+  ContractPackage:
+    owner: M02
+    authority: [contract.package_version]
+    mappings:
+      version_label: package_version
+      documents: asset_id所指文件包manifest
+      state: approval_status
+      acceptance_terms_version: acceptance_conditions中的已核准條款版次
+    mutation_rule: 條款內容不可改；只允許一次approval與retired生命週期欄位變更並留audit。
+  SignatureSession:
+    owner: M02_or_M07
+    authority: [report.signature_request, core.job_lease, core.audit_event]
+    mappings:
+      analyst_report: report.signature_request
+      customer_application: M02 typed signing-session checkpoint及immutable啟動證據；成功另寫contract.customer_signature
+      redirect_url: adapter在授權後發出的短效URL，不入一般audit、event或永久cache
+  CompanyAcceptance:
+    owner: M02
+    authority: [contract.acceptance_decision, contract.company_acceptance]
+    mappings:
+      id: acceptance_decision.id
+      decision: acceptance_decision.decision
+      accepted_at: accept時才存在的company_acceptance.accepted_at
+      contract_id: 決策為accept且已建立contract時關聯
+    invariant: reject/request_changes只保存決策，不能偽造company_acceptance；DB接受guard不適用拒絕證據列。
+  Contract:
+    owner: M02
+    authority: [contract.contract, contract.contract_service, contract.customer_signature, contract.company_acceptance]
+    mappings:
+      package_version_id: customer_signature.package_version_id
+      customer_signed_at: customer_signature.customer_signed_at
+      company_accepted_at: company_acceptance.accepted_at
+      service_selections: contract_service與terms_snapshot
+      service_starts_at: 子服務最早starts_at，只供總覽，不取代逐服務授權
+      service_ends_at: 子服務最晚ends_at，只供總覽，不取代逐服務授權
+  Entitlement:
+    owner: M02
+    authority: [contract.entitlement, contract.contract_service, contract.entitlement_decision]
+    mappings:
+      contract_id: contract_service.contract_id
+      service_code: contract_service.service_code
+      last_decision_id: 最新適用entitlement_decision.id
+      restriction_codes: restriction_code與安全決策投影
+    gate_rule: >-
+      active除了DB接受契約與服務區間guard，application service還須查最新KYC/適合度/clearance有效性、
+      payment_condition_ref實際證據與適用政策；nonnull字串不是付款完成證明。
+  EntitlementDecision:
+    owner: M02
+    authority: [contract.entitlement_decision]
+    mappings: {condition_snapshots: gate_snapshot, decided_at: effective_at, entitlement_ids: 同一evaluation事實對應的entitlement_id集合}
+  KycSubmission:
+    owner: M03
+    authority: [kyc.submission, kyc.submission_document]
+    mappings:
+      form_version: 帶版本answers_ciphertext的表單元資料
+      answer_snapshot_asset_id: immutable原始提交證據引用
+      answer_sha256: 原始提交證據hash
+      document_ids: submission_document.asset_id
+      reviewer_id: reviewed_by
+      next_review_due_at: valid_until
+  DocumentStatus:
+    owner: M03
+    authority: [kyc.submission_document, core.object_asset]
+    mappings: {scan_status: verification_state及隔離區掃描紀錄投影}
+    scope_rule: 先驗所屬parent客戶/案件權限，再解析asset；知道asset UUID不構成可讀授權。
+  SuitabilityAssessment:
+    owner: M03
+    authority: [kyc.suitability_assessment]
+    mappings: {kyc_submission_id: submission_id, conditions: restrictions, next_review_due_at: valid_until}
+  AmlScreening:
+    owner: M04
+    authority: [aml.screening]
+    mappings: {provider_ref: provider_request_id, result_asset_id: restricted_result_asset_id}
+    visibility: aml_role_only
+  AmlCase:
+    owner: M04
+    authority: [aml.case_file, aml.case_action]
+    mappings: {assignee_id: owner_actor_id, next_review_due_at: next_review_at}
+    visibility: aml_role_only
+  BusinessClearance:
+    owner: M04
+    authority: [aml.business_clearance]
+    mappings: {expires_at: valid_until}
+    deny_fields: [case_id, restricted_notes_ciphertext, list_matches, filing_reference]
+    decision_values: [pending, approved, denied, expired]
+  ResearchCandidate:
+    owner: M05
+    authority: [research.candidate, research.candidate_evidence, core.inbox]
+    mappings:
+      external_event_id: core.inbox.event_id及candidate對應的ingestion證據
+      artifact_content_sha256: candidate.content_sha256
+      source_created_at: candidate.source_occurred_at
+      source_available_at: lineage及evidence.available_time
+      evidence_bundle_refs: candidate_evidence.evidence_ref
+      review_case_id: M06從candidate驗證事件建立後的關聯
+  ReviewCase:
+    owner: M06
+    authority: [review.case_file, review.conversation, review.revision_request, review.revision_result]
+    mappings: {assignee_id: case_file.analyst_id, source_version_stale: case_file.stale, current_artifact_ref: 最近被明確採用的revision_result或原candidate}
+  Revision:
+    owner: M06
+    authority: [review.revision_request, review.revision_result]
+    mappings: {base_artifact_ref: request所附immutable instruction/context snapshot, result_content_sha256: revision_result.content_sha256}
+  ReportVersion:
+    owner: M07
+    authority: [report.report_version, report.signature, report.review_decision]
+    mappings:
+      version_number: report_version_no
+      source_candidate_id: candidate_id
+      report_asset_id: content_asset_id
+      report_content_sha256: content_sha256
+      bundle_manifest_sha256: bundle_sha256
+      bundle_manifest_asset_id: bundle_manifest的immutable證據asset
+      signed_file_sha256: signature.signed_file_sha256
+      channel_texts: bundle_manifest的完整已審文案
+      audience_policy: bundle_manifest的受眾規則版次與hash
+    invariant: content_sha256、bundle_sha256、signed_file_sha256三者用途不同；不可因名稱相似互換。
+  ReviewDecision:
+    owner: M07
+    authority: [report.review_decision]
+    enum_mapping: {approve: approved, request_changes: changes_requested, reject: rejected}
+    mappings: {report_content_sha256: content_sha256, bundle_manifest_sha256: bundle_sha256, checklist_result_asset_id: evidence_asset_id}
+  SignatureRevocation:
+    owner: M07
+    authority: [report.revocation, core.outbox]
+    mappings: {effective_at: revoked_at, revoked_by: actor_id}
+  RecommendationVersion:
+    owner: M08
+    authority: [publication.recommendation_version]
+    mappings: {version_number: recommendation_version_no, action: action_type, supporting_report_version_ids: report_version_id加bundle/evidence中其他已簽支持引用, supersedes_version_id: corrects_version_id}
+    draft_rule: 未凍結報告可先建立；freeze前確定所有引用，任何實質變動新增版次。
+  Publication:
+    owner: M08
+    authority: [publication.publication, publication.audience_snapshot, report.signature]
+    mappings:
+      report_version_id: signature.report_version_id
+      recommendation_version_ids: 主recommendation_version_id及同bundle對應的建議集合
+      bundle_manifest_sha256: bundle_sha256
+      valid_until: expires_at
+      audience_snapshot_id: publication對應audience_snapshot.id
+      recipient_count: audience_snapshot.recipient_count
+      created_from_signature_event_id: 對應core.inbox/outbox事件因果鏈
+      correction_publication_id: 反查replacement.correction_of_id，不改原始內容
+  Delivery:
+    owner: M09
+    authority: [delivery.message, delivery.attempt, delivery.receipt, publication.recipient]
+    mappings:
+      customer_id: recipient.customer_id
+      content_sha256: message.rendered_sha256
+      provider_message_ref: 最後確定provider_message_id
+      accepted_at: receipt_type=accepted之首次可信時間
+      sent_at: receipt_type=sent之首次可信時間
+      delivered_at: receipt_type=delivered之首次可信時間
+      read_at: message.read_at且具可信read receipt
+      read_capability: 渠道adapter核准capability；未知/不支援不得填入read
+  Opportunity:
+    owner: M10
+    authority: [crm.opportunity]
+    mappings: {type: kind, service_code: target_service_code, owner_id: owner_actor_id, contract_id: contract_service_id對應contract}
+  SalesActivity:
+    owner: M10
+    authority: [crm.activity]
+    mappings: {qualifies_for_attribution: qualifies_for_claim}
+  Conversion:
+    owner: M10
+    authority: [crm.conversion, crm.activity]
+    mappings: {state: decision_status, approved_salesperson_id: sales_actor_id僅在approved時輸出, evidence_activity_ids: qualifying_activity_id加核定證據snapshot}
+    invariant: 不用current maintenance owner覆蓋歷史conversion recipient。
+  CrmWorkItem:
+    owner: M10
+    authority: [crm.work_item, crm.suppression]
+    mappings: {owner_id: owner_actor_id, reason_codes: reason_code加explanation, action_type: next_action}
+  MaintenanceAssignment:
+    owner: M11
+    authority: [ownership.assignment]
+    mappings: {salesperson_id: owner_actor_id, state: owner_type與valid_until/原因的投影}
+    invariant: assignment只代表責任，不自動授予獎金。
+  PoolEntry:
+    owner: M11
+    authority: [ownership.pool_entry]
+    mappings: {entry_reason: reason_code, paid_service_lapse_started_at: all_paid_services_ended_at, state: claimed_at及suppression安全投影}
+  CommissionPolicy:
+    owner: M12
+    authority: [commission.policy_version]
+    mappings: {state: approval_status, allocation_interpretation: decay_interaction, service_lineage_rule: tail_lineage_rule}
+    invariant: 條款與比例不可任意更新；有限approval生命週期變更須audit。未核准池率不可live。
+  CommissionRun:
+    owner: M12
+    authority: [commission.calculation_run, commission.entry]
+    mappings: {policy_id: policy_version_id, basis_total: 去重recognition之eligible basis加總, entry_count: entry數, marketing_total: beneficiary_type=marketing之award加總, sales_total: beneficiary_type=sales之award加總, company_retained_total: beneficiary_type=company之保留額加總}
+  CommissionEntry:
+    owner: M12
+    authority: [commission.entry]
+    mappings: {calculation: calculation_snapshot, recipient_id: beneficiary_actor_id, recipient_type: beneficiary_type, amount: award_amount加currency}
+  CommissionAdjustment:
+    owner: M12
+    authority: [commission.adjustment, finance.refund_allocation]
+    mappings: {refund_id: refund_allocation.refund_id, amount: adjustment_amount加currency, payroll_offset_allowed: recovery_method核准結果，預設false}
+  PayoutBatch:
+    owner: M12
+    authority: [commission.payout_batch, commission.payout_line]
+    mappings: {total: total_amount加currency, export_asset_id: payroll_export_ref對應asset, control_sha256: export manifest SHA256}
+  ServiceCase:
+    owner: M13
+    authority: [support.case_file, support.interaction, support.sla_event]
+    mappings: {assignee_id: owner_actor_id, intake_channel: 首次interaction.channel, maintenance_owner_id: M11安全投影不改客服owner}
+  ResponseDraft:
+    owner: M13
+    authority: [core.job_lease, core.object_asset, support.interaction, core.audit_event]
+    projection: typed LLM draft job結果；model/prompt/source版本保留於immutable結果manifest，不將未覆核草稿當已發訊息。
+  ServiceResponseApproval:
+    owner: M13
+    authority: [support.response_approval]
+    mappings: {id: response_approval.id, evidence_asset_id: 核定時產生的immutable審查證據}
+    invariant: approved_low_risk_template由可信policy service判斷，不接受client自稱已有權限。
+  ServiceResponse:
+    owner: M13
+    authority: [support.response_dispatch, support.response_approval, support.response_attempt, support.response_receipt, delivery.channel_binding]
+    mappings:
+      id: response_dispatch.id
+      content_sha256: response_dispatch固定body hash
+      approval_id: support.response_approval.id
+      channel_binding_id: 已驗證且屬於案件customer的delivery.channel_binding
+      state: dispatch狀態及不可變provider receipts的安全投影
+      provider_message_ref: 最後確定的provider message id
+      outbound_interaction_id: 發送事實另記support.interaction，不能反過來以interaction冒充發送
+    invariant: >-
+      human_reviewed需真正受權客服及固定草稿審查；approved_low_risk_template僅允許核准的無新增投資判斷固定模板。
+      兩者都要精確hash、模板版本、批准證據、渠道binding、到期與冪等檢查；LLM本身不能授予發送權。
+  Invoice:
+    owner: M14
+    authority: [finance.invoice, finance.invoice_line]
+    mappings: {untaxed_service_amount: untaxed_amount加currency, total_amount: gross_amount加currency, invoice_date: issued_at按財務時區日期}
+  PaymentIntent:
+    owner: M14
+    authority: [finance.payment, core.job_lease, core.audit_event]
+    projection: provider intent與本平台payment/pending流程關聯，checkout_url短效按需產生，不能把intent當已收款。
+  SettlementImport:
+    owner: M14
+    authority: [finance.settlement, finance.reconciliation_item, core.job_lease, core.object_asset]
+    projection: typed import job與statement immutable manifest；每筆settlement仍獨立可核對。
+  RevenueRun:
+    owner: M14
+    authority: [finance.revenue_run, finance.service_schedule, finance.revenue_recognition, finance.journal]
+    projection: finance.revenue_run保存period/cutoff/dry_run/manifest及異人核准；approved後才寫關聯run_id之confirmed recognition/journal/outbox，不以job成功直接認列。
+  Refund:
+    owner: M14
+    authority: [finance.refund, finance.refund_allocation]
+    mappings: {original_payment_id: payment_id, contract_id: payment/invoice/contract關聯, approved_amount: amount加currency且approved_by存在, allocations: refund_allocation依unearned/earned/tax分類投影}
+  AccountingExport:
+    owner: M14
+    authority: [finance.accounting_export, finance.journal, finance.journal_line, core.object_asset]
+    mappings: {export_asset_id: asset_id, acknowledgement_ref: external_batch_id, debit_total: 關聯journal_line.debit加總, credit_total: 關聯journal_line.credit加總}
+  EvidenceExport:
+    owner: M14
+    authority: [core.job_lease, core.object_asset, core.audit_event]
+    projection: typed evidence-export job；manifest與bundle各自immutable資產，需查原始scope授權才可下載。
+  LegalHold:
+    owner: M14
+    authority: [core.legal_hold]
+    mappings: {scope: target_type, subject_ids: 同一核准保全命令建立之target_id集合, state: 原hold及引用其prior_hold_id的release事件投影}
+    invariant: release新增append-only action，不UPDATE/DELETE既有保全事實。
+  ControlException:
+    owner: M14
+    authority: [finance.control_exception, core.audit_event]
+    mappings: {remediation_owner_id: owner_actor_id, closed_by: reviewer_id, closure_evidence_id: evidence_asset_id}
+  CallbackReceipt:
+    owner: callback_authority
+    authority: [core.inbox]
+    mappings: {receipt_id: inbox.id, received_at: inbox.received_at, status: inbox outcome安全摘要}
+critical_event_mapping:
+  report.signature_verified:
+    schema_version: 1.0.0
+    producer: M07
+    aggregate_type: report_version
+    aggregate_id: report.signature.report_version_id
+    payload:
+      report_version_id: report.signature.report_version_id
+      signature_id: report.signature.id
+      report_content_sha256: report.signature.content_sha256
+      bundle_manifest_sha256: report.signature.bundle_sha256
+      signed_file_sha256: report.signature.signed_file_sha256
+      verified_at: report.signature.verified_at
+      valid_until: report.report_version.valid_until
+    transaction_rule: verified signature與相符outbox同commit；資料庫constraint加應用JSONSchema雙重檢查。

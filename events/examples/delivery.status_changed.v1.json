@@ -1,0 +1,27 @@
+{
+  "event_id": "c44144b7-40f7-5913-9506-e4258d0af039",
+  "event_type": "delivery.status_changed",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M09",
+  "aggregate_type": "delivery",
+  "aggregate_id": "c7157486-5c81-5b2f-a2cd-5a54e818299b",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "delivery.status_changed:synthetic-1",
+  "classification": "customer_confidential",
+  "payload_sha256": "8bd49a4c8878340fc0fa327b4d164534f07e1206975150b8d9d24ee4eb138412",
+  "payload": {
+    "delivery_id": "c7157486-5c81-5b2f-a2cd-5a54e818299b",
+    "publication_id": "42563731-a918-572d-a9b4-fe67ecd1dcd1",
+    "customer_id": "44bffd49-7fd0-5e7c-88d8-d9c83134c813",
+    "channel": "legendflow",
+    "state": "queued",
+    "receipt_id": null,
+    "read_at": null
+  }
+}

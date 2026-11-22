@@ -1,0 +1,275 @@
+{
+  "schema_version": "1.0",
+  "scope": "all_fourteen_modules",
+  "development_mode": "parallel",
+  "module_count": 14,
+  "production_release_requires_all_modules": true,
+  "modules": [
+    {
+      "id": "M01",
+      "slug": "customer_identity_application",
+      "title": "客戶身分與申請",
+      "issue": 1,
+      "branch": "module/m01-customer_identity_application",
+      "worktree": "../longhao-worktrees/m01",
+      "start_dependencies": [],
+      "owned_paths": [
+        "apps/api/src/modules/customer_identity_application/",
+        "apps/admin/src/features/customer_identity_application/",
+        "workers/tasks/customer_identity_application/",
+        "tests/modules/customer_identity_application/",
+        "database/proposals/M01/"
+      ],
+      "implementation_status": "not_started",
+      "spec": "docs/modules/M01-customer_identity_application.md",
+      "task_packet": "agents/task-packets/M01-customer_identity_application.md"
+    },
+    {
+      "id": "M02",
+      "slug": "contracts_entitlements",
+      "title": "契約與權限",
+      "issue": 2,
+      "branch": "module/m02-contracts_entitlements",
+      "worktree": "../longhao-worktrees/m02",
+      "start_dependencies": [],
+      "owned_paths": [
+        "apps/api/src/modules/contracts_entitlements/",
+        "apps/admin/src/features/contracts_entitlements/",
+        "workers/tasks/contracts_entitlements/",
+        "tests/modules/contracts_entitlements/",
+        "database/proposals/M02/"
+      ],
+      "implementation_status": "not_started",
+      "spec": "docs/modules/M02-contracts_entitlements.md",
+      "task_packet": "agents/task-packets/M02-contracts_entitlements.md"
+    },
+    {
+      "id": "M03",
+      "slug": "kyc_suitability",
+      "title": "KYC與適合度",
+      "issue": 3,
+      "branch": "module/m03-kyc_suitability",
+      "worktree": "../longhao-worktrees/m03",
+      "start_dependencies": [],
+      "owned_paths": [
+        "apps/api/src/modules/kyc_suitability/",
+        "apps/admin/src/features/kyc_suitability/",
+        "workers/tasks/kyc_suitability/",
+        "tests/modules/kyc_suitability/",
+        "database/proposals/M03/"
+      ],
+      "implementation_status": "not_started",
+      "spec": "docs/modules/M03-kyc_suitability.md",
+      "task_packet": "agents/task-packets/M03-kyc_suitability.md"
+    },
+    {
+      "id": "M04",
+      "slug": "aml_cft",
+      "title": "AML/CFT",
+      "issue": 4,
+      "branch": "module/m04-aml_cft",
+      "worktree": "../longhao-worktrees/m04",
+      "start_dependencies": [],
+      "owned_paths": [
+        "apps/api/src/modules/aml_cft/",
+        "apps/admin/src/features/aml_cft/",
+        "workers/tasks/aml_cft/",
+        "tests/modules/aml_cft/",
+        "database/proposals/M04/"
+      ],
+      "implementation_status": "not_started",
+      "spec": "docs/modules/M04-aml_cft.md",
+      "task_packet": "agents/task-packets/M04-aml_cft.md"
+    },
+    {
+      "id": "M05",
+      "slug": "pantheon_intake",
+      "title": "Pantheon候選接收",
+      "issue": 5,
+      "branch": "module/m05-pantheon_intake",
+      "worktree": "../longhao-worktrees/m05",
+      "start_dependencies": [],
+      "owned_paths": [
+        "apps/api/src/modules/pantheon_intake/",
+        "apps/admin/src/features/pantheon_intake/",
+        "workers/tasks/pantheon_intake/",
+        "tests/modules/pantheon_intake/",
+        "database/proposals/M05/"
+      ],
+      "implementation_status": "not_started",
+      "spec": "docs/modules/M05-pantheon_intake.md",
+      "task_packet": "agents/task-packets/M05-pantheon_intake.md"
+    },
+    {
+      "id": "M06",
+      "slug": "agora_review",
+      "title": "Agora研究協作",
+      "issue": 6,
+      "branch": "module/m06-agora_review",
+      "worktree": "../longhao-worktrees/m06",
+      "start_dependencies": [],
+      "owned_paths": [
+        "apps/api/src/modules/agora_review/",
+        "apps/admin/src/features/agora_review/",
+        "workers/tasks/agora_review/",
+        "tests/modules/agora_review/",
+        "database/proposals/M06/"
+      ],
+      "implementation_status": "not_started",
+      "spec": "docs/modules/M06-agora_review.md",
+      "task_packet": "agents/task-packets/M06-agora_review.md"
+    },
+    {
+      "id": "M07",
+      "slug": "report_signature",
+      "title": "報告覆核與簽章",
+      "issue": 7,
+      "branch": "module/m07-report_signature",
+      "worktree": "../longhao-worktrees/m07",
+      "start_dependencies": [],
+      "owned_paths": [
+        "apps/api/src/modules/report_signature/",
+        "apps/admin/src/features/report_signature/",
+        "workers/tasks/report_signature/",
+        "tests/modules/report_signature/",
+        "database/proposals/M07/"
+      ],
+      "implementation_status": "not_started",
+      "spec": "docs/modules/M07-report_signature.md",
+      "task_packet": "agents/task-packets/M07-report_signature.md"
+    },
+    {
+      "id": "M08",
+      "slug": "publication",
+      "title": "自動發布",
+      "issue": 8,
+      "branch": "module/m08-publication",
+      "worktree": "../longhao-worktrees/m08",
+      "start_dependencies": [],
+      "owned_paths": [
+        "apps/api/src/modules/publication/",
+        "apps/admin/src/features/publication/",
+        "workers/tasks/publication/",
+        "tests/modules/publication/",
+        "database/proposals/M08/"
+      ],
+      "implementation_status": "not_started",
+      "spec": "docs/modules/M08-publication.md",
+      "task_packet": "agents/task-packets/M08-publication.md"
+    },
+    {
+      "id": "M09",
+      "slug": "legendflow_delivery",
+      "title": "LegendFlow與訊息交付",
+      "issue": 9,
+      "branch": "module/m09-legendflow_delivery",
+      "worktree": "../longhao-worktrees/m09",
+      "start_dependencies": [],
+      "owned_paths": [
+        "apps/api/src/modules/legendflow_delivery/",
+        "apps/admin/src/features/legendflow_delivery/",
+        "workers/tasks/legendflow_delivery/",
+        "tests/modules/legendflow_delivery/",
+        "database/proposals/M09/"
+      ],
+      "implementation_status": "not_started",
+      "spec": "docs/modules/M09-legendflow_delivery.md",
+      "task_packet": "agents/task-packets/M09-legendflow_delivery.md"
+    },
+    {
+      "id": "M10",
+      "slug": "crm",
+      "title": "CRM業務工作清單",
+      "issue": 10,
+      "branch": "module/m10-crm",
+      "worktree": "../longhao-worktrees/m10",
+      "start_dependencies": [],
+      "owned_paths": [
+        "apps/api/src/modules/crm/",
+        "apps/admin/src/features/crm/",
+        "workers/tasks/crm/",
+        "tests/modules/crm/",
+        "database/proposals/M10/"
+      ],
+      "implementation_status": "not_started",
+      "spec": "docs/modules/M10-crm.md",
+      "task_packet": "agents/task-packets/M10-crm.md"
+    },
+    {
+      "id": "M11",
+      "slug": "ownership_pool",
+      "title": "維護歸屬與公司Pool",
+      "issue": 11,
+      "branch": "module/m11-ownership_pool",
+      "worktree": "../longhao-worktrees/m11",
+      "start_dependencies": [],
+      "owned_paths": [
+        "apps/api/src/modules/ownership_pool/",
+        "apps/admin/src/features/ownership_pool/",
+        "workers/tasks/ownership_pool/",
+        "tests/modules/ownership_pool/",
+        "database/proposals/M11/"
+      ],
+      "implementation_status": "not_started",
+      "spec": "docs/modules/M11-ownership_pool.md",
+      "task_packet": "agents/task-packets/M11-ownership_pool.md"
+    },
+    {
+      "id": "M12",
+      "slug": "commissions",
+      "title": "獎金與結算",
+      "issue": 12,
+      "branch": "module/m12-commissions",
+      "worktree": "../longhao-worktrees/m12",
+      "start_dependencies": [],
+      "owned_paths": [
+        "apps/api/src/modules/commissions/",
+        "apps/admin/src/features/commissions/",
+        "workers/tasks/commissions/",
+        "tests/modules/commissions/",
+        "database/proposals/M12/"
+      ],
+      "implementation_status": "not_started",
+      "spec": "docs/modules/M12-commissions.md",
+      "task_packet": "agents/task-packets/M12-commissions.md"
+    },
+    {
+      "id": "M13",
+      "slug": "service_cases",
+      "title": "客服客訴",
+      "issue": 13,
+      "branch": "module/m13-service_cases",
+      "worktree": "../longhao-worktrees/m13",
+      "start_dependencies": [],
+      "owned_paths": [
+        "apps/api/src/modules/service_cases/",
+        "apps/admin/src/features/service_cases/",
+        "workers/tasks/service_cases/",
+        "tests/modules/service_cases/",
+        "database/proposals/M13/"
+      ],
+      "implementation_status": "not_started",
+      "spec": "docs/modules/M13-service_cases.md",
+      "task_packet": "agents/task-packets/M13-service_cases.md"
+    },
+    {
+      "id": "M14",
+      "slug": "finance_control",
+      "title": "帳務與內控",
+      "issue": 14,
+      "branch": "module/m14-finance_control",
+      "worktree": "../longhao-worktrees/m14",
+      "start_dependencies": [],
+      "owned_paths": [
+        "apps/api/src/modules/finance_control/",
+        "apps/admin/src/features/finance_control/",
+        "workers/tasks/finance_control/",
+        "tests/modules/finance_control/",
+        "database/proposals/M14/"
+      ],
+      "implementation_status": "not_started",
+      "spec": "docs/modules/M14-finance_control.md",
+      "task_packet": "agents/task-packets/M14-finance_control.md"
+    }
+  ]
+}

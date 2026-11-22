@@ -1,0 +1,5089 @@
+{
+  "schema_version": "1.0.0",
+  "description": "全十四模組完整需求驗收；文件包不是已通過的應用程式驗收紀錄。",
+  "scope": "all_fourteen_modules",
+  "module_case_count": 168,
+  "end_to_end_case_count": 14,
+  "tests": [
+    {
+      "id": "UAT-M01-001",
+      "requirement_id": "REQ-M01-001",
+      "module": "M01",
+      "title": "同一外部身分重送只建立一客戶",
+      "given": "同 tenant、issuer、subject 已 linked",
+      "when": "以相同請求及不同重試 key 呼叫解析",
+      "expected": "回同一 customer_id；external_identity 唯一；新增事件不得重複產生行銷首購歸因",
+      "operation_ids": [
+        "create_customer",
+        "link_external_identity"
+      ],
+      "tables": [
+        "customer.external_identity"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M01-002",
+      "requirement_id": "REQ-M01-002",
+      "module": "M01",
+      "title": "不同已驗證 subject 不能依同信箱自動合併",
+      "given": "兩個 provider subject 的 email 相同",
+      "when": "分別建立申辦",
+      "expected": "建立待人工確認連結候選；原契約及客戶隔離，不把 email 當主鍵",
+      "operation_ids": [
+        "create_customer",
+        "link_external_identity"
+      ],
+      "tables": [
+        "customer.customer"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M01-003",
+      "requirement_id": "REQ-M01-003",
+      "module": "M01",
+      "title": "申辦草稿跨會話續填與撤回",
+      "given": "客戶已有 draft application 及版本",
+      "when": "合法重新登入讀回並補填，再由本人明確撤回",
+      "expected": "續填保留同一 application_id、原來源和歷史版本；撤回記withdrawn及原因／時間，不能再當有效申辦；全程無服務權限",
+      "operation_ids": [
+        "create_application",
+        "get_application",
+        "withdraw_application"
+      ],
+      "tables": [
+        "customer.application"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M01-004",
+      "requirement_id": "REQ-M01-004",
+      "module": "M01",
+      "title": "未授權跨客戶查詢",
+      "given": "客戶 A token 與客戶 B id",
+      "when": "讀取 B 的申辦或客戶資訊",
+      "expected": "拒絕且不洩漏存在性；事件不含 B 的明文個資",
+      "operation_ids": [
+        "get_customer",
+        "get_application"
+      ],
+      "tables": [
+        "customer.application"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M01-005",
+      "requirement_id": "REQ-M01-005",
+      "module": "M01",
+      "title": "來源變更不覆寫原始取得來源",
+      "given": "既有 first-touch attribution 並收到新活動 ref",
+      "when": "建立新申辦或續約",
+      "expected": "原始來源不變；新的 touchpoint／transaction attribution 另記錄",
+      "operation_ids": [
+        "create_application"
+      ],
+      "tables": [
+        "customer.customer"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M01-006",
+      "requirement_id": "REQ-M01-006",
+      "module": "M01",
+      "title": "同意撤回有範圍與時間",
+      "given": "客戶原同意行銷並有有效契約",
+      "when": "撤回行銷同意",
+      "expected": "停止後續行銷投遞；必要契約通知依法定／契約分類另判斷，不能誤停所有服務",
+      "operation_ids": [
+        "record_consent"
+      ],
+      "tables": [
+        "customer.consent"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M01-007",
+      "requirement_id": "REQ-M01-007",
+      "module": "M01",
+      "title": "外部 token 偽造遭拒",
+      "given": "錯誤 issuer/audience 的登入 token",
+      "when": "請求連結外部身分",
+      "expected": "401/403；不產生 linked identity、customer 或申辦",
+      "operation_ids": [
+        "link_external_identity"
+      ],
+      "tables": [
+        "customer.external_identity"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M01-008",
+      "requirement_id": "REQ-M01-008",
+      "module": "M01",
+      "title": "兩筆合併保留可追溯關聯",
+      "given": "經批准且存在兩 customer records",
+      "when": "執行人工合併",
+      "expected": "保留來源 id 映射與 reviewer evidence；歷史付款與報告送達紀錄可由舊 id 查回",
+      "operation_ids": [
+        "propose_customer_merge",
+        "list_customer_merges",
+        "get_customer_merge",
+        "decide_customer_merge"
+      ],
+      "tables": [
+        "customer.customer"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M01-009",
+      "requirement_id": "REQ-M01-009",
+      "module": "M01",
+      "title": "客戶資料樂觀鎖阻擋覆寫",
+      "given": "兩人讀同 version",
+      "when": "第一人成功更新後第二人送舊 If-Match",
+      "expected": "第二筆 412／版本衝突；第一筆資料仍在；UI 提供重載與差異",
+      "operation_ids": [
+        "update_customer"
+      ],
+      "tables": [
+        "customer.customer"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M01-010",
+      "requirement_id": "REQ-M01-010",
+      "module": "M01",
+      "title": "驗證供應商中斷不建立假身分",
+      "given": "OIDC／provider lookup timeout",
+      "when": "客戶登入／連結",
+      "expected": "回可重試外部依賴錯誤；狀態保持未驗證，不使用上次別人的會話",
+      "operation_ids": [
+        "link_external_identity"
+      ],
+      "tables": [
+        "customer.external_identity"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M01-011",
+      "requirement_id": "REQ-M01-011",
+      "module": "M01",
+      "title": "協助建檔不可冒充客戶同意",
+      "given": "staff 代填 draft 並缺客戶簽署",
+      "when": "送出 company-effective 或 customer-consent flag",
+      "expected": "API 拒絕不允許欄位；只建立代填者 audit，客戶同意須獨立證據",
+      "operation_ids": [
+        "create_application",
+        "record_consent"
+      ],
+      "tables": [
+        "customer.application"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M01-012",
+      "requirement_id": "REQ-M01-012",
+      "module": "M01",
+      "title": "來源資料故障與空集合不同",
+      "given": "Customer 360 某模組暫時失聯",
+      "when": "讀取摘要",
+      "expected": "回 source_status/degraded 與 last_success_at；不能顯示沒有契約或沒有付款",
+      "operation_ids": [
+        "get_customer",
+        "list_customers"
+      ],
+      "tables": [
+        "customer.customer"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M02-001",
+      "requirement_id": "REQ-M02-001",
+      "module": "M02",
+      "title": "客戶可以在 KYC 前完成簽署",
+      "given": "有可用契約 package，但無 KYC submission",
+      "when": "客戶完成合法線上簽署",
+      "expected": "customer_signature=verified；application 推進；entitlement 仍 locked，UI 導向 KYC",
+      "operation_ids": [
+        "create_customer_signature",
+        "receive_customer_signature"
+      ],
+      "tables": [
+        "contract.customer_signature"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M02-002",
+      "requirement_id": "REQ-M02-002",
+      "module": "M02",
+      "title": "未完成審核不可公司接受",
+      "given": "簽署完成但 KYC 或 AML pending",
+      "when": "公司接受者送 accept",
+      "expected": "422 gate_not_satisfied；無 effective/active entitlement；保留拒絕理由",
+      "operation_ids": [
+        "decide_company_acceptance"
+      ],
+      "tables": [
+        "contract.company_acceptance"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M02-003",
+      "requirement_id": "REQ-M02-003",
+      "module": "M02",
+      "title": "全部門檻通過後只開通一次",
+      "given": "簽署、KYC、適合度、AML、付款條件均有效",
+      "when": "兩個工作者同時要求生效",
+      "expected": "只有一有效生效決策與權限事件；UTC effective_at 一致",
+      "operation_ids": [
+        "evaluate_entitlements",
+        "list_customer_entitlements"
+      ],
+      "tables": [
+        "contract.entitlement_decision"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M02-004",
+      "requirement_id": "REQ-M02-004",
+      "module": "M02",
+      "title": "公司拒絕已收款申辦",
+      "given": "客戶已付款但尚未獲接受",
+      "when": "授權人 reject",
+      "expected": "契約不生效、權限維持 locked；建立可追蹤退款工作並交 M14，無直接出金",
+      "operation_ids": [
+        "decide_company_acceptance"
+      ],
+      "tables": [
+        "contract.company_acceptance"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M02-005",
+      "requirement_id": "REQ-M02-005",
+      "module": "M02",
+      "title": "兩份並行契約權限分開",
+      "given": "年度服務與月訂皆 active",
+      "when": "月訂到期",
+      "expected": "月訂權限到期；年度服務仍 active；客戶未因此被當全部服務中斷",
+      "operation_ids": [
+        "get_contract",
+        "list_customer_entitlements"
+      ],
+      "tables": [
+        "contract.contract_service"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M02-006",
+      "requirement_id": "REQ-M02-006",
+      "module": "M02",
+      "title": "文件改版不得套用舊簽署",
+      "given": "客戶簽的是 package v1，公司要求 v2",
+      "when": "嘗試將 v1 signature 掛到 v2",
+      "expected": "拒絕 hash/version 不符；建立 v2 新簽署要求並保存 v1",
+      "operation_ids": [
+        "create_contract_package",
+        "approve_contract_package",
+        "get_contract_package",
+        "create_customer_signature"
+      ],
+      "tables": [
+        "contract.package_version"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M02-007",
+      "requirement_id": "REQ-M02-007",
+      "module": "M02",
+      "title": "審核快照過期應重新審查",
+      "given": "公司決策讀 KYC v1，客戶已送 v2",
+      "when": "以舊版本送 acceptance",
+      "expected": "412 或 stale_assessment；不得基於 v1直接開通",
+      "operation_ids": [
+        "decide_company_acceptance"
+      ],
+      "tables": [
+        "contract.company_acceptance"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M02-008",
+      "requirement_id": "REQ-M02-008",
+      "module": "M02",
+      "title": "簽章 callback 不等於完成驗證",
+      "given": "provider 回 received 而驗證失敗",
+      "when": "處理簽署回呼",
+      "expected": "signature=invalid；不發 verified 事件；顯示可重新簽署原因碼",
+      "operation_ids": [
+        "receive_customer_signature"
+      ],
+      "tables": [
+        "contract.customer_signature"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M02-009",
+      "requirement_id": "REQ-M02-009",
+      "module": "M02",
+      "title": "續約預建不提前給權限",
+      "given": "已有效服務到期於下月；續約已簽並付款",
+      "when": "執行今日權限查詢",
+      "expected": "只有現行期服務生效；續約 entitlement 在生效時點才轉 active",
+      "operation_ids": [
+        "create_contract_amendment",
+        "evaluate_entitlements"
+      ],
+      "tables": [
+        "contract.contract_service"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M02-010",
+      "requirement_id": "REQ-M02-010",
+      "module": "M02",
+      "title": "公司接受權限需職務且防自審",
+      "given": "一般業務或同一條款製作／接受者不符 SoD",
+      "when": "呼叫 company acceptance",
+      "expected": "403 或 segregation_conflict；決策沒有落地",
+      "operation_ids": [
+        "decide_company_acceptance"
+      ],
+      "tables": [
+        "contract.company_acceptance"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M02-011",
+      "requirement_id": "REQ-M02-011",
+      "module": "M02",
+      "title": "權限事件延遲不以網站快取越權",
+      "given": "後端已 suspend，LegendFlow 投影未更新",
+      "when": "請求受限內容或發訊息",
+      "expected": "由權威 entitlement 再查而拒絕；記錄 denied decision id",
+      "operation_ids": [
+        "suspend_entitlement",
+        "evaluate_entitlements"
+      ],
+      "tables": [
+        "contract.entitlement_decision"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M02-012",
+      "requirement_id": "REQ-M02-012",
+      "module": "M02",
+      "title": "終止與留存各自生效",
+      "given": "有效契約遇授權終止並有 legal hold",
+      "when": "提交終止",
+      "expected": "停止對應服務；仍可稽核契約及簽署原件；不刪除受保全物件",
+      "operation_ids": [
+        "terminate_contract",
+        "get_contract"
+      ],
+      "tables": [
+        "contract.contract"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M03-001",
+      "requirement_id": "REQ-M03-001",
+      "module": "M03",
+      "title": "簽署後可開始線上 KYC",
+      "given": "application customer_signed 且本人登入",
+      "when": "建立並提交完整 KYC",
+      "expected": "保存答案、問卷版號、檔案 refs；status submitted；未直接開通服務",
+      "operation_ids": [
+        "create_kyc_submission",
+        "submit_kyc"
+      ],
+      "tables": [
+        "kyc.submission"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M03-002",
+      "requirement_id": "REQ-M03-002",
+      "module": "M03",
+      "title": "缺必填欄位不得完成審核",
+      "given": "缺職業／身分驗證必要項目",
+      "when": "送出 submission",
+      "expected": "回明確欄位 errors 或 incomplete；保留已填內容，無 approved",
+      "operation_ids": [
+        "submit_kyc"
+      ],
+      "tables": [
+        "kyc.submission"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M03-003",
+      "requirement_id": "REQ-M03-003",
+      "module": "M03",
+      "title": "OCR 輔助不覆寫客戶原始答案",
+      "given": "OCR 姓名與客戶填答不同",
+      "when": "執行抽取與審核",
+      "expected": "顯示兩個來源與信心；等待確認；原始答案可查",
+      "operation_ids": [
+        "get_kyc_submission"
+      ],
+      "tables": [
+        "kyc.submission_document"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M03-004",
+      "requirement_id": "REQ-M03-004",
+      "module": "M03",
+      "title": "文件惡意內容在隔離區遭阻擋",
+      "given": "測試文件被 scanner 標記危險",
+      "when": "完成 upload callback",
+      "expected": "不可讀取／進審核；保存安全原因碼，無外洩 URL",
+      "operation_ids": [
+        "request_kyc_upload",
+        "get_document_status"
+      ],
+      "tables": [
+        "kyc.submission_document"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M03-005",
+      "requirement_id": "REQ-M03-005",
+      "module": "M03",
+      "title": "適合度由版本化規則計算",
+      "given": "同答案與同 ruleset",
+      "when": "重跑 assessment",
+      "expected": "得到相同結果與因素；不使用隨機 LLM 輸出取代評分",
+      "operation_ids": [
+        "assess_suitability"
+      ],
+      "tables": [
+        "kyc.suitability_assessment"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M03-006",
+      "requirement_id": "REQ-M03-006",
+      "module": "M03",
+      "title": "不適合服務不能因已付費通過",
+      "given": "assessment not_suitable 且 finance paid",
+      "when": "要求接受／啟用該服務",
+      "expected": "gate 拒絕；可改服務或走拒絕退款流程；留存拒絕證據",
+      "operation_ids": [
+        "assess_suitability",
+        "decide_company_acceptance"
+      ],
+      "tables": [
+        "kyc.suitability_assessment"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M03-007",
+      "requirement_id": "REQ-M03-007",
+      "module": "M03",
+      "title": "新版本提交使舊審核過時",
+      "given": "reviewer 開啟 submission v1",
+      "when": "客戶送 v2後 reviewer批准v1",
+      "expected": "回 stale_submission；v1舊答案仍在，須評估v2才可更新clearance",
+      "operation_ids": [
+        "decide_kyc"
+      ],
+      "tables": [
+        "kyc.submission"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M03-008",
+      "requirement_id": "REQ-M03-008",
+      "module": "M03",
+      "title": "業務僅能看到補件狀態",
+      "given": "sales role 查 KYC 詳情",
+      "when": "請求證件或原始收入／財富資料",
+      "expected": "403/欄位遮罩；可看缺件項目與到期，不能取得 object download link",
+      "operation_ids": [
+        "get_kyc_submission"
+      ],
+      "tables": [
+        "kyc.submission_document"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M03-009",
+      "requirement_id": "REQ-M03-009",
+      "module": "M03",
+      "title": "風險變更觸發重評",
+      "given": "客戶資料事件顯示重要風險改變",
+      "when": "處理事件並跑 refresh rule",
+      "expected": "建立一筆 refresh 工作與到期規則；不要自動沿用舊 suitable",
+      "operation_ids": [
+        "request_due_diligence_refresh"
+      ],
+      "tables": [
+        "kyc.suitability_assessment"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M03-010",
+      "requirement_id": "REQ-M03-010",
+      "module": "M03",
+      "title": "人工例外需權限與獨立覆核",
+      "given": "conditional 需要額外證據",
+      "when": "一般客服嘗試override為suitable",
+      "expected": "拒絕；授權角色附證據及核定者才可形成有效例外",
+      "operation_ids": [
+        "assess_suitability"
+      ],
+      "tables": [
+        "kyc.suitability_assessment"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M03-011",
+      "requirement_id": "REQ-M03-011",
+      "module": "M03",
+      "title": "到期查核不被失敗重試當通過",
+      "given": "外部身分驗證連續 timeout",
+      "when": "工作者重試後超過閾值",
+      "expected": "進exception queue並告警，狀態pending或manual_required；無pass事件",
+      "operation_ids": [
+        "decide_kyc"
+      ],
+      "tables": [
+        "kyc.submission"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M03-012",
+      "requirement_id": "REQ-M03-012",
+      "module": "M03",
+      "title": "同一提交重放不產生多筆評估",
+      "given": "相同 submission/version/idempotency key",
+      "when": "送出兩次或事件重送",
+      "expected": "只有一有效 assessment及 outbox事件；結果可用原request id查詢",
+      "operation_ids": [
+        "submit_kyc"
+      ],
+      "tables": [
+        "kyc.suitability_assessment"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M04-001",
+      "requirement_id": "REQ-M04-001",
+      "module": "M04",
+      "title": "可能命中建立受限案件",
+      "given": "名單 adapter 回 possible_match",
+      "when": "處理 screening response",
+      "expected": "建立 case、clearance pending/restricted；公司接受 gate不能通過",
+      "operation_ids": [
+        "start_aml_screening",
+        "receive_aml_screening"
+      ],
+      "tables": [
+        "aml.case_file"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M04-002",
+      "requirement_id": "REQ-M04-002",
+      "module": "M04",
+      "title": "LLM 無權解除命中",
+      "given": "AI service principal 僅有 summary scope",
+      "when": "呼叫 clear/decision",
+      "expected": "403；案件不變；安全審計記錄拒絕，不把 AI summary當核定",
+      "operation_ids": [
+        "decide_aml_case"
+      ],
+      "tables": [
+        "aml.case_action"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M04-003",
+      "requirement_id": "REQ-M04-003",
+      "module": "M04",
+      "title": "一般業務不可讀 AML 案情",
+      "given": "sales 已知 customer_id",
+      "when": "查 restricted case 或事件payload",
+      "expected": "403/不存在等值回應；一般摘要只顯示pending/restricted狀態",
+      "operation_ids": [
+        "get_aml_case",
+        "get_business_clearance"
+      ],
+      "tables": [
+        "aml.business_clearance"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M04-004",
+      "requirement_id": "REQ-M04-004",
+      "module": "M04",
+      "title": "名單 provider timeout 不視為無命中",
+      "given": "screening服務故障",
+      "when": "執行查核",
+      "expected": "error/retry/manual_required，clearance不轉permitted；告警含provider不含PII",
+      "operation_ids": [
+        "start_aml_screening"
+      ],
+      "tables": [
+        "aml.screening"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M04-005",
+      "requirement_id": "REQ-M04-005",
+      "module": "M04",
+      "title": "誤命中解除需核定與證據",
+      "given": "maker提出false_positive證據",
+      "when": "同一人自核或另一人核定",
+      "expected": "自核拒絕；合法checker核定後產生case action與新clearance版本",
+      "operation_ids": [
+        "add_aml_case_action",
+        "decide_aml_case"
+      ],
+      "tables": [
+        "aml.case_action"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M04-006",
+      "requirement_id": "REQ-M04-006",
+      "module": "M04",
+      "title": "名單版本更新可再查",
+      "given": "客戶曾在list-v1通過",
+      "when": "list-v2事件觸發重查",
+      "expected": "新增screening保留v1；新的possiblematch阻擋後續操作，不能覆寫為原通過",
+      "operation_ids": [
+        "start_aml_screening",
+        "receive_aml_screening"
+      ],
+      "tables": [
+        "aml.screening"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M04-007",
+      "requirement_id": "REQ-M04-007",
+      "module": "M04",
+      "title": "宣告簽名不能替代查核",
+      "given": "客戶已簽 AML/CFT聲明但provider未查",
+      "when": "要求business clearance permitted",
+      "expected": "拒絕；簽署文件僅證據，必須完成指定查核與決策",
+      "operation_ids": [
+        "submit_aml_declaration",
+        "get_business_clearance"
+      ],
+      "tables": [
+        "aml.business_clearance"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M04-008",
+      "requirement_id": "REQ-M04-008",
+      "module": "M04",
+      "title": "受限事件只輸出安全摘要",
+      "given": "案件包含名單與申報備註",
+      "when": "發clearance_changed到一般outbox",
+      "expected": "payload只含customer id/status/version/policy ref；禁止raw案情與PII",
+      "operation_ids": [
+        "get_business_clearance"
+      ],
+      "tables": [
+        "aml.business_clearance"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M04-009",
+      "requirement_id": "REQ-M04-009",
+      "module": "M04",
+      "title": "EDD 補件可追蹤且不洩密",
+      "given": "case要求EDD且需客戶文件",
+      "when": "核定補件通知",
+      "expected": "一般平台取得中性待補清單；完整研判僅AML工作台可見",
+      "operation_ids": [
+        "add_aml_case_action"
+      ],
+      "tables": [
+        "aml.case_action"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M04-010",
+      "requirement_id": "REQ-M04-010",
+      "module": "M04",
+      "title": "內稽存取有目的與時限",
+      "given": "auditor獲限定案件read grant",
+      "when": "查閱／下載案證",
+      "expected": "只有授權範圍可讀；每次讀取audit；不能修改決策",
+      "operation_ids": [
+        "list_aml_cases",
+        "get_aml_case"
+      ],
+      "tables": [
+        "aml.case_file"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M04-011",
+      "requirement_id": "REQ-M04-011",
+      "module": "M04",
+      "title": "未結案件受 legal hold",
+      "given": "依法／公司核定保全中的case",
+      "when": "到達常規留存刪除時間",
+      "expected": "物件仍保留且記錄hold；刪除作業報skipped_hold，不解除限制",
+      "operation_ids": [
+        "create_legal_hold"
+      ],
+      "tables": [
+        "aml.case_file"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M04-012",
+      "requirement_id": "REQ-M04-012",
+      "module": "M04",
+      "title": "過期clearance不能被公司接受重用",
+      "given": "permitted版本已expired或refresh_required",
+      "when": "M02檢查接受條件",
+      "expected": "回不可建立關係及需更新的安全原因；不公開內部詳細案情",
+      "operation_ids": [
+        "get_business_clearance"
+      ],
+      "tables": [
+        "aml.business_clearance"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M05-001",
+      "requirement_id": "REQ-M05-001",
+      "module": "M05",
+      "title": "Persona 可自主建立候選",
+      "given": "沒有 analyst ticket，但合法Persona/pool/artifact refs",
+      "when": "送入candidate",
+      "expected": "建立immutable candidate與review待辦；不要求先由分析師建研究",
+      "operation_ids": [
+        "ingest_research_candidate"
+      ],
+      "tables": [
+        "research.candidate"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M05-002",
+      "requirement_id": "REQ-M05-002",
+      "module": "M05",
+      "title": "分析師發起成果走同一通道",
+      "given": "origin_type analyst且來源合法",
+      "when": "送入candidate",
+      "expected": "同樣驗證與建review；不跳過證據、覆核或簽章",
+      "operation_ids": [
+        "ingest_research_candidate"
+      ],
+      "tables": [
+        "research.candidate"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M05-003",
+      "requirement_id": "REQ-M05-003",
+      "module": "M05",
+      "title": "候選重送只建一覆核案件",
+      "given": "同source_event_id/payload hash",
+      "when": "傳送兩次",
+      "expected": "一次inbox applied，第二次duplicate；同candidate/review id",
+      "operation_ids": [
+        "ingest_research_candidate",
+        "list_research_candidates"
+      ],
+      "tables": [
+        "research.candidate"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M05-004",
+      "requirement_id": "REQ-M05-004",
+      "module": "M05",
+      "title": "相同版本不同hash進隔離",
+      "given": "來源已有artifact v3 hash A",
+      "when": "再送v3 hash B",
+      "expected": "衝突／quarantine；A不被覆寫；不能進簽章佇列",
+      "operation_ids": [
+        "validate_research_candidate",
+        "reject_research_candidate"
+      ],
+      "tables": [
+        "research.candidate"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M05-005",
+      "requirement_id": "REQ-M05-005",
+      "module": "M05",
+      "title": "缺少必要證據不可ready",
+      "given": "artifact缺核心evidence refs",
+      "when": "驗證候選",
+      "expected": "指出缺失並保持quarantined；有raw來源receipt供追查",
+      "operation_ids": [
+        "validate_research_candidate"
+      ],
+      "tables": [
+        "research.candidate_evidence"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M05-006",
+      "requirement_id": "REQ-M05-006",
+      "module": "M05",
+      "title": "外部策略approved不當正式投顧核准",
+      "given": "Pantheon registry artifact marked approved",
+      "when": "收件並查客戶feed",
+      "expected": "只能進review；member feed不存在該候選",
+      "operation_ids": [
+        "get_research_candidate",
+        "get_member_feed"
+      ],
+      "tables": [
+        "research.candidate"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M05-007",
+      "requirement_id": "REQ-M05-007",
+      "module": "M05",
+      "title": "研究時間不得倒填交易時間",
+      "given": "Persona trade早於candidate產生",
+      "when": "收candidate並生成時間線",
+      "expected": "保存trade/source/report/received各真實時間，不把report time設為trade time",
+      "operation_ids": [
+        "ingest_research_candidate"
+      ],
+      "tables": [
+        "research.candidate"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M05-008",
+      "requirement_id": "REQ-M05-008",
+      "module": "M05",
+      "title": "未知schema版本明確拒絕",
+      "given": "envelope schema_version=999",
+      "when": "送入候選",
+      "expected": "422 unsupported_schema，保存安全receipt；不默認忽略新必要欄位",
+      "operation_ids": [
+        "ingest_research_candidate"
+      ],
+      "tables": [
+        "research.candidate"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M05-009",
+      "requirement_id": "REQ-M05-009",
+      "module": "M05",
+      "title": "外部證據URL阻擋SSRF",
+      "given": "evidence URL指向metadata/link-local/internal未允許位址",
+      "when": "取證據",
+      "expected": "拒絕allowlist之外的地址與重新導向；不對任意URL發請求",
+      "operation_ids": [
+        "validate_research_candidate"
+      ],
+      "tables": [
+        "research.candidate_evidence"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M05-010",
+      "requirement_id": "REQ-M05-010",
+      "module": "M05",
+      "title": "授權不足的來源不可客戶發布",
+      "given": "evidence license_scope只供內部",
+      "when": "候選移交報告工作台",
+      "expected": "標明customer_distribution不允許；需替換或取得權利，不自動公開全文",
+      "operation_ids": [
+        "validate_research_candidate"
+      ],
+      "tables": [
+        "research.candidate_evidence"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M05-011",
+      "requirement_id": "REQ-M05-011",
+      "module": "M05",
+      "title": "新候選版本通知舊review過時",
+      "given": "v1尚在覆核，v2正式到達",
+      "when": "處理superseding candidate",
+      "expected": "v1保留；M06收到具版本事件並標示stale/rebase，不自動簽v2",
+      "operation_ids": [
+        "ingest_research_candidate"
+      ],
+      "tables": [
+        "research.candidate"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M05-012",
+      "requirement_id": "REQ-M05-012",
+      "module": "M05",
+      "title": "Pantheon故障不丟棄候選",
+      "given": "received已落地但遠端fetch timeout",
+      "when": "worker重試耗盡",
+      "expected": "可在failure queue查與重送；一次成功後不重建case，原收到時間不變",
+      "operation_ids": [
+        "validate_research_candidate",
+        "get_research_candidate"
+      ],
+      "tables": [
+        "research.candidate"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M06-001",
+      "requirement_id": "REQ-M06-001",
+      "module": "M06",
+      "title": "合法候選自動進分析師佇列",
+      "given": "M05候選ready",
+      "when": "處理candidate事件",
+      "expected": "建立一case並保留來源版本；分析師可接案而不需重新發起研究",
+      "operation_ids": [
+        "list_review_cases",
+        "assign_review_case"
+      ],
+      "tables": [
+        "review.case_file"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M06-002",
+      "requirement_id": "REQ-M06-002",
+      "module": "M06",
+      "title": "修正請求綁定確切版本",
+      "given": "case目前candidate v3",
+      "when": "送出Servant request",
+      "expected": "記錄v3/hash、scope、request id與接受條件；外部回呼可對應原請求",
+      "operation_ids": [
+        "open_servant_conversation",
+        "request_servant_revision"
+      ],
+      "tables": [
+        "review.revision_request"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M06-003",
+      "requirement_id": "REQ-M06-003",
+      "module": "M06",
+      "title": "回傳修訂只建立新版本",
+      "given": "Servant回v4 completed",
+      "when": "驗證callback",
+      "expected": "保留v3、建立v4 revision result與差異；舊review不視為批准v4",
+      "operation_ids": [
+        "receive_servant_revision"
+      ],
+      "tables": [
+        "review.revision_result"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M06-004",
+      "requirement_id": "REQ-M06-004",
+      "module": "M06",
+      "title": "舊版本操作遇衝突重載",
+      "given": "分析師讀case version5，外部v4剛到",
+      "when": "送If-Match5指派／修訂",
+      "expected": "412；UI顯示新的candidate version，不覆蓋更新",
+      "operation_ids": [
+        "assign_review_case"
+      ],
+      "tables": [
+        "review.case_file"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M06-005",
+      "requirement_id": "REQ-M06-005",
+      "module": "M06",
+      "title": "Servant不能代簽或直接發布",
+      "given": "Servant principal持有revision scope",
+      "when": "請求report sign/publish",
+      "expected": "403，無signature或publication事件",
+      "operation_ids": [
+        "request_analyst_signature"
+      ],
+      "tables": [
+        "review.conversation"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M06-006",
+      "requirement_id": "REQ-M06-006",
+      "module": "M06",
+      "title": "對話scope不得跨客戶或tenant",
+      "given": "tenant A review conversation",
+      "when": "回呼包含tenant B artifact",
+      "expected": "拒絕scope violation；A畫面不顯示B內容",
+      "operation_ids": [
+        "receive_servant_revision"
+      ],
+      "tables": [
+        "review.revision_result"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M06-007",
+      "requirement_id": "REQ-M06-007",
+      "module": "M06",
+      "title": "外部timeout不重開多任務",
+      "given": "request已被Agora接受但本地timeout",
+      "when": "worker恢復／重試",
+      "expected": "以原request id查狀態或同key重送；只有一外部revision job",
+      "operation_ids": [
+        "request_servant_revision",
+        "get_revision_request"
+      ],
+      "tables": [
+        "review.revision_request"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M06-008",
+      "requirement_id": "REQ-M06-008",
+      "module": "M06",
+      "title": "新來源到達時標示review過時",
+      "given": "v3正在覆核",
+      "when": "candidate v4 supersedes事件到達",
+      "expected": "case標stale並撤銷基於v3的ready標記；不自動把評論當v4覆核",
+      "operation_ids": [
+        "get_review_case"
+      ],
+      "tables": [
+        "review.case_file"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M06-009",
+      "requirement_id": "REQ-M06-009",
+      "module": "M06",
+      "title": "修訂錯誤可重送並保留證據",
+      "given": "Servant回failed且有錯誤碼",
+      "when": "分析師修正請求重送",
+      "expected": "新attempt連原request且原失敗保留；不修改舊artifact",
+      "operation_ids": [
+        "request_servant_revision"
+      ],
+      "tables": [
+        "review.revision_request"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M06-010",
+      "requirement_id": "REQ-M06-010",
+      "module": "M06",
+      "title": "來源故障不產生虛假空研究",
+      "given": "Agora查詢503",
+      "when": "開啟case",
+      "expected": "顯示degraded及最後成功狀態；不能顯示無修訂或已完成",
+      "operation_ids": [
+        "get_review_case"
+      ],
+      "tables": [
+        "review.case_file"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M06-011",
+      "requirement_id": "REQ-M06-011",
+      "module": "M06",
+      "title": "關鍵數字變動需可見差異",
+      "given": "v3/v4目標、風險或持倉結論不同",
+      "when": "分析師查看revision result",
+      "expected": "重大差異列出且待人工接受；不默默替換預覽內容",
+      "operation_ids": [
+        "get_review_case",
+        "receive_servant_revision"
+      ],
+      "tables": [
+        "review.revision_result"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M06-012",
+      "requirement_id": "REQ-M06-012",
+      "module": "M06",
+      "title": "研究對話不夾帶KYC與AML",
+      "given": "revision要求客戶化措辭但無必要PII",
+      "when": "組裝外部prompt/context",
+      "expected": "只傳研究scope與服務語氣等最小資料；任何AML受限內容被阻擋",
+      "operation_ids": [
+        "open_servant_conversation"
+      ],
+      "tables": [
+        "review.conversation"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M07-001",
+      "requirement_id": "REQ-M07-001",
+      "module": "M07",
+      "title": "缺必要覆核不能送簽",
+      "given": "professional approved但必需compliance pending",
+      "when": "送freeze/sign",
+      "expected": "422 missing_review；無有效signature或publication事件",
+      "operation_ids": [
+        "record_report_review",
+        "freeze_report_version",
+        "request_analyst_signature"
+      ],
+      "tables": [
+        "report.review_decision"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M07-002",
+      "requirement_id": "REQ-M07-002",
+      "module": "M07",
+      "title": "凍結包包含報告與訊息範圍",
+      "given": "所有reviews針對同版完成",
+      "when": "freeze version",
+      "expected": "生成manifest綁report、recommendation、channeltexts、audience policy與expiry hash",
+      "operation_ids": [
+        "create_report",
+        "create_report_version",
+        "freeze_report_version"
+      ],
+      "tables": [
+        "report.report_version"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M07-003",
+      "requirement_id": "REQ-M07-003",
+      "module": "M07",
+      "title": "無有效資格者不能簽署",
+      "given": "staff登入但credential過期或scope不符",
+      "when": "request signature",
+      "expected": "403/qualification_invalid；沒有provider有效request",
+      "operation_ids": [
+        "request_analyst_signature"
+      ],
+      "tables": [
+        "report.signature_request"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M07-004",
+      "requirement_id": "REQ-M07-004",
+      "module": "M07",
+      "title": "簽章回呼只在完整驗證後觸發事件",
+      "given": "provider收到signed bytes且hash/actor有效",
+      "when": "receive callback",
+      "expected": "signature verified與唯一report.signature_verified outbox在同transaction；之後M08自動發布",
+      "operation_ids": [
+        "receive_analyst_signature"
+      ],
+      "tables": [
+        "report.signature"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M07-005",
+      "requirement_id": "REQ-M07-005",
+      "module": "M07",
+      "title": "簽後修改建立新版本",
+      "given": "v1 signed（signature已驗證）",
+      "when": "修改結論或通路實質文案",
+      "expected": "v1正文與frozen manifest不可覆寫；產生v2 draft並重新覆核／簽署，v1證據保留，狀態只依合法事件演進",
+      "operation_ids": [
+        "create_report_version",
+        "get_report_version"
+      ],
+      "tables": [
+        "report.report_version"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M07-006",
+      "requirement_id": "REQ-M07-006",
+      "module": "M07",
+      "title": "內容與簽章檔hash分開",
+      "given": "原文PDF A經provider產出帶簽章PDF B",
+      "when": "驗證簽章",
+      "expected": "content_hash=A來源內容，signed_file_hash=B；能驗證封裝關係，不要求A等於B",
+      "operation_ids": [
+        "receive_analyst_signature"
+      ],
+      "tables": [
+        "report.signature"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M07-007",
+      "requirement_id": "REQ-M07-007",
+      "module": "M07",
+      "title": "資料過時阻擋簽章",
+      "given": "凍結前後收到superseding來源使review stale",
+      "when": "送簽／驗證",
+      "expected": "按policy拒絕或中止request；不能沿用過期review自動發布",
+      "operation_ids": [
+        "request_analyst_signature"
+      ],
+      "tables": [
+        "report.report_version"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M07-008",
+      "requirement_id": "REQ-M07-008",
+      "module": "M07",
+      "title": "provider重送不重複發布",
+      "given": "同request/reference的valid callback兩次",
+      "when": "處理兩回呼",
+      "expected": "一signature、一verified event；後次回相同receipt",
+      "operation_ids": [
+        "receive_analyst_signature"
+      ],
+      "tables": [
+        "report.signature"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M07-009",
+      "requirement_id": "REQ-M07-009",
+      "module": "M07",
+      "title": "簽章payload替換遭拒",
+      "given": "回呼report id正確但file bytes/hash不同",
+      "when": "驗證callback",
+      "expected": "invalid且告警；原frozen package保留；不發publication",
+      "operation_ids": [
+        "receive_analyst_signature"
+      ],
+      "tables": [
+        "report.signature"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M07-010",
+      "requirement_id": "REQ-M07-010",
+      "module": "M07",
+      "title": "撤銷保留歷史並通知發布服務",
+      "given": "已發布報告簽章需撤銷",
+      "when": "授權人附理由revoke",
+      "expected": "append revocation、發撤銷事件；不刪signature；後續投遞停止並走更正",
+      "operation_ids": [
+        "revoke_signature"
+      ],
+      "tables": [
+        "report.revocation"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M07-011",
+      "requirement_id": "REQ-M07-011",
+      "module": "M07",
+      "title": "簽署者知悉簽後自動發布",
+      "given": "合法frozen報告及所有文案預覽",
+      "when": "在簽署確認頁確認",
+      "expected": "畫面顯示自動發布與範圍；不在簽後另加人工Publish gate",
+      "operation_ids": [
+        "request_analyst_signature"
+      ],
+      "tables": [
+        "report.signature_request"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M07-012",
+      "requirement_id": "REQ-M07-012",
+      "module": "M07",
+      "title": "多次對同版覆核保留完整歷史",
+      "given": "review changes_requested後修正新v2",
+      "when": "重新record review",
+      "expected": "舊review仍指v1；v2有新review；每位reviewer與時點可追溯",
+      "operation_ids": [
+        "record_report_review"
+      ],
+      "tables": [
+        "report.review_decision"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M08-001",
+      "requirement_id": "REQ-M08-001",
+      "module": "M08",
+      "title": "驗證簽章後無第二發布操作",
+      "given": "有效signature event及全部核定manifest",
+      "when": "處理事件",
+      "expected": "自動建立publication/audience/delivery事件；人員不用另按發布",
+      "operation_ids": [
+        "list_publications",
+        "get_publication"
+      ],
+      "tables": [
+        "publication.publication"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M08-002",
+      "requirement_id": "REQ-M08-002",
+      "module": "M08",
+      "title": "候選或未簽稿不可出現在feed",
+      "given": "只有Pantheon candidate或draft report",
+      "when": "要求發布／列member feed",
+      "expected": "無publication；訪客／客戶不可讀未簽正式內容",
+      "operation_ids": [
+        "get_member_feed"
+      ],
+      "tables": [
+        "publication.publication"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M08-003",
+      "requirement_id": "REQ-M08-003",
+      "module": "M08",
+      "title": "每一進出場訊息有對應報告",
+      "given": "同series有entry與exit",
+      "when": "建立recommendation versions",
+      "expected": "每版有supporting report_version/hash；exit判斷改變時須有相應新／補充已簽報告",
+      "operation_ids": [
+        "create_recommendation_series",
+        "create_recommendation_version"
+      ],
+      "tables": [
+        "publication.recommendation_version"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M08-004",
+      "requirement_id": "REQ-M08-004",
+      "module": "M08",
+      "title": "一份有效報告可支持多則核定訊息",
+      "given": "報告仍有效且內容未新增判斷",
+      "when": "建立兩則一致且簽前核定的channel messages",
+      "expected": "可共用report reference；各message有獨立version/hash/時間；不強制每則重新全文研究",
+      "operation_ids": [
+        "create_recommendation_version"
+      ],
+      "tables": [
+        "publication.recommendation_version"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M08-005",
+      "requirement_id": "REQ-M08-005",
+      "module": "M08",
+      "title": "簽後實質文案變動不可偷渡",
+      "given": "signed manifest含文字A",
+      "when": "worker收到替換文字B",
+      "expected": "hash mismatch阻擋；B須新版本覆核／簽章",
+      "operation_ids": [
+        "get_publication"
+      ],
+      "tables": [
+        "publication.publication"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M08-006",
+      "requirement_id": "REQ-M08-006",
+      "module": "M08",
+      "title": "受眾快照排除無權限者",
+      "given": "active、expired、pending三組客戶",
+      "when": "resolve audience",
+      "expected": "僅合格客戶入snapshot；保存policy與entitlement decision；其餘有reason summary",
+      "operation_ids": [
+        "get_publication"
+      ],
+      "tables": [
+        "publication.audience_snapshot"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M08-007",
+      "requirement_id": "REQ-M08-007",
+      "module": "M08",
+      "title": "快照後停權仍不得送出",
+      "given": "客戶被納入snapshot後entitlement revoked",
+      "when": "M09準備dispatch",
+      "expected": "即時重查拒絕；snapshot保留原事實，delivery記suppressed_revoked",
+      "operation_ids": [
+        "get_publication",
+        "list_deliveries"
+      ],
+      "tables": [
+        "publication.recipient"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M08-008",
+      "requirement_id": "REQ-M08-008",
+      "module": "M08",
+      "title": "重複簽章事件僅發布一次",
+      "given": "同report.signature_verified重送三次",
+      "when": "consume event",
+      "expected": "一publication且一組邏輯delivery；inbox顯示duplicate",
+      "operation_ids": [
+        "get_publication"
+      ],
+      "tables": [
+        "publication.publication"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M08-009",
+      "requirement_id": "REQ-M08-009",
+      "module": "M08",
+      "title": "撤回不抹除已發布證據",
+      "given": "publication已部分發送",
+      "when": "授權人withdraw",
+      "expected": "停止新發送並追加withdrawal；已發送原文、受眾及時間保留",
+      "operation_ids": [
+        "withdraw_publication"
+      ],
+      "tables": [
+        "publication.publication"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M08-010",
+      "requirement_id": "REQ-M08-010",
+      "module": "M08",
+      "title": "更正指向原發布與新簽版本",
+      "given": "原訊息需重大更正且新報告已簽",
+      "when": "link correction",
+      "expected": "新publication引用原id與新report；受影響客戶可見更正標示，原版仍可audit",
+      "operation_ids": [
+        "link_publication_correction"
+      ],
+      "tables": [
+        "publication.publication"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M08-011",
+      "requirement_id": "REQ-M08-011",
+      "module": "M08",
+      "title": "延遲重送過期建議遭攔截",
+      "given": "expires_at已過但DLQ被重驅",
+      "when": "worker處理dispatch",
+      "expected": "expired/blocked，不發失效進出場建議；有重驅者及理由",
+      "operation_ids": [
+        "redrive_delivery_event"
+      ],
+      "tables": [
+        "publication.recommendation_version"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M08-012",
+      "requirement_id": "REQ-M08-012",
+      "module": "M08",
+      "title": "來源trade和客戶建議時間分列",
+      "given": "Persona早盤trade，報告午後簽章",
+      "when": "查看recommendation timeline",
+      "expected": "只在真實簽章發布時點開始建議；不宣稱客戶早盤已收到或成交",
+      "operation_ids": [
+        "create_recommendation_series",
+        "create_recommendation_version"
+      ],
+      "tables": [
+        "publication.recommendation_series"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M09-001",
+      "requirement_id": "REQ-M09-001",
+      "module": "M09",
+      "title": "LegendFlow feed只顯示本人權限內容",
+      "given": "會員A只有服務X",
+      "when": "查詢member feed含X/Y publication",
+      "expected": "僅回X可見內容；Y不可由id猜到／直接下載",
+      "operation_ids": [
+        "get_member_feed"
+      ],
+      "tables": [
+        "delivery.message"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M09-002",
+      "requirement_id": "REQ-M09-002",
+      "module": "M09",
+      "title": "報告下載授權需當前有效",
+      "given": "A曾有權限後被撤銷",
+      "when": "使用先前report link或請求access",
+      "expected": "依核定存取政策拒絕新授權；短效token不可越權讀其他客戶資料",
+      "operation_ids": [
+        "request_member_report_access"
+      ],
+      "tables": [
+        "delivery.message"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M09-003",
+      "requirement_id": "REQ-M09-003",
+      "module": "M09",
+      "title": "未驗證通路不能綁成active",
+      "given": "客戶只填別人電話／LINE id",
+      "when": "bind channel",
+      "expected": "要求challenge/provider proof；未驗證不成active收件端",
+      "operation_ids": [
+        "bind_member_channel"
+      ],
+      "tables": [
+        "delivery.channel_binding"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M09-004",
+      "requirement_id": "REQ-M09-004",
+      "module": "M09",
+      "title": "發送前再查權限",
+      "given": "recipient snapshot時active但現在revoked",
+      "when": "dispatch worker執行",
+      "expected": "不送；記suppressed及當時entitlement decision id",
+      "operation_ids": [
+        "list_deliveries",
+        "reconcile_delivery"
+      ],
+      "tables": [
+        "delivery.attempt"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M09-005",
+      "requirement_id": "REQ-M09-005",
+      "module": "M09",
+      "title": "accepted不誤顯示已送達",
+      "given": "provider只回202 accepted",
+      "when": "投遞狀態畫面與API",
+      "expected": "accepted_at存在但delivered_at/read_at缺；不偽造送達率",
+      "operation_ids": [
+        "receive_message_receipt",
+        "list_deliveries"
+      ],
+      "tables": [
+        "delivery.receipt"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M09-006",
+      "requirement_id": "REQ-M09-006",
+      "module": "M09",
+      "title": "未知已讀維持unknown",
+      "given": "SMS provider無read receipt",
+      "when": "查狀態與CRM活動",
+      "expected": "read_state=unknown；不把無read事件認定未讀或流失",
+      "operation_ids": [
+        "receive_message_receipt"
+      ],
+      "tables": [
+        "delivery.receipt"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M09-007",
+      "requirement_id": "REQ-M09-007",
+      "module": "M09",
+      "title": "timeout先查結果避免重複",
+      "given": "provider已收但本地timeout",
+      "when": "worker重啟並重試",
+      "expected": "先查provider request id或同key安全重試；只一logical message",
+      "operation_ids": [
+        "reconcile_delivery"
+      ],
+      "tables": [
+        "delivery.attempt"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M09-008",
+      "requirement_id": "REQ-M09-008",
+      "module": "M09",
+      "title": "亂序receipt不倒退",
+      "given": "read receipt先於delivered receipt到達",
+      "when": "處理兩events",
+      "expected": "保存兩時間與接收時間；最終狀態不從read倒退",
+      "operation_ids": [
+        "receive_message_receipt"
+      ],
+      "tables": [
+        "delivery.receipt"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M09-009",
+      "requirement_id": "REQ-M09-009",
+      "module": "M09",
+      "title": "過期DLQ不得重送舊建議",
+      "given": "訊息expiry已過",
+      "when": "操作人redrive",
+      "expected": "回不可重發原因並稽核；不對provider送請求",
+      "operation_ids": [
+        "redrive_delivery_event"
+      ],
+      "tables": [
+        "delivery.message"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M09-010",
+      "requirement_id": "REQ-M09-010",
+      "module": "M09",
+      "title": "撤回／更正保留原文",
+      "given": "原message已sent，新publication更正",
+      "when": "接收correction事件",
+      "expected": "feed標示更正，新message引用原；原body/hash/attempt仍可查",
+      "operation_ids": [
+        "get_member_feed"
+      ],
+      "tables": [
+        "delivery.message"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M09-011",
+      "requirement_id": "REQ-M09-011",
+      "module": "M09",
+      "title": "通路偏好與必要服務分類分開",
+      "given": "客戶關閉行銷SMS但保留契約通知",
+      "when": "處理行銷及服務訊息",
+      "expected": "行銷被抑制；必要通知依已核定分類與偏好處理，禁止把行銷偽裝服務",
+      "operation_ids": [
+        "set_communication_preference"
+      ],
+      "tables": [
+        "delivery.message"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M09-012",
+      "requirement_id": "REQ-M09-012",
+      "module": "M09",
+      "title": "provider webhook驗證與重放防護",
+      "given": "未簽名或超出允許時間窗的receipt",
+      "when": "呼叫webhook",
+      "expected": "401/422且不更新message；合法重送去重並回原receipt",
+      "operation_ids": [
+        "receive_message_receipt"
+      ],
+      "tables": [
+        "delivery.receipt"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M10-001",
+      "requirement_id": "REQ-M10-001",
+      "module": "M10",
+      "title": "未完成申辦產生可執行待辦",
+      "given": "客戶簽後KYC缺件且同意可聯絡",
+      "when": "定時名單計算",
+      "expected": "只一待辦含缺件原因、安全摘要、owner、next_action及due_at",
+      "operation_ids": [
+        "list_crm_worklists",
+        "set_next_action"
+      ],
+      "tables": [
+        "crm.work_item"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M10-002",
+      "requirement_id": "REQ-M10-002",
+      "module": "M10",
+      "title": "自助續約不計業務轉換",
+      "given": "網路來源持續auto renew且無sales evidence",
+      "when": "finance確認續約成功",
+      "expected": "conversion type self_serve；不因有maintenance owner就給sales獎金",
+      "operation_ids": [
+        "claim_conversion",
+        "decide_conversion"
+      ],
+      "tables": [
+        "crm.conversion"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M10-003",
+      "requirement_id": "REQ-M10-003",
+      "module": "M10",
+      "title": "業務續約需事前活動和交易",
+      "given": "有可驗證聯絡且客戶完成續約",
+      "when": "提出並覆核conversion claim",
+      "expected": "保存活動／交易／因果與核定者；核定後M12才可用sales attribution",
+      "operation_ids": [
+        "record_sales_activity",
+        "claim_conversion",
+        "decide_conversion",
+        "get_opportunity"
+      ],
+      "tables": [
+        "crm.conversion"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M10-004",
+      "requirement_id": "REQ-M10-004",
+      "module": "M10",
+      "title": "空白聯絡或自動訊息不能搶獎金",
+      "given": "只有自動群發、頁面瀏覽或空筆記",
+      "when": "提出sales claim",
+      "expected": "evidence_insufficient；不能approve為業務介入",
+      "operation_ids": [
+        "record_sales_activity",
+        "claim_conversion"
+      ],
+      "tables": [
+        "crm.activity"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M10-005",
+      "requirement_id": "REQ-M10-005",
+      "module": "M10",
+      "title": "沒有讀研究報告不單獨判流失",
+      "given": "客戶經常收即時訊息但report read未知",
+      "when": "計算retention list",
+      "expected": "不因report未讀標必然流失；以可觀測服務與續約訊號附原因",
+      "operation_ids": [
+        "list_crm_worklists"
+      ],
+      "tables": [
+        "crm.work_item"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M10-006",
+      "requirement_id": "REQ-M10-006",
+      "module": "M10",
+      "title": "禁止聯絡或未結抱怨抑制銷售",
+      "given": "customer marketing optout或重大open complaint",
+      "when": "產生升級名單",
+      "expected": "不派行銷／升級催促；保留必要客服工作與抑制原因碼",
+      "operation_ids": [
+        "create_crm_suppression"
+      ],
+      "tables": [
+        "crm.suppression"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M10-007",
+      "requirement_id": "REQ-M10-007",
+      "module": "M10",
+      "title": "升級機會須服務適合度允許",
+      "given": "風險／服務不適合高階服務",
+      "when": "AI推薦升級",
+      "expected": "規則阻擋轉為可聯絡升級名單；可提示需要重評，不能直接推銷",
+      "operation_ids": [
+        "create_opportunity",
+        "list_opportunities"
+      ],
+      "tables": [
+        "crm.opportunity"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M10-008",
+      "requirement_id": "REQ-M10-008",
+      "module": "M10",
+      "title": "四種owner不互相覆寫",
+      "given": "marketing source A、maintenance B、opportunity C",
+      "when": "D經核定促成transaction",
+      "expected": "保留各自欄位與有效時間；計獎只用核定transaction owner",
+      "operation_ids": [
+        "decide_conversion"
+      ],
+      "tables": [
+        "crm.conversion"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M10-009",
+      "requirement_id": "REQ-M10-009",
+      "module": "M10",
+      "title": "爭議認領不能重複計獎",
+      "given": "兩業務認領同renewal交易",
+      "when": "主管處理claims",
+      "expected": "只一有效歸因或明確批准分配；pending/disputed不進正式payout",
+      "operation_ids": [
+        "decide_conversion"
+      ],
+      "tables": [
+        "crm.conversion"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M10-010",
+      "requirement_id": "REQ-M10-010",
+      "module": "M10",
+      "title": "轉換後補寫活動不能回填搶獎",
+      "given": "成功交易發生於T，活動實際建立於T+1",
+      "when": "業務填更早happened_at且無證據",
+      "expected": "標late_entry需獨立核定，不改created_at；不自動獲獎金",
+      "operation_ids": [
+        "record_sales_activity"
+      ],
+      "tables": [
+        "crm.activity"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M10-011",
+      "requirement_id": "REQ-M10-011",
+      "module": "M10",
+      "title": "漏斗統計重放與退出正確",
+      "given": "同application events重播，客戶後withdraw",
+      "when": "計算期間漏斗",
+      "expected": "按distinct application/customer定義去重；withdraw另列，不把累計簽署當有效訂閱",
+      "operation_ids": [
+        "get_funnel_metrics"
+      ],
+      "tables": [
+        "crm.work_item"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M10-012",
+      "requirement_id": "REQ-M10-012",
+      "module": "M10",
+      "title": "同一待辦不因日批次無限重複",
+      "given": "相同customer/action/window已open",
+      "when": "再次重跑名單",
+      "expected": "回原work_item或更新優先；保留owner與已完成結果",
+      "operation_ids": [
+        "list_crm_worklists",
+        "set_next_action"
+      ],
+      "tables": [
+        "crm.work_item"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M11-001",
+      "requirement_id": "REQ-M11-001",
+      "module": "M11",
+      "title": "自助客戶無維護人也能續訂",
+      "given": "網路來源且owner為company",
+      "when": "客戶自助續訂",
+      "expected": "服務正常延續；無sales conversion；marketing/company依核定policy計算",
+      "operation_ids": [
+        "list_company_pool"
+      ],
+      "tables": [
+        "ownership.assignment"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M11-002",
+      "requirement_id": "REQ-M11-002",
+      "module": "M11",
+      "title": "離職立即回公司不等七天",
+      "given": "owner已離職且effective_at到達",
+      "when": "處理departure",
+      "expected": "結束assignment並建company pool entry；撤銷離職者未來操作權",
+      "operation_ids": [
+        "record_employee_departure",
+        "release_maintenance_owner"
+      ],
+      "tables": [
+        "ownership.assignment"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M11-003",
+      "requirement_id": "REQ-M11-003",
+      "module": "M11",
+      "title": "新指派不是新獎金",
+      "given": "公司Pool客戶分派新業務但無聯絡",
+      "when": "客戶自己續訂",
+      "expected": "不產生新業務sales獎金；保留company retention邏輯",
+      "operation_ids": [
+        "assign_maintenance_owner"
+      ],
+      "tables": [
+        "ownership.assignment"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M11-004",
+      "requirement_id": "REQ-M11-004",
+      "module": "M11",
+      "title": "新業務實際再開發才可領後續獎金",
+      "given": "接手業務有可驗證聯絡並成功續約",
+      "when": "M10核定conversion",
+      "expected": "該transaction指向新業務；舊已核定獎金與來源不改",
+      "operation_ids": [
+        "claim_pool_customer"
+      ],
+      "tables": [
+        "ownership.assignment"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M11-005",
+      "requirement_id": "REQ-M11-005",
+      "module": "M11",
+      "title": "七日規則不是七天沒聯絡",
+      "given": "客戶年度服務active、七天無聯絡",
+      "when": "執行Pool預演",
+      "expected": "不因未聯絡回Pool；最多依內部維護SLA提醒，不能移獎金",
+      "operation_ids": [
+        "evaluate_company_pool"
+      ],
+      "tables": [
+        "ownership.policy_version"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M11-006",
+      "requirement_id": "REQ-M11-006",
+      "module": "M11",
+      "title": "全部服務中斷七日才符合提案",
+      "given": "所有服務end_at=T，無其他有效服務",
+      "when": "在T+167h及T+168h預演",
+      "expected": "前者不符合、後者符合候選；正式執行仍須approved policy",
+      "operation_ids": [
+        "evaluate_company_pool"
+      ],
+      "tables": [
+        "ownership.pool_entry"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M11-007",
+      "requirement_id": "REQ-M11-007",
+      "module": "M11",
+      "title": "單一月訂到期不抵銷年度有效服務",
+      "given": "月訂expired、年度active",
+      "when": "evaluate pool",
+      "expected": "不回Pool；all_paid_services_lapsed=false",
+      "operation_ids": [
+        "evaluate_company_pool"
+      ],
+      "tables": [
+        "ownership.pool_entry"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M11-008",
+      "requirement_id": "REQ-M11-008",
+      "module": "M11",
+      "title": "未核定七日定義禁止自動回收",
+      "given": "policy draft且規則已完成",
+      "when": "執行live evaluate",
+      "expected": "policy_not_approved；preview可回受影響清單，assignment不變",
+      "operation_ids": [
+        "evaluate_company_pool"
+      ],
+      "tables": [
+        "ownership.policy_version"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M11-009",
+      "requirement_id": "REQ-M11-009",
+      "module": "M11",
+      "title": "法遵停權不被當可銷售流失名單",
+      "given": "contract suspended原因compliance",
+      "when": "evaluate pool/worklist",
+      "expected": "列restricted，不派續約催促；完整AML理由不外洩",
+      "operation_ids": [
+        "evaluate_company_pool"
+      ],
+      "tables": [
+        "ownership.pool_entry"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M11-010",
+      "requirement_id": "REQ-M11-010",
+      "module": "M11",
+      "title": "兩人同時認領只有一人成功",
+      "given": "Pool entry available同version",
+      "when": "兩sales同時claim",
+      "expected": "一成功一409/412；無重疊active assignment；失敗者不能記成owner",
+      "operation_ids": [
+        "claim_pool_customer"
+      ],
+      "tables": [
+        "ownership.assignment"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M11-011",
+      "requirement_id": "REQ-M11-011",
+      "module": "M11",
+      "title": "歷史佣金不因移交改歸屬",
+      "given": "舊業務已核定conversion與commission",
+      "when": "assignment改新業務",
+      "expected": "歷史entry仍原recipient；新的轉換依新證據另定",
+      "operation_ids": [
+        "assign_maintenance_owner",
+        "get_ownership_history"
+      ],
+      "tables": [
+        "ownership.assignment"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M11-012",
+      "requirement_id": "REQ-M11-012",
+      "module": "M11",
+      "title": "服務恢復可中止尚未成立中斷條件",
+      "given": "全部中斷第6天恢復一項active服務",
+      "when": "evaluate七日窗口",
+      "expected": "中斷clock重設／結束；不沿用舊T在隔日回Pool",
+      "operation_ids": [
+        "evaluate_company_pool"
+      ],
+      "tables": [
+        "ownership.pool_entry"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M12-001",
+      "requirement_id": "REQ-M12-001",
+      "module": "M12",
+      "title": "未核定基準率不能正式計獎",
+      "given": "policy rate=null或只有3%提案",
+      "when": "建立live run/payout",
+      "expected": "policy_not_approved；可simulation但結果不可付款",
+      "operation_ids": [
+        "create_commission_policy",
+        "approve_commission_policy",
+        "create_commission_run"
+      ],
+      "tables": [
+        "commission.policy_version"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M12-002",
+      "requirement_id": "REQ-M12-002",
+      "module": "M12",
+      "title": "自助續訂無業務份額",
+      "given": "已核定test policy、無sales conversion",
+      "when": "計算有效收入10000",
+      "expected": "sales amount=0；marketing依來源／年係數；其餘保留公司，不給current owner",
+      "operation_ids": [
+        "preview_commissions"
+      ],
+      "tables": [
+        "commission.entry"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M12-003",
+      "requirement_id": "REQ-M12-003",
+      "module": "M12",
+      "title": "第一二年係數按客戶cohort",
+      "given": "同一天有year1與year2客戶且同test pool",
+      "when": "preview兩筆",
+      "expected": "係數分別1.00、0.50；不以公司年度統一降半",
+      "operation_ids": [
+        "preview_commissions"
+      ],
+      "tables": [
+        "commission.entry"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M12-004",
+      "requirement_id": "REQ-M12-004",
+      "module": "M12",
+      "title": "第三年尾佣需持續自動續約",
+      "given": "year3兩客戶一持續auto一人工重啟",
+      "when": "preview核定test policy",
+      "expected": "只有符合連續auto者適用0.25；不因打開auto開關就自動恢復既往尾佣資格",
+      "operation_ids": [
+        "preview_commissions"
+      ],
+      "tables": [
+        "commission.entry"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M12-005",
+      "requirement_id": "REQ-M12-005",
+      "module": "M12",
+      "title": "業務介入30/70需有核定證據",
+      "given": "成功renewal且M10 conversion approved",
+      "when": "按明確test policy執行",
+      "expected": "pool先按該版本規則分配；marketing/sales與衰減順序可在明細重演，不能隱藏差額",
+      "operation_ids": [
+        "create_commission_run",
+        "get_commission_run",
+        "list_commission_entries"
+      ],
+      "tables": [
+        "commission.entry"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M12-006",
+      "requirement_id": "REQ-M12-006",
+      "module": "M12",
+      "title": "衰減兩算法不能混用",
+      "given": "test政策A僅marketing衰減、B全pool衰減",
+      "when": "同year2 sales-assisted收入做preview",
+      "expected": "A與B結果分開且有policy hash；live只接受被核定的單一策略",
+      "operation_ids": [
+        "preview_commissions"
+      ],
+      "tables": [
+        "commission.policy_version"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M12-007",
+      "requirement_id": "REQ-M12-007",
+      "module": "M12",
+      "title": "退款反向原受款人原政策",
+      "given": "已計獎交易後退款且維護人已改",
+      "when": "建立adjustment",
+      "expected": "反向原entry recipient與policy；不扣新接手者；保留原金額與adjustment",
+      "operation_ids": [
+        "create_commission_adjustment"
+      ],
+      "tables": [
+        "commission.adjustment"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M12-008",
+      "requirement_id": "REQ-M12-008",
+      "module": "M12",
+      "title": "預收未履約退款不能重扣收入",
+      "given": "退款含未認列預收與已認列部分",
+      "when": "M14分配後計算",
+      "expected": "只對原已計入basis部分調整；預收退還不重扣既有earned revenue",
+      "operation_ids": [
+        "create_commission_adjustment"
+      ],
+      "tables": [
+        "commission.adjustment"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M12-009",
+      "requirement_id": "REQ-M12-009",
+      "module": "M12",
+      "title": "退款重送只調整一次",
+      "given": "同refund allocation webhook兩次",
+      "when": "consume並重跑",
+      "expected": "一linked adjustment；net eligible total與財會一致",
+      "operation_ids": [
+        "create_commission_adjustment"
+      ],
+      "tables": [
+        "commission.adjustment"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M12-010",
+      "requirement_id": "REQ-M12-010",
+      "module": "M12",
+      "title": "金額分配總數守恆",
+      "given": "各種小額decimal收入及百分比",
+      "when": "計算rounding",
+      "expected": "marketing+sales+company=basepool；明確minor-unit rounding/remainder規則，無float誤差",
+      "operation_ids": [
+        "preview_commissions"
+      ],
+      "tables": [
+        "commission.entry"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M12-011",
+      "requirement_id": "REQ-M12-011",
+      "module": "M12",
+      "title": "製作人不可自核且發放須回執",
+      "given": "maker建立run及payout batch",
+      "when": "同人批准遭拒後由合法checker核定；查batch並提交對帳回執",
+      "expected": "自核segregation_conflict；合法checker核定後才可交付款接口；有可驗證且去重的付款回執才標paid",
+      "operation_ids": [
+        "approve_commission_run",
+        "create_commission_payout_batch",
+        "approve_commission_payout_batch",
+        "get_commission_payout_batch",
+        "acknowledge_commission_payout_batch"
+      ],
+      "tables": [
+        "commission.payout_batch"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M12-012",
+      "requirement_id": "REQ-M12-012",
+      "module": "M12",
+      "title": "已付退款不得自動扣薪",
+      "given": "entry paid後產生負向adjustment",
+      "when": "產生下期結算",
+      "expected": "列追索／抵銷待核定，無無授權自動薪資扣款；保留爭議與核准紀錄",
+      "operation_ids": [
+        "create_commission_adjustment"
+      ],
+      "tables": [
+        "commission.adjustment"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M13-001",
+      "requirement_id": "REQ-M13-001",
+      "module": "M13",
+      "title": "同案跨通路持續追蹤",
+      "given": "客戶網站開案後電話補充並驗證身份",
+      "when": "客服連結interaction",
+      "expected": "同case timeline有兩channel及各時間；不重設SLA",
+      "operation_ids": [
+        "create_service_case",
+        "add_case_interaction"
+      ],
+      "tables": [
+        "support.interaction"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M13-002",
+      "requirement_id": "REQ-M13-002",
+      "module": "M13",
+      "title": "外部訊息重送只建一互動",
+      "given": "同provider message id重送",
+      "when": "處理intake",
+      "expected": "一interaction；案件數與待辦不重複",
+      "operation_ids": [
+        "add_case_interaction"
+      ],
+      "tables": [
+        "support.interaction"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M13-003",
+      "requirement_id": "REQ-M13-003",
+      "module": "M13",
+      "title": "未驗證身份不得看到契約細節",
+      "given": "電話聲稱某客戶但未驗證",
+      "when": "客服查／回覆",
+      "expected": "可記unlinked case但不揭露合同／付款；先完成適當驗證",
+      "operation_ids": [
+        "get_service_case"
+      ],
+      "tables": [
+        "support.case_file"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M13-004",
+      "requirement_id": "REQ-M13-004",
+      "module": "M13",
+      "title": "AI草稿須核定發送且狀態真實",
+      "given": "LLM完成draft response但尚未核定",
+      "when": "讀草稿與case timeline；完成授權人覆核或核定低風險template後送出，再接收provider回執",
+      "expected": "草稿無sent_at；送出綁精確hash與server產的approval_id，queued/accepted不當sent/delivered；重複receipt去重，unknown先查狀態",
+      "operation_ids": [
+        "draft_service_response",
+        "get_service_response_draft",
+        "approve_service_response_draft",
+        "send_service_response",
+        "get_service_response",
+        "receive_service_response_receipt"
+      ],
+      "tables": [
+        "support.response_dispatch"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M13-005",
+      "requirement_id": "REQ-M13-005",
+      "module": "M13",
+      "title": "投資問題需分析師與報告依據",
+      "given": "客戶問新買賣建議超出已簽報告",
+      "when": "AI／客服回覆流程",
+      "expected": "轉分析師；不得即席生成對客戶的新建議；正式建議回M07/M08",
+      "operation_ids": [
+        "escalate_service_case",
+        "send_service_response"
+      ],
+      "tables": [
+        "support.case_file"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M13-006",
+      "requirement_id": "REQ-M13-006",
+      "module": "M13",
+      "title": "客服退款申請不能直接出金",
+      "given": "客戶提出退款且客服建案",
+      "when": "點提出退款",
+      "expected": "建立M14 request與link；客服無approve/execute權限",
+      "operation_ids": [
+        "escalate_service_case",
+        "request_refund"
+      ],
+      "tables": [
+        "support.case_file"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M13-007",
+      "requirement_id": "REQ-M13-007",
+      "module": "M13",
+      "title": "重大申訴抑制不當促銷",
+      "given": "case category complaint重大未解",
+      "when": "建立／升級案件",
+      "expected": "發安全suppression給M10；仍可必要服務回覆，不發催升級名單",
+      "operation_ids": [
+        "escalate_service_case"
+      ],
+      "tables": [
+        "support.case_file"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M13-008",
+      "requirement_id": "REQ-M13-008",
+      "module": "M13",
+      "title": "內部等待不任意停SLA",
+      "given": "case waiting_internal已到閾值",
+      "when": "SLA job評估",
+      "expected": "按policy持續計時或合規pause；不可轉派即清零；逾期告警",
+      "operation_ids": [
+        "assign_service_case",
+        "list_service_cases"
+      ],
+      "tables": [
+        "support.sla_event"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M13-009",
+      "requirement_id": "REQ-M13-009",
+      "module": "M13",
+      "title": "AML移交不複製案情",
+      "given": "客服問題需AML處理",
+      "when": "escalate restricted",
+      "expected": "一般case只留安全link/status；AML內容不進普通timeline或LLM context",
+      "operation_ids": [
+        "escalate_service_case"
+      ],
+      "tables": [
+        "support.case_file"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M13-010",
+      "requirement_id": "REQ-M13-010",
+      "module": "M13",
+      "title": "結案必須有結果與通知",
+      "given": "處理者未填resolution/evidence",
+      "when": "resolve case",
+      "expected": "422缺必要資訊；填妥核定結果才resolved，保留通知delivery狀態",
+      "operation_ids": [
+        "resolve_service_case"
+      ],
+      "tables": [
+        "support.case_file"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M13-011",
+      "requirement_id": "REQ-M13-011",
+      "module": "M13",
+      "title": "重開案件保留原歷史",
+      "given": "closed case客戶再回報同問題",
+      "when": "reopen",
+      "expected": "同case新增reopen事件與時間，不刪原resolution；SLA重啟方式按policy",
+      "operation_ids": [
+        "reopen_service_case"
+      ],
+      "tables": [
+        "support.case_file"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M13-012",
+      "requirement_id": "REQ-M13-012",
+      "module": "M13",
+      "title": "客服owner不自動成業務獎金人",
+      "given": "客服解決問題，客戶自助續約",
+      "when": "結案並續約",
+      "expected": "maintenance與conversion owner不因case owner改變；若有真實sales另走M10核定",
+      "operation_ids": [
+        "resolve_service_case"
+      ],
+      "tables": [
+        "support.case_file"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M14-001",
+      "requirement_id": "REQ-M14-001",
+      "module": "M14",
+      "title": "付款回呼重送只入帳一次",
+      "given": "同provider event/payment id與金額",
+      "when": "接收兩次",
+      "expected": "一payment transition、一財務事件；不重複增加預收或收入",
+      "operation_ids": [
+        "create_payment_intent",
+        "receive_payment_webhook"
+      ],
+      "tables": [
+        "finance.payment"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M14-002",
+      "requirement_id": "REQ-M14-002",
+      "module": "M14",
+      "title": "預收款與已履約收入分開",
+      "given": "客戶付款但公司未接受或服務未開始",
+      "when": "跑收款與認列",
+      "expected": "payment captured且prepayment liability增加，revenue=0；無計獎eligible收入",
+      "operation_ids": [
+        "run_revenue_recognition",
+        "get_revenue_run",
+        "approve_revenue_run"
+      ],
+      "tables": [
+        "finance.revenue_recognition"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M14-003",
+      "requirement_id": "REQ-M14-003",
+      "module": "M14",
+      "title": "結算費用與收入不同欄",
+      "given": "gross1000 fee30 settlement970的synthetic交易",
+      "when": "匯入結算對帳",
+      "expected": "gross/fee/net分列且相符；不能把收入直接當970或refund30",
+      "operation_ids": [
+        "import_settlement",
+        "list_reconciliation_items",
+        "resolve_reconciliation_item"
+      ],
+      "tables": [
+        "finance.settlement"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M14-004",
+      "requirement_id": "REQ-M14-004",
+      "module": "M14",
+      "title": "稅額使用核定配置不猜除數",
+      "given": "invoice指定tax treatment但無核定mapping",
+      "when": "建立收入／計獎基礎",
+      "expected": "進配置例外，不能默認除1.05或1.02；有核定mapping後可重算",
+      "operation_ids": [
+        "create_invoice"
+      ],
+      "tables": [
+        "finance.invoice_line"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M14-005",
+      "requirement_id": "REQ-M14-005",
+      "module": "M14",
+      "title": "退款製作核准執行分權",
+      "given": "maker建立退款申請",
+      "when": "同maker approve/execute",
+      "expected": "SoD拒絕；合法checker核准後受限service才可執行",
+      "operation_ids": [
+        "request_refund",
+        "approve_refund",
+        "execute_refund"
+      ],
+      "tables": [
+        "finance.refund"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M14-006",
+      "requirement_id": "REQ-M14-006",
+      "module": "M14",
+      "title": "退款timeout先查provider",
+      "given": "provider已退款但本地unknown",
+      "when": "重新執行／復原",
+      "expected": "先查狀態或同key；只有一筆對外退款，保留attempt receipts",
+      "operation_ids": [
+        "execute_refund",
+        "get_refund",
+        "receive_refund_webhook"
+      ],
+      "tables": [
+        "finance.refund"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M14-007",
+      "requirement_id": "REQ-M14-007",
+      "module": "M14",
+      "title": "退款拆分預收與已認列部分",
+      "given": "部分履約服務退款",
+      "when": "計算refund allocation",
+      "expected": "unearned refund與earned revenue reversal分列；只有已計獎基礎部分通知M12反向",
+      "operation_ids": [
+        "request_refund",
+        "receive_refund_webhook"
+      ],
+      "tables": [
+        "finance.refund_allocation"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M14-008",
+      "requirement_id": "REQ-M14-008",
+      "module": "M14",
+      "title": "會計分錄必須平衡",
+      "given": "日記帳借貸差0.01",
+      "when": "要求export/approve",
+      "expected": "拒絕unbalanced，無會計成功標記；修正形成可追溯版本或反向分錄",
+      "operation_ids": [
+        "create_accounting_export"
+      ],
+      "tables": [
+        "finance.journal_line"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M14-009",
+      "requirement_id": "REQ-M14-009",
+      "module": "M14",
+      "title": "會計匯出重送有批次收據",
+      "given": "同batch曾export但回覆遺失",
+      "when": "重送或收到重複ack",
+      "expected": "使用同external id查/重試；不重複記帳；ack與rejected distinct",
+      "operation_ids": [
+        "acknowledge_accounting_export",
+        "get_accounting_export"
+      ],
+      "tables": [
+        "finance.accounting_export"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M14-010",
+      "requirement_id": "REQ-M14-010",
+      "module": "M14",
+      "title": "完整稽核鏈可由訊息回查",
+      "given": "有合法訊息、報告、簽章、來源、權限與收件紀錄",
+      "when": "建立evidence export",
+      "expected": "manifest含各immutable refs/hash與實際時點；受限資料依role遮罩且access audit",
+      "operation_ids": [
+        "list_audit_events",
+        "create_evidence_export",
+        "get_evidence_export"
+      ],
+      "tables": [
+        "core.audit_event"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M14-011",
+      "requirement_id": "REQ-M14-011",
+      "module": "M14",
+      "title": "legal hold阻止到期刪除且解除受控",
+      "given": "物件超常規retention但有有效hold",
+      "when": "purge job執行，之後嘗試未授權解除，再由授權者依理由解除",
+      "expected": "有效hold時skip且記原因；未授權解除被拒；合法解除追加紀錄且保留原hold與audit，不直接刪證據",
+      "operation_ids": [
+        "create_legal_hold",
+        "release_legal_hold"
+      ],
+      "tables": [
+        "core.legal_hold"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-M14-012",
+      "requirement_id": "REQ-M14-012",
+      "module": "M14",
+      "title": "備份還原重放不重複金流",
+      "given": "restore包含既有payment/refund/outbox/inbox",
+      "when": "復原worker並replay events",
+      "expected": "無第二扣款／退款；pending可續跑；恢復演練留證據與差異清單",
+      "operation_ids": [
+        "record_control_exception",
+        "act_on_control_exception"
+      ],
+      "tables": [
+        "finance.control_exception"
+      ],
+      "level": "module_integration",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "request/response與actor scope",
+        "受影響資料列及版本前後",
+        "audit/correlation id",
+        "outbox/inbox/provider receipts（如涉及外部）"
+      ]
+    },
+    {
+      "id": "UAT-E2E-001",
+      "requirement_id": "REQ-E2E-001",
+      "module": "E2E",
+      "modules": [
+        "M01",
+        "M02",
+        "M03",
+        "M04",
+        "M09",
+        "M14"
+      ],
+      "title": "客戶先簽、線上查核、公司接受、開通全鏈",
+      "given": "Synthetic applicant未有契約；合法身份及mock金流／查核／簽章可用",
+      "when": "建立申辦→先簽→確認locked→線上KYC適合度及AML→預收付款→公司接受→有效契約及權限→LegendFlow讀feed",
+      "expected": "每一狀態及時間獨立；KYC前客戶可簽；company acceptance之前不提供付費投顧服務；一次付款與一次開通；完整audit chain",
+      "operation_ids": [
+        "create_application",
+        "create_customer_signature",
+        "submit_kyc",
+        "assess_suitability",
+        "start_aml_screening",
+        "decide_company_acceptance",
+        "evaluate_entitlements",
+        "get_member_feed"
+      ],
+      "tables": [
+        "customer.application",
+        "contract.customer_signature",
+        "kyc.submission",
+        "aml.business_clearance",
+        "contract.entitlement"
+      ],
+      "level": "end_to_end",
+      "execution_mode": "platform_with_external_contract_mocks",
+      "external_connection_status": "NOT_CONNECTED",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "全鏈correlation與各module audit",
+        "各服務權限／狀態／版本變更",
+        "adapter mock receipts及重試記錄；未驗證真外部者明示mock",
+        "資料庫／財務／發布守恆對帳",
+        "操作者／核定者與決策依據"
+      ]
+    },
+    {
+      "id": "UAT-E2E-002",
+      "requirement_id": "REQ-E2E-002",
+      "module": "E2E",
+      "modules": [
+        "M02",
+        "M03",
+        "M04",
+        "M12",
+        "M13",
+        "M14"
+      ],
+      "title": "付款後拒絕與退款全鏈",
+      "given": "客戶已簽及預收，但公司尚未接受",
+      "when": "審核拒絕→安全通知／客服案→退款計算→maker/checker→provider確認→財會分配→核對獎金",
+      "expected": "未曾開通；退款僅一次；未履約預收無收入與無獎金；客服可追狀態但不可出金；拒絕原因受限分級",
+      "operation_ids": [
+        "decide_company_acceptance",
+        "create_service_case",
+        "request_refund",
+        "approve_refund",
+        "execute_refund",
+        "receive_refund_webhook"
+      ],
+      "tables": [
+        "contract.company_acceptance",
+        "finance.payment",
+        "finance.refund",
+        "finance.refund_allocation",
+        "commission.entry"
+      ],
+      "level": "end_to_end",
+      "execution_mode": "platform_with_external_contract_mocks",
+      "external_connection_status": "NOT_CONNECTED",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "全鏈correlation與各module audit",
+        "各服務權限／狀態／版本變更",
+        "adapter mock receipts及重試記錄；未驗證真外部者明示mock",
+        "資料庫／財務／發布守恆對帳",
+        "操作者／核定者與決策依據"
+      ]
+    },
+    {
+      "id": "UAT-E2E-003",
+      "requirement_id": "REQ-E2E-003",
+      "module": "E2E",
+      "modules": [
+        "M05",
+        "M06",
+        "M07",
+        "M08",
+        "M09"
+      ],
+      "title": "Persona自主研究到簽章自動即時發布",
+      "given": "沒有分析師預先建立ticket；有具來源證據的Persona候選；合法簽署者及客戶權限",
+      "when": "候選入件→分析師覆核→Servant修正→新版本diff→必要review→freeze→簽署驗證→publication→LegendFlow/通路",
+      "expected": "全流程不要求分析師先發起；簽後無第二Publish操作；每訊息指向已簽report及當時來源；Persona trade不當客戶成交",
+      "operation_ids": [
+        "ingest_research_candidate",
+        "request_servant_revision",
+        "receive_servant_revision",
+        "create_report_version",
+        "record_report_review",
+        "freeze_report_version",
+        "receive_analyst_signature",
+        "get_member_feed"
+      ],
+      "tables": [
+        "research.candidate",
+        "review.revision_result",
+        "report.report_version",
+        "report.signature",
+        "publication.publication",
+        "delivery.message"
+      ],
+      "level": "end_to_end",
+      "execution_mode": "platform_with_external_contract_mocks",
+      "external_connection_status": "NOT_CONNECTED",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "全鏈correlation與各module audit",
+        "各服務權限／狀態／版本變更",
+        "adapter mock receipts及重試記錄；未驗證真外部者明示mock",
+        "資料庫／財務／發布守恆對帳",
+        "操作者／核定者與決策依據"
+      ]
+    },
+    {
+      "id": "UAT-E2E-004",
+      "requirement_id": "REQ-E2E-004",
+      "module": "E2E",
+      "modules": [
+        "M05",
+        "M06",
+        "M07",
+        "M08"
+      ],
+      "title": "簽署競態與重大修訂阻擋",
+      "given": "v1覆核完成；另一條線同時送入v2重大更新",
+      "when": "v1正在送簽時收到superseding event；callback到達；比較stale狀態和凍結包",
+      "expected": "不讓舊review自動批准v2；過時v1按核定規則停止；任何發布都引用真實批准的唯一版本，無hash/版本混用",
+      "operation_ids": [
+        "ingest_research_candidate",
+        "get_review_case",
+        "request_analyst_signature",
+        "receive_analyst_signature",
+        "get_publication"
+      ],
+      "tables": [
+        "review.case_file",
+        "report.review_decision",
+        "report.signature_request",
+        "publication.publication"
+      ],
+      "level": "end_to_end",
+      "execution_mode": "platform_with_external_contract_mocks",
+      "external_connection_status": "NOT_CONNECTED",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "全鏈correlation與各module audit",
+        "各服務權限／狀態／版本變更",
+        "adapter mock receipts及重試記錄；未驗證真外部者明示mock",
+        "資料庫／財務／發布守恆對帳",
+        "操作者／核定者與決策依據"
+      ]
+    },
+    {
+      "id": "UAT-E2E-005",
+      "requirement_id": "REQ-E2E-005",
+      "module": "E2E",
+      "modules": [
+        "M05",
+        "M07",
+        "M08",
+        "M09",
+        "M14"
+      ],
+      "title": "進場更新出場與更正證據",
+      "given": "一recommendation series已發entry且部分收件已送達",
+      "when": "新增update/exit判斷及支持報告→簽章→發布→發現需更正→新簽補充報告→correction link→稽核匯出",
+      "expected": "各訊息版本有當時可支持的signed report；不覆寫已送原文；更正明確告知；可從任何message追到來源及收件資格",
+      "operation_ids": [
+        "create_recommendation_version",
+        "create_report_version",
+        "receive_analyst_signature",
+        "link_publication_correction",
+        "create_evidence_export"
+      ],
+      "tables": [
+        "publication.recommendation_version",
+        "report.signature",
+        "publication.publication",
+        "delivery.message",
+        "core.audit_event"
+      ],
+      "level": "end_to_end",
+      "execution_mode": "platform_with_external_contract_mocks",
+      "external_connection_status": "NOT_CONNECTED",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "全鏈correlation與各module audit",
+        "各服務權限／狀態／版本變更",
+        "adapter mock receipts及重試記錄；未驗證真外部者明示mock",
+        "資料庫／財務／發布守恆對帳",
+        "操作者／核定者與決策依據"
+      ]
+    },
+    {
+      "id": "UAT-E2E-006",
+      "requirement_id": "REQ-E2E-006",
+      "module": "E2E",
+      "modules": [
+        "M02",
+        "M08",
+        "M09"
+      ],
+      "title": "投遞中撤權及回呼亂序",
+      "given": "audience sealed；多個通路有queued/accepted/sent狀態",
+      "when": "撤銷客戶權限→部分訊息dispatch→亂序receipt→timeout reconciliation→expired DLQ redrive",
+      "expected": "dispatch前即時檢查；未送部分suppressed；既有sent事實不改；read未知保持未知；過期消息不盲發",
+      "operation_ids": [
+        "suspend_entitlement",
+        "receive_message_receipt",
+        "reconcile_delivery",
+        "redrive_delivery_event"
+      ],
+      "tables": [
+        "contract.entitlement",
+        "publication.recipient",
+        "delivery.attempt",
+        "delivery.receipt"
+      ],
+      "level": "end_to_end",
+      "execution_mode": "platform_with_external_contract_mocks",
+      "external_connection_status": "NOT_CONNECTED",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "全鏈correlation與各module audit",
+        "各服務權限／狀態／版本變更",
+        "adapter mock receipts及重試記錄；未驗證真外部者明示mock",
+        "資料庫／財務／發布守恆對帳",
+        "操作者／核定者與決策依據"
+      ]
+    },
+    {
+      "id": "UAT-E2E-007",
+      "requirement_id": "REQ-E2E-007",
+      "module": "E2E",
+      "modules": [
+        "M01",
+        "M02",
+        "M10",
+        "M11",
+        "M12",
+        "M14"
+      ],
+      "title": "網路取得與連續自助續約尾佣",
+      "given": "合成客戶不同首購cohort，年1/年2/年3連續auto，核定test-only政策",
+      "when": "逐期付款認列→CRM判定self_serve→計獎preview/run→明細追算",
+      "expected": "marketing係數100/50/25依客戶cohort與連續性；無sales intervention則sales=0；未核定生產rate不得live；公司年度不代替客戶年資",
+      "operation_ids": [
+        "create_application",
+        "run_revenue_recognition",
+        "claim_conversion",
+        "preview_commissions",
+        "list_commission_entries"
+      ],
+      "tables": [
+        "crm.marketing_attribution",
+        "crm.conversion",
+        "finance.revenue_recognition",
+        "commission.entry"
+      ],
+      "level": "end_to_end",
+      "execution_mode": "platform_with_external_contract_mocks",
+      "external_connection_status": "NOT_CONNECTED",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "全鏈correlation與各module audit",
+        "各服務權限／狀態／版本變更",
+        "adapter mock receipts及重試記錄；未驗證真外部者明示mock",
+        "資料庫／財務／發布守恆對帳",
+        "操作者／核定者與決策依據"
+      ]
+    },
+    {
+      "id": "UAT-E2E-008",
+      "requirement_id": "REQ-E2E-008",
+      "module": "E2E",
+      "modules": [
+        "M10",
+        "M11",
+        "M12",
+        "M14"
+      ],
+      "title": "業務續約30/70與歸因爭議",
+      "given": "維護人與促成續約者不同；兩人提出claim；有事前活動及成功交易",
+      "when": "記錄活動→成功renewal→兩人claim→主管核定→收入確認→policy計獎→稽核",
+      "expected": "僅核定的transaction evidence決定sales受款；原source與maintenance不覆寫；衰減策略明示；同收入不重複發獎金",
+      "operation_ids": [
+        "record_sales_activity",
+        "claim_conversion",
+        "decide_conversion",
+        "run_revenue_recognition",
+        "create_commission_run"
+      ],
+      "tables": [
+        "crm.activity",
+        "crm.conversion",
+        "ownership.assignment",
+        "commission.entry"
+      ],
+      "level": "end_to_end",
+      "execution_mode": "platform_with_external_contract_mocks",
+      "external_connection_status": "NOT_CONNECTED",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "全鏈correlation與各module audit",
+        "各服務權限／狀態／版本變更",
+        "adapter mock receipts及重試記錄；未驗證真外部者明示mock",
+        "資料庫／財務／發布守恆對帳",
+        "操作者／核定者與決策依據"
+      ]
+    },
+    {
+      "id": "UAT-E2E-009",
+      "requirement_id": "REQ-E2E-009",
+      "module": "E2E",
+      "modules": [
+        "M10",
+        "M11",
+        "M12",
+        "M14"
+      ],
+      "title": "離職Pool重新開發與歷史獎金",
+      "given": "舊業務有已核定獎金與有效維護assignment",
+      "when": "離職即刻移交company→客戶自助續訂→新業務接手聯絡→促成下次續約→計獎",
+      "expected": "離職不等七天；自助期無新業務獎金；新業務只得實際促成後續transaction份額；歷史獎金不被改歸屬",
+      "operation_ids": [
+        "record_employee_departure",
+        "claim_pool_customer",
+        "record_sales_activity",
+        "decide_conversion",
+        "create_commission_run"
+      ],
+      "tables": [
+        "ownership.assignment",
+        "ownership.pool_entry",
+        "crm.conversion",
+        "commission.entry"
+      ],
+      "level": "end_to_end",
+      "execution_mode": "platform_with_external_contract_mocks",
+      "external_connection_status": "NOT_CONNECTED",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "全鏈correlation與各module audit",
+        "各服務權限／狀態／版本變更",
+        "adapter mock receipts及重試記錄；未驗證真外部者明示mock",
+        "資料庫／財務／發布守恆對帳",
+        "操作者／核定者與決策依據"
+      ]
+    },
+    {
+      "id": "UAT-E2E-010",
+      "requirement_id": "REQ-E2E-010",
+      "module": "E2E",
+      "modules": [
+        "M02",
+        "M10",
+        "M11"
+      ],
+      "title": "多契約與七日服務中斷提案",
+      "given": "月訂與年度並行；Pool七日解讀以test approved policy模擬",
+      "when": "月訂到期→年度仍active→年度也到期→167h/168h評估→其中一項在第6日恢復",
+      "expected": "只在全部有效付費服務中斷且連續滿核定窗口才可候選；沒有每週聯絡要求；復訂中止clock；policy draft時不實際移交",
+      "operation_ids": [
+        "terminate_contract",
+        "evaluate_entitlements",
+        "evaluate_company_pool",
+        "list_company_pool"
+      ],
+      "tables": [
+        "contract.contract_service",
+        "ownership.policy_version",
+        "ownership.pool_entry"
+      ],
+      "level": "end_to_end",
+      "execution_mode": "platform_with_external_contract_mocks",
+      "external_connection_status": "NOT_CONNECTED",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "全鏈correlation與各module audit",
+        "各服務權限／狀態／版本變更",
+        "adapter mock receipts及重試記錄；未驗證真外部者明示mock",
+        "資料庫／財務／發布守恆對帳",
+        "操作者／核定者與決策依據"
+      ]
+    },
+    {
+      "id": "UAT-E2E-011",
+      "requirement_id": "REQ-E2E-011",
+      "module": "E2E",
+      "modules": [
+        "M02",
+        "M12",
+        "M13",
+        "M14"
+      ],
+      "title": "退款、收入沖回及原人獎金反轉",
+      "given": "部分履約且已認列／已計獎金，後來maintenance owner已變更",
+      "when": "客服申請退款→未履約與已認列分配→核定執行→財會分錄→原policy獎金adjustment→對帳",
+      "expected": "無重複退款；預收返還不再次扣收入；已計獎部分反轉原受款人；不扣接手者；已付部分不得自動扣薪",
+      "operation_ids": [
+        "request_refund",
+        "approve_refund",
+        "execute_refund",
+        "receive_refund_webhook",
+        "create_commission_adjustment"
+      ],
+      "tables": [
+        "finance.refund_allocation",
+        "finance.journal_line",
+        "commission.adjustment"
+      ],
+      "level": "end_to_end",
+      "execution_mode": "platform_with_external_contract_mocks",
+      "external_connection_status": "NOT_CONNECTED",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "全鏈correlation與各module audit",
+        "各服務權限／狀態／版本變更",
+        "adapter mock receipts及重試記錄；未驗證真外部者明示mock",
+        "資料庫／財務／發布守恆對帳",
+        "操作者／核定者與決策依據"
+      ]
+    },
+    {
+      "id": "UAT-E2E-012",
+      "requirement_id": "REQ-E2E-012",
+      "module": "E2E",
+      "modules": [
+        "M01",
+        "M10",
+        "M13",
+        "M14"
+      ],
+      "title": "跨通路申訴與升級抑制",
+      "given": "客戶有升級worklist並在網站抱怨，後續電話與官方訊息補充",
+      "when": "驗證身份→合案→AI摘要→重大申訴升級→暫停促銷→跨部門處理→核定結案",
+      "expected": "同案SLA不中斷；業務名單被抑制但必要服務持續；AI無擅自承諾；case owner不自動獲sales bonus",
+      "operation_ids": [
+        "create_service_case",
+        "add_case_interaction",
+        "draft_service_response",
+        "approve_service_response_draft",
+        "send_service_response",
+        "receive_service_response_receipt",
+        "escalate_service_case",
+        "create_crm_suppression",
+        "resolve_service_case"
+      ],
+      "tables": [
+        "support.case_file",
+        "support.interaction",
+        "support.sla_event",
+        "crm.suppression"
+      ],
+      "level": "end_to_end",
+      "execution_mode": "platform_with_external_contract_mocks",
+      "external_connection_status": "NOT_CONNECTED",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "全鏈correlation與各module audit",
+        "各服務權限／狀態／版本變更",
+        "adapter mock receipts及重試記錄；未驗證真外部者明示mock",
+        "資料庫／財務／發布守恆對帳",
+        "操作者／核定者與決策依據"
+      ]
+    },
+    {
+      "id": "UAT-E2E-013",
+      "requirement_id": "REQ-E2E-013",
+      "module": "E2E",
+      "modules": [
+        "M01",
+        "M02",
+        "M03",
+        "M04",
+        "M06",
+        "M10",
+        "M13",
+        "M14"
+      ],
+      "title": "受限資料隔離與一般營運阻擋",
+      "given": "兩tenant，AML case含受限證據；各一般角色與LLM principal就緒",
+      "when": "跨tenant嘗試讀資料→sales/客服/研究查AML→AI要求解除命中→合法AML核定→安全clearance投影→audit export",
+      "expected": "跨tenant與越權均拒絕；CRM/研究prompt無AML案情；公司接受只依安全clearance；AML稽核另授權，通用admin不自動可讀",
+      "operation_ids": [
+        "get_customer",
+        "get_aml_case",
+        "decide_aml_case",
+        "get_business_clearance",
+        "open_servant_conversation",
+        "create_evidence_export"
+      ],
+      "tables": [
+        "aml.case_file",
+        "aml.business_clearance",
+        "core.audit_event"
+      ],
+      "level": "end_to_end",
+      "execution_mode": "platform_with_external_contract_mocks",
+      "external_connection_status": "NOT_CONNECTED",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "全鏈correlation與各module audit",
+        "各服務權限／狀態／版本變更",
+        "adapter mock receipts及重試記錄；未驗證真外部者明示mock",
+        "資料庫／財務／發布守恆對帳",
+        "操作者／核定者與決策依據"
+      ]
+    },
+    {
+      "id": "UAT-E2E-014",
+      "requirement_id": "REQ-E2E-014",
+      "module": "E2E",
+      "modules": [
+        "M01",
+        "M02",
+        "M03",
+        "M04",
+        "M05",
+        "M06",
+        "M07",
+        "M08",
+        "M09",
+        "M10",
+        "M11",
+        "M12",
+        "M13",
+        "M14"
+      ],
+      "title": "故障復原、重播與全範圍驗收",
+      "given": "所有14 modules與本平台adapter與外部contract mocks在整合環境，含queued outbox/unknown provider results",
+      "when": "在commit後publish前殺worker→還原備份→重播與亂序事件→對帳金流與訊息→跑全部關鍵旅程→證據匯出",
+      "expected": "無第二扣退款、重複signature publication或獎金；版本與audit一致；RPO/RTO有測量結果；十四模組及跨域關鍵案例全過才可宣告整體完成",
+      "operation_ids": [
+        "receive_payment_webhook",
+        "receive_analyst_signature",
+        "reconcile_delivery",
+        "create_commission_run",
+        "create_evidence_export",
+        "record_control_exception"
+      ],
+      "tables": [
+        "core.outbox",
+        "core.inbox",
+        "finance.payment",
+        "report.signature",
+        "publication.publication",
+        "commission.calculation_run"
+      ],
+      "level": "end_to_end",
+      "execution_mode": "platform_with_external_contract_mocks",
+      "external_connection_status": "NOT_CONNECTED",
+      "status": "NOT_RUN",
+      "actual_result": null,
+      "executed_at": null,
+      "evidence_refs": [],
+      "required_evidence": [
+        "全鏈correlation與各module audit",
+        "各服務權限／狀態／版本變更",
+        "adapter mock receipts及重試記錄；未驗證真外部者明示mock",
+        "資料庫／財務／發布守恆對帳",
+        "操作者／核定者與決策依據"
+      ]
+    }
+  ]
+}

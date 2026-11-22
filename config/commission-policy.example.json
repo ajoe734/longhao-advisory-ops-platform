@@ -1,0 +1,27 @@
+{
+  "policy_id": "DRAFT-REQUIRES-APPROVAL",
+  "status": "draft",
+  "production_enabled": false,
+  "base_pool_rate": null,
+  "marketing_age_coefficients": {
+    "year_1": "1.00",
+    "year_2": "0.50",
+    "year_3_plus_qualified_auto": "0.25"
+  },
+  "sales_assisted_split": {
+    "marketing": "0.30",
+    "sales": "0.70"
+  },
+  "eligible_basis": "finance_confirmed_untaxed_service_revenue_net_attributable_revenue_adjustments",
+  "split_decay_mode": null,
+  "cohort_convention": null,
+  "post_assistance_auto_tail": null,
+  "pool_return": {
+    "interpretation": "all_paid_service_coverage_lapsed",
+    "duration_hours": 168,
+    "status": "proposed",
+    "production_enabled": false
+  },
+  "approval_reference": null,
+  "effective_from": null
+}

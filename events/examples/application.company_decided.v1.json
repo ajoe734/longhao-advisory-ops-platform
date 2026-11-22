@@ -1,0 +1,24 @@
+{
+  "event_id": "f6210208-bf3b-577d-8dda-09c1c3484bf6",
+  "event_type": "application.company_decided",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M02",
+  "aggregate_type": "application",
+  "aggregate_id": "816937f0-d01c-5f35-bc3f-885a8d9a28af",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "application.company_decided:synthetic-1",
+  "classification": "customer_confidential",
+  "payload_sha256": "9bf251ffe5503f9105db80a2239acfe6f763e9dcc1df0b0f4a29a506756f1c52",
+  "payload": {
+    "application_id": "816937f0-d01c-5f35-bc3f-885a8d9a28af",
+    "acceptance_id": "b7759dab-cb33-5a7d-84e8-602ba59d0a47",
+    "decision": "accept",
+    "contract_id": null
+  }
+}

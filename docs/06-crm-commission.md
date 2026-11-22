@@ -1,33 +1,100 @@
-# CRM, Maintenance and Commission
+# 06｜CRM、客戶維護與獎金制度規格
 
-## CRM purpose
-Convert applicants, follow up stalled applications, renew, upgrade suitable customers, retain at-risk customers and redevelop Company Pool relationships.
+## 1. 決策狀態
 
-## Separate attribution dimensions
-1. Original marketing source/campaign and acquisition date.
-2. Current maintenance owner and effective period.
-3. Opportunity owner.
-4. Transaction-specific conversion salesperson and evidence.
-5. Commission recipient and policy version.
+| 參數 | 狀態 | 系統行為 |
+|---|---|---|
+| 行銷第一年100%、第二年50% | 使用者已確認 | cohort計算不得按公司會計年度套整批 |
+| 第三年起連續自動續訂維持25% | 使用者已確認方向 | 記錄連續性、來源與中斷原因；邊界依版本化政策 |
+| 業務介入續訂：行銷/業務30/70 | 使用者已確認 | 以真實介入與成功轉換證據判斷 |
+| 實際未稅服務收入扣除可歸屬退款 | 使用者已確認 | 只收財會確認輸入，退款不得扣兩次 |
+| 業務離職回公司，重新開發者獲後續業務獎金 | 使用者已確認 | 生效時間切割assignment，不改歷史收受人 |
+| 客戶斷掉一週回Pool | 使用者已確認方向 | 具體採「全部付費服務連續中斷七天」為待確認解讀 |
+| 總獎金池rate | 未定案 | null，正式結算拒絕；3%僅試算例 |
+| 30/70與年衰減的先後、介入後後續自動續訂 | 未定案 | 策略可替換；試算A/B，不將提案當核准 |
+| cohort起算與跨閏日、轉換認定期限、質量保留款 | 未定案細則 | 提供可測建議值，正式policy需核准引用 |
 
-## Company Pool
-Seven consecutive days without qualifying maintenance activity returns eligible customer relationship to Company Pool. Employee departure returns customers immediately. Qualifying activity must be substantive two-way contact, completed call/meeting with notes, or documented customer-need resolution; automated campaigns, empty notes and page views do not qualify. Existing active services remain active. Open complaint/refund/AML cases are not ordinary sales leads. New assignment alone does not create commission; successful evidenced conversion is required.
+`config/commission-policy.example.json` 是不可啟用的draft。`config/commission-simulation.json` 只用於假設情境測試。
 
-## Commission parameters
-- Marketing year 1: 100%.
-- Marketing year 2: 50%.
-- Year 3 onward: 25% for qualifying continuous auto-renewal.
-- Sales-led renewal allocation: marketing 30% / sales 70%.
-- Basis: actual untaxed service revenue net of attributable refunds.
-- Base pool rate 3% is a proposal only, not approved.
-- Exact interaction between age coefficient, 30/70 split and prior sales-led service lineage requires management approval.
+## 2. CRM資料與工作清單
 
-## Proposed calculation
-BasePool = eligible untaxed service revenue × approved base pool rate.
-Marketing = BasePool × marketing share × marketing age coefficient.
-Sales = BasePool × sales share only if qualifying evidenced conversion exists.
-CompanyRetained = BasePool − Marketing − Sales.
-A direct marketing-origin transaction may have marketing share 100%; sales-led renewal/upgrade may use 30/70. All rule versions and overrides are auditable.
+來源原始事實（first-touch/campaign/time）、後續觸點、行銷同意、客戶維護assignment、機會owner、客服case owner及conversion salesperson分表。行銷來源不因轉給業務而被改掉。無人維護的官網自助客戶仍在公司客戶庫，沒有虛構的業務owner。
 
-## Audit fields
-Revenue ID, contract, service period, original source, maintenance assignment snapshot, conversion evidence, policy version, coefficients, rate, amount, recipient, approval and adjustment references.
+| 工作清單 | 觸發 | 建議行動 | 排除/抑制 |
+|---|---|---|---|
+| 留資待接觸 | 合法留資且尚未完成有效接洽 | 確認需求與可聯繫時段 | 退訂、拒聯絡、未具合法依據 |
+| 已簽待補件 | 已customer_signed、仍缺KYC項目 | 一次列明缺件、提供續填連結 | 不揭露AML命中或內部結論 |
+| 審查等待 | submitted超過作業SLA | 催內部owner處理、告知一般進度 | 不對客承諾必過 |
+| 生效/付款問題 | 已承諾但付款或開通條件未完成 | 修正支付/渠道問題 | 尚未核准不提供正式建議 |
+| 續訂 | 合約期限接近或自動扣款失敗 | 確認需求、排除服務障礙 | 自動續訂正常者不強制業務介入 |
+| 升級 | 可說明的互動/需求符合更深服務 | 合格人員說明並重新評估適合度 | 客訴未解、適合度不足、禁止招攬 |
+| 留存 | 問題未解、服務使用變化、明示不滿 | 先解決問題並追蹤結果 | 不只因沒讀研究報告而判流失 |
+| 公司Pool | 已確定回Pool且可聯絡 | 記錄再開發活動與新機會 | AML限制、客訴/退款需先專責處理 |
+
+每筆工作項必有原因、資料時點、owner、next_action、due_at、linked opportunity/case、允許渠道及完成結果。分數是排序建議，不是自動判定適合度或自動獎金。必須可以看出「為何要聯絡」與「聯絡後做什麼」。
+
+## 3. 服務分層與漏斗
+
+營業計畫 v25 第35–40頁的方向是公開內容/廣告→線上服務→依需求與適合度升級標準或親帶服務。不同月費層級與年費會員由契約service code描述，年費可與線上服務並行。因此客戶級流失不得只看一張月訂單是否過期。
+
+cohort報表分母固定：unique leads、可接觸 leads、有效接洽、申請、customer_signed、due_diligence_passed、company_accepted、active customers、renewal eligible、converted。初次簽署和公司正式承諾分列；付款先發生時仍保留其獨立事實。各漏斗數字可點回原始客戶與事件，避免同一客戶多次互動灌高轉換。
+
+## 4. 維護歸屬與公司Pool
+
+主要維護assignment用半開時間區間，一個客戶當下只能有一個主要owner或company。案件處理人與此獨立。離職/停職依人員生效時間取消維護與業務操作權限、移交未完成任務；現有契約服務持續，歷史計獎不搬移。
+
+BIZ-POOL-01建議解讀：合併客戶全部有效付費服務coverage，從最後coverage結束時計時；連續中斷7×24小時且沒有另一份已生效coverage才eligible。亞洲台北UI展示日期，資料按UTC計算。自動扣款短暫失敗的grace、特殊hold與復訂連續性由核准policy定義。正式policy未核定前僅產simulation report，不做自動移轉。
+
+此規則不能寫成七天沒打電話即回Pool，也不能拿自動群發重置計時。新業務claim只建立工作責任；要有實際介入及成功續訂/升級才取得該筆conversion attribution。重複認領用版本鎖/唯一有效assignment處理；歸屬爭議由主管決定並留原證據。
+
+## 5. 合格業務介入
+
+候選證據：已完成的需求訪談、客戶回覆的續訂討論、具內容的服務說明/會議、排除障礙後客戶確認與相應轉換。需actor在該時點具資格、activity發生早於conversion、關聯同customer及service/opportunity、非造假/回填時間。群發、未接通電話、空白記事、單純指派、AI自動提醒不合格。
+
+不得用任何小互動搶走本應自助續訂的歸因。規則引擎提出候選，爭議或多業務競爭進review；正式細則的attribution window與何謂充分因果證據列政策版本。若允許多人成交分配，另核定shares總和=1，本基線不偷偷平均分配。
+
+## 6. 計獎基礎與公式
+
+令 E 為財會確認的可計獎未稅已履約服務收入，包含可歸屬的收入調整；r為核准總池rate；P=E×r。若M14已將退款列為負向收入調整，M12不得再從E扣同一退款。僅退未履約預收部分，不應沖回從未賺取的獎金。
+
+令 a 為行銷年係數（1、0.5、符合條件0.25），m/s為該交易行銷/業務基礎share。直客自助交易可用m=1,s=0；合格業務續訂m=0.3,s=0.7。第三年資格與曾介入的服務lineage需要政策選定。
+
+**提案A：只衰減行銷。** Marketing=P×m×a；Sales=P×s（有合格conversion才成立）；CompanyRetained=P−Marketing−Sales。第二年實際分配是15/70/15，而不是仍然30/70。
+
+**提案B：先衰減整池再分配。** Marketing=P×a×m；Sales=P×a×s；CompanyRetained=P×(1−a)。第二年是15/35/50，已發部分維持30/70。兩者成本不同，不能同時聲稱已符合使用者最終制度。
+
+如果沒有已核准的mode或rate，允許simulate但阻止approve/export/paid。policy snapshot永久保留，不能以後來設定重算已核准歷史。
+
+## 7. 可核對的情境例（假設rate=3%，非核定）
+
+以下E=100,000元、P=3,000元，不含任何稅率推定。
+
+| 情境 | 行銷 | 業務 | 公司留存 | 說明 |
+|---|---:|---:|---:|---|
+| 第一年純自助 | 3,000 | 0 | 0 | m=1,a=1 |
+| 第二年純自助 | 1,500 | 0 | 1,500 | m=1,a=.5 |
+| 第三年符合連續auto | 750 | 0 | 2,250 | m=1,a=.25 |
+| 第一年業務介入 | 900 | 2,100 | 0 | 30/70 |
+| 第二年業務介入，A | 450 | 2,100 | 450 | 只衰減行銷 |
+| 第二年業務介入，B | 450 | 1,050 | 1,500 | 整池衰減 |
+| 已核定收入退款20,000，對應第一年業務交易 | -180 | -420 | 0 | 回原entry與原payee |
+
+同一筆在A/B間業務支出差1,050元，因此不允許工程師自選後上線。升級若保留原線上契約，以新增契約的可計獎收入計算；若實際是置換，M14先做原服務credit及新服務收入，不得把全額升級+原期間都重複計算。
+
+## 8. 年期、連續性與結算
+
+建議行銷cohort以首次已生效且付費的服務起算，依週年日期切年，不因公司年度、升級、業務交接或帳號重綁重設；此細則需制度核定。跨週年服務收入依履約日/期間分割，不能整筆以結算日選較高係數。閏日起算有明確anniversary convention。
+
+第三年尾隨係數需歷史服務鏈與auto續訂證據，不是只看目前auto_renew=true。重啟與人工介入後再自動續訂的權利存續由BIZ-COM-03定案。模擬兩種策略並保存清楚理由，不靠LLM猜測。
+
+結算以tenant、payee、currency、period、policy版本與來源entry唯一鍵；計算精度保留六位，按核定最小貨幣單位於結算層round並記殘額歸屬。CompanyRetained是池內未發的管理分類，非自動多記一筆服務收入或真的付給公司員工。
+
+## 9. 正式制度條款草案
+
+適用對象限經公司核准的內部行銷/業務角色與合格行為，不建立未核准第三方介紹報酬。獎金須有實際服務收入、歸因證據與有效policy；品質/客訴/合規條件記錄在核准流程，不以短期營收單一指標自動發放。獎金池率、衰減演算法、尾隨權利、cohort規則和核決責任列為必填核准附件。
+
+公司按月提供可追溯statement與異議期限。退款及錯誤以原政策追加調整；人員離職不改歷史應收/應付，追償/扣薪由適用制度另行核決，不自動從新業務或任意薪資扣除。經核准的新制度只適用指定生效期間，追溯變更須另有明確授權與差異報表。
+
+## 10. 交付與驗收
+
+M10/M11/M12的任務包含不讀報告、正常auto、不當搶單、同時claim、跨年、退款、離職、跨契約以及未核准rate等案例。API輸出須有calculation explanation與source IDs，使財會或業務能從一筆獎金追到原收入、服務期間、轉換證據及政策，不要求人工重做Excel。

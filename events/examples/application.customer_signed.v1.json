@@ -1,0 +1,25 @@
+{
+  "event_id": "3fd3503f-b50f-5e42-bd00-55c1563fa6b7",
+  "event_type": "application.customer_signed",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M02",
+  "aggregate_type": "application",
+  "aggregate_id": "816937f0-d01c-5f35-bc3f-885a8d9a28af",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "application.customer_signed:synthetic-1",
+  "classification": "customer_confidential",
+  "payload_sha256": "11db8c3681713729ac6fe6b9483168218adf47c536021f5c7f8a513335d25450",
+  "payload": {
+    "application_id": "816937f0-d01c-5f35-bc3f-885a8d9a28af",
+    "customer_signature_id": "9d12a525-3406-545b-858e-dd71a9ae0d70",
+    "package_version_id": "3a608e07-2d79-5717-b7c1-05a83419265a",
+    "document_sha256": "eda1a7bdaee08056611f9a59aa815a8030b9243f5c2b59c2babfb59f1de69a74",
+    "customer_signed_at": "2026-11-22T00:00:00Z"
+  }
+}

@@ -1,38 +1,39 @@
-# Product Scope and Glossary
+# 01｜產品範圍與全範圍交付邊界
 
-## CMS means Customer Management System
-Not Content Management System.
+版本：2.0。規格基準日：2026-11-22（Asia/Taipei）。本版取代初始摘要的串行開發安排及七天未聯絡即回 Pool 的錯誤解讀。
 
-## In scope
-- Customer master and external identity links.
-- Customer-first signature application flow, then online KYC/suitability/AML-CFT collection and review; company acceptance, contract effectiveness and entitlements remain separate.
-- Contract versions, delivery, amendments, renewals, suspension and termination.
-- Pantheon candidate research ingestion from Persona-autonomous and analyst-initiated paths.
-- Agora/Servant revision conversations, immutable revision references, analyst professional review/signature and automatic publication trigger.
-- Recommendation lineage, LegendFlow feed and per-customer LINE/SMS delivery evidence.
-- CRM funnel, marketing attribution, maintenance owner, seven-day Company Pool, renewals/upgrades and commission.
-- Omnichannel service cases.
-- Billing, payment, settlement, reconciliation, prepayment, revenue recognition, refunds and GL export.
-- AML/CFT, internal control, audit evidence, access control and operations.
+## 1. 營運結果
 
-## Out of scope
-- Rebuilding LegendFlow website/member frontend.
-- Rebuilding Pantheon Persona, trading pools, Research Orchestrator, Evidence or Artifact Registry.
-- Rebuilding Agora/Servant research UI.
-- Brokerage execution or customer order placement.
-- Full ERP/payroll replacement.
-- AI final decisions for suitability, AML, advisory signature, publication or money movement.
+同一客戶可以有多份並行契約與服務權限；從官網自助申請、先簽文件、線上補齊評估與身分資料，公司審核承諾後取得服務。研究資料來自外部 Pantheon，研究人員可與 Agora/Servant 討論修改，經既定覆核與分析師簽章後自動送到 LegendFlow 與約定訊息渠道。續訂、升級、服務問題及流失風險形成可執行的業務工作清單，實際轉換證據與財會確認收入共同決定獎金。收款、退款、收入、權限與對客交付能對回同一份可稽核證據。
 
-## Glossary
-Candidate research = Pantheon output not yet LongGood-approved.
-Advisory report = immutable LongGood-controlled report version with required review and analyst signature.
-Recommendation = structured investment advice linked to approved report/evidence.
-Publication = release event that makes approved content available to eligible customers.
-Marketing attribution = original source/campaign; immutable.
-Maintenance owner = time-bounded current relationship owner.
-Conversion owner = salesperson with evidenced intervention causing a specific renewal/upgrade.
-Company Pool = unassigned customer relationship pool.
-Entitlement = service access derived from company-accepted effective contract and approved payment/service conditions.
+## 2. 系統責任
 
-## Parameters requiring approval
-Marketing coefficient: year 1 100%, year 2 50%, year 3 onward 25% for qualifying continuous auto-renewal. Sales-led renewal allocation: marketing/sales 30/70. Calculation basis: actual untaxed service revenue net of attributable refunds. Base pool rate 3% is proposed only, not approved. Qualifying activity, interruption scope and 30/70 interaction with age coefficient require ratification.
+| 系統 | 擁有的事實 | 本平台責任 | 控制界線 |
+|---|---|---|---|
+| LegendFlow | 網站版面、會員端互動與 session | 客戶 BFF、申請/簽署/KYC API、權限、報告 feed、通知與客服 | 前端按鈕隱藏不能取代後端授權 |
+| Pantheon | Persona、研究 run、pool、evidence、candidate artifact | 接收候選、校驗來源完整性、保存版本鏈 | Persona 交易不是客戶交易或正式投顧建議 |
+| Agora/Servant | 研究對話與修訂工作執行 | 限定 conversation scope、保存請求和結果引用 | Agent 無承諾、簽章、退款或對客發布權 |
+| 營運管理平台 | 客戶、契約、審查、正式報告、發布、CRM、獎金、案件與帳務證據 | 十四模組全部實作與整合 | 不開發證券下單、代操、資產託管或新的研究引擎 |
+| 外部服務商 | 支付、銀行、簽章、篩檢或會計系統的受理與回執 | adapters、重試、核驗、對帳及例外佇列 | webhook 不直接等於已結清或已核准 |
+
+## 3. 全範圍清單
+
+M01–M14 的功能與驗收以 `docs/modules/` 為模組細規，所有項目納入同一完整交付。共用能力包括身分驗證、RBAC/ABAC、命令中介、audit/outbox/inbox、文件儲存、adapter、排程、LLM gateway、操作介面與監測，不能留到上線後補。
+
+服務定義只保存契約服務範圍、計價引用、期間、適合度條件、權限標籤與履約條件。不得另造獨立「方案管理」產品。營業計畫的分層服務採版本化契約模板；價格或稅別保留財會核定欄位，不以推算覆蓋正式值。
+
+## 4. 降低人工作業
+
+LLM 協助缺漏辨識、申請摘要、客服歸戶與摘要、補件訊息草稿、研究版本比較、來源缺漏提示、適合度訪談整理、附理由的續訂/升級名單、聯絡草稿、對帳異常解釋與稽核說明。建議附來源與不確定性，寫入 draft 層，不改正式決策。
+
+確定性程式負責計價、狀態轉換、權限、獎金、重試、完整性檢查與核准後發布。授權人員負責專業判斷、重大例外、AML 警示、簽章、付款釋出與制度核准；其他搬移、留存、提醒由系統執行。
+
+## 5. 文件與軟體完成的區別
+
+本輪文件交付含 SA/SD、資料與 API/事件契約、UI 行為、十四任務包、驗收案例、CI 驗證工具、整合/資安/部署/復原/交接手冊，是一次做完全部系統的依據。
+
+HerdR 最終軟體交付必須包含十四模組前後端、worker、供應商 adapters、可部署環境、全範圍驗收和操作證據。缺任何模組不能以先完成一條主流程宣告完成。契約、實作、整合、全量驗收是所有模組共用的品質狀態，並非縮減產品範圍的階段。
+
+## 6. 使用者明確指定的外部專案限制
+
+Pantheon 與 LegendFlow 只預留串接規格，最多實作本平台的adapter；不得修改兩個專案、提交PR或部署。Agora/Servant同樣視為外部依賴。本平台以mock及contract tests完成開發，外部未提供介面列為待對接項目，不轉成擅自改動外部專案的任務。

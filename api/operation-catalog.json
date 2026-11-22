@@ -1,0 +1,2321 @@
+[
+  {
+    "module": "M01",
+    "method": "post",
+    "path": "/customers",
+    "operation_id": "create_customer",
+    "request": "CustomerCreate",
+    "response": "Customer",
+    "summary": "建立或解析單一客戶主檔",
+    "roles": [
+      "cms_operator"
+    ],
+    "auth": "customer",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M01",
+    "method": "get",
+    "path": "/customers",
+    "operation_id": "list_customers",
+    "request": null,
+    "response": "CustomerPage",
+    "summary": "依授權範圍查詢客戶",
+    "roles": [
+      "cms_operator",
+      "sales",
+      "service_agent"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M01",
+    "method": "get",
+    "path": "/customers/{customer_id}",
+    "operation_id": "get_customer",
+    "request": null,
+    "response": "Customer",
+    "summary": "取得客戶總覽及遮罩資料",
+    "roles": [
+      "cms_operator",
+      "sales",
+      "service_agent"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M01",
+    "method": "post",
+    "path": "/customers/{customer_id}/identity-links",
+    "operation_id": "link_external_identity",
+    "request": "IdentityLinkRequest",
+    "response": "ExternalIdentity",
+    "summary": "綁定已驗證外部身分",
+    "roles": [
+      "cms_operator"
+    ],
+    "auth": "customer",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M01",
+    "method": "post",
+    "path": "/customer-merges",
+    "operation_id": "propose_customer_merge",
+    "request": "CustomerMergeRequest",
+    "response": "MergeCase",
+    "summary": "提出重複主檔合併覆核",
+    "roles": [
+      "cms_operator"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M01",
+    "method": "post",
+    "path": "/customer-merges/{merge_case_id}/decision",
+    "operation_id": "decide_customer_merge",
+    "request": "Decision",
+    "response": "MergeCase",
+    "summary": "由不同人覆核身分合併",
+    "roles": [
+      "cms_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M01",
+    "method": "post",
+    "path": "/applications",
+    "operation_id": "create_application",
+    "request": "ApplicationCreate",
+    "response": "Application",
+    "summary": "建立申辦案件，保留行銷來源",
+    "roles": [
+      "cms_operator"
+    ],
+    "auth": "customer",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M01",
+    "method": "get",
+    "path": "/applications/{application_id}",
+    "operation_id": "get_application",
+    "request": null,
+    "response": "Application",
+    "summary": "取得申辦進度與允許下一動作",
+    "roles": [
+      "cms_operator"
+    ],
+    "auth": "customer",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M01",
+    "method": "post",
+    "path": "/applications/{application_id}/withdrawal",
+    "operation_id": "withdraw_application",
+    "request": "ReasonRequest",
+    "response": "Application",
+    "summary": "客戶撤回申請並啟動款項處理",
+    "roles": [
+      "cms_operator"
+    ],
+    "auth": "customer",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M01",
+    "method": "post",
+    "path": "/customers/{customer_id}/consents",
+    "operation_id": "record_consent",
+    "request": "ConsentRequest",
+    "response": "Consent",
+    "summary": "新增版次化同意證據",
+    "roles": [
+      "cms_operator"
+    ],
+    "auth": "customer",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M02",
+    "method": "post",
+    "path": "/contract-packages",
+    "operation_id": "create_contract_package",
+    "request": "PackageCreate",
+    "response": "ContractPackage",
+    "summary": "建立契約文件版本，待法遵核准",
+    "roles": [
+      "contract_operator"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M02",
+    "method": "post",
+    "path": "/contract-packages/{package_version_id}/approval",
+    "operation_id": "approve_contract_package",
+    "request": "Decision",
+    "response": "ContractPackage",
+    "summary": "核准可供簽署的固定文件包",
+    "roles": [
+      "compliance_reviewer"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M02",
+    "method": "get",
+    "path": "/contract-packages/{package_version_id}",
+    "operation_id": "get_contract_package",
+    "request": null,
+    "response": "ContractPackage",
+    "summary": "取得指定契約文件與版本",
+    "roles": [
+      "contract_operator"
+    ],
+    "auth": "customer",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M02",
+    "method": "post",
+    "path": "/applications/{application_id}/customer-signature",
+    "operation_id": "create_customer_signature",
+    "request": "CustomerSignatureRequest",
+    "response": "SignatureSession",
+    "summary": "客戶先簽署申辦／契約文件包",
+    "roles": [
+      "contract_operator"
+    ],
+    "auth": "customer",
+    "status": 202,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M02",
+    "method": "post",
+    "path": "/webhooks/customer-signatures",
+    "operation_id": "receive_customer_signature",
+    "request": "CustomerSignatureCallback",
+    "response": "CallbackReceipt",
+    "summary": "驗證客戶簽署完成回呼",
+    "roles": [
+      "signature_adapter"
+    ],
+    "auth": "integration",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M02",
+    "method": "post",
+    "path": "/applications/{application_id}/company-acceptance",
+    "operation_id": "decide_company_acceptance",
+    "request": "CompanyAcceptanceRequest",
+    "response": "CompanyAcceptance",
+    "summary": "KYC、適合度與 AML clearance 完成後記錄公司承諾",
+    "roles": [
+      "company_acceptor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M02",
+    "method": "get",
+    "path": "/contracts/{contract_id}",
+    "operation_id": "get_contract",
+    "request": null,
+    "response": "Contract",
+    "summary": "查看契約成立、生效與服務期間",
+    "roles": [
+      "contract_operator"
+    ],
+    "auth": "customer",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M02",
+    "method": "post",
+    "path": "/contracts/{contract_id}/amendments",
+    "operation_id": "create_contract_amendment",
+    "request": "AmendmentRequest",
+    "response": "Application",
+    "summary": "升級或變更形成新申辦與明確差額",
+    "roles": [
+      "contract_operator"
+    ],
+    "auth": "customer",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M02",
+    "method": "post",
+    "path": "/contracts/{contract_id}/termination",
+    "operation_id": "terminate_contract",
+    "request": "TerminationRequest",
+    "response": "Contract",
+    "summary": "記錄契約終止及退款評估",
+    "roles": [
+      "contract_operator"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M02",
+    "method": "get",
+    "path": "/customers/{customer_id}/entitlements",
+    "operation_id": "list_customer_entitlements",
+    "request": null,
+    "response": "EntitlementPage",
+    "summary": "列示服務權限及有效區間",
+    "roles": [
+      "contract_operator"
+    ],
+    "auth": "customer",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M02",
+    "method": "post",
+    "path": "/contracts/{contract_id}/entitlement-evaluations",
+    "operation_id": "evaluate_entitlements",
+    "request": "EntitlementEvaluationRequest",
+    "response": "EntitlementDecision",
+    "summary": "授權系統重算條件而非任意開通",
+    "roles": [
+      "entitlement_service"
+    ],
+    "auth": "service",
+    "status": 202,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M02",
+    "method": "post",
+    "path": "/entitlements/{entitlement_id}/suspension",
+    "operation_id": "suspend_entitlement",
+    "request": "SuspensionRequest",
+    "response": "Entitlement",
+    "summary": "有依據的服務權限暫停",
+    "roles": [
+      "contract_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M03",
+    "method": "post",
+    "path": "/applications/{application_id}/kyc-submissions",
+    "operation_id": "create_kyc_submission",
+    "request": "KycDraftRequest",
+    "response": "KycSubmission",
+    "summary": "簽署後建立線上 KYC 資料草稿",
+    "roles": [
+      "kyc_reviewer"
+    ],
+    "auth": "customer",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M03",
+    "method": "post",
+    "path": "/kyc-submissions/{submission_id}/document-uploads",
+    "operation_id": "request_kyc_upload",
+    "request": "DocumentUploadRequest",
+    "response": "UploadTicket",
+    "summary": "取得隔離區上傳票證與檔案掃描狀態",
+    "roles": [
+      "kyc_reviewer"
+    ],
+    "auth": "customer",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M03",
+    "method": "post",
+    "path": "/kyc-submissions/{submission_id}/submit",
+    "operation_id": "submit_kyc",
+    "request": "KycSubmitRequest",
+    "response": "KycSubmission",
+    "summary": "提交問卷原始回答與證明文件",
+    "roles": [
+      "kyc_reviewer"
+    ],
+    "auth": "customer",
+    "status": 202,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M03",
+    "method": "get",
+    "path": "/kyc-submissions/{submission_id}",
+    "operation_id": "get_kyc_submission",
+    "request": null,
+    "response": "KycSubmission",
+    "summary": "依受限權限取得 KYC 案件",
+    "roles": [
+      "kyc_reviewer"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M03",
+    "method": "post",
+    "path": "/kyc-submissions/{submission_id}/decision",
+    "operation_id": "decide_kyc",
+    "request": "KycDecisionRequest",
+    "response": "KycSubmission",
+    "summary": "完成核驗或要求補件",
+    "roles": [
+      "kyc_reviewer"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M03",
+    "method": "post",
+    "path": "/applications/{application_id}/suitability-assessments",
+    "operation_id": "assess_suitability",
+    "request": "SuitabilityRequest",
+    "response": "SuitabilityAssessment",
+    "summary": "適合度評估使用固定問卷與規則版本",
+    "roles": [
+      "suitability_reviewer"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M03",
+    "method": "post",
+    "path": "/customers/{customer_id}/due-diligence-refreshes",
+    "operation_id": "request_due_diligence_refresh",
+    "request": "RefreshRequest",
+    "response": "KycSubmission",
+    "summary": "依到期或風險事件建立重評案件",
+    "roles": [
+      "kyc_reviewer"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M04",
+    "method": "post",
+    "path": "/applications/{application_id}/aml-declarations",
+    "operation_id": "submit_aml_declaration",
+    "request": "AmlDeclarationRequest",
+    "response": "AmlDeclarationReceipt",
+    "summary": "客戶線上聲明與證明資料，並非 AML 放行",
+    "roles": [
+      "aml_officer"
+    ],
+    "auth": "customer",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M04",
+    "method": "post",
+    "path": "/aml/screenings",
+    "operation_id": "start_aml_screening",
+    "request": "ScreeningRequest",
+    "response": "AmlScreening",
+    "summary": "發起身分／名單篩檢",
+    "roles": [
+      "aml_officer"
+    ],
+    "auth": "staff",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M04",
+    "method": "post",
+    "path": "/webhooks/aml-screenings",
+    "operation_id": "receive_aml_screening",
+    "request": "ScreeningCallback",
+    "response": "CallbackReceipt",
+    "summary": "接收受限區名單比對結果",
+    "roles": [
+      "aml_adapter"
+    ],
+    "auth": "integration",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M04",
+    "method": "get",
+    "path": "/aml/cases",
+    "operation_id": "list_aml_cases",
+    "request": null,
+    "response": "AmlCasePage",
+    "summary": "受限 AML 案件工作佇列",
+    "roles": [
+      "aml_officer",
+      "aml_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M04",
+    "method": "get",
+    "path": "/aml/cases/{aml_case_id}",
+    "operation_id": "get_aml_case",
+    "request": null,
+    "response": "AmlCase",
+    "summary": "檢視 AML 證據與審查紀錄",
+    "roles": [
+      "aml_officer",
+      "aml_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M04",
+    "method": "post",
+    "path": "/aml/cases/{aml_case_id}/actions",
+    "operation_id": "add_aml_case_action",
+    "request": "AmlActionRequest",
+    "response": "AmlCase",
+    "summary": "要求 EDD、補件或向主管升級",
+    "roles": [
+      "aml_officer"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M04",
+    "method": "post",
+    "path": "/aml/cases/{aml_case_id}/decision",
+    "operation_id": "decide_aml_case",
+    "request": "AmlDecisionRequest",
+    "response": "BusinessClearance",
+    "summary": "受權人裁決與公司建立關係之 clearance",
+    "roles": [
+      "aml_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M04",
+    "method": "get",
+    "path": "/applications/{application_id}/business-clearance",
+    "operation_id": "get_business_clearance",
+    "request": null,
+    "response": "BusinessClearance",
+    "summary": "僅輸出通過／待處理／不通過及有效期限",
+    "roles": [
+      "company_acceptor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M05",
+    "method": "post",
+    "path": "/research-candidates",
+    "operation_id": "ingest_research_candidate",
+    "request": "CandidateCreate",
+    "response": "ResearchCandidate",
+    "summary": "接收 Pantheon Persona 或分析師來源候選研究",
+    "roles": [
+      "pantheon_adapter"
+    ],
+    "auth": "integration",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M05",
+    "method": "get",
+    "path": "/research-candidates",
+    "operation_id": "list_research_candidates",
+    "request": null,
+    "response": "ResearchCandidatePage",
+    "summary": "候選研究接收與錯誤佇列",
+    "roles": [
+      "analyst",
+      "analyst_reviewer"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M05",
+    "method": "get",
+    "path": "/research-candidates/{candidate_id}",
+    "operation_id": "get_research_candidate",
+    "request": null,
+    "response": "ResearchCandidate",
+    "summary": "查詢來源版本、證據與 checksum",
+    "roles": [
+      "analyst",
+      "analyst_reviewer"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M05",
+    "method": "post",
+    "path": "/research-candidates/{candidate_id}/validation",
+    "operation_id": "validate_research_candidate",
+    "request": "CandidateValidationRequest",
+    "response": "ResearchCandidate",
+    "summary": "驗證雜湊、版次、授權範圍與來源引用",
+    "roles": [
+      "research_intake_service"
+    ],
+    "auth": "service",
+    "status": 202,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M05",
+    "method": "post",
+    "path": "/research-candidates/{candidate_id}/rejection",
+    "operation_id": "reject_research_candidate",
+    "request": "ReasonRequest",
+    "response": "ResearchCandidate",
+    "summary": "拒絕不適當候選並保留原始接收紀錄",
+    "roles": [
+      "analyst_reviewer"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M06",
+    "method": "get",
+    "path": "/review-cases",
+    "operation_id": "list_review_cases",
+    "request": null,
+    "response": "ReviewCasePage",
+    "summary": "研究覆核工作佇列",
+    "roles": [
+      "analyst",
+      "analyst_reviewer"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M06",
+    "method": "get",
+    "path": "/review-cases/{review_case_id}",
+    "operation_id": "get_review_case",
+    "request": null,
+    "response": "ReviewCase",
+    "summary": "最新候選、修改請求及審查狀態",
+    "roles": [
+      "analyst",
+      "analyst_reviewer"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M06",
+    "method": "post",
+    "path": "/review-cases/{review_case_id}/assignment",
+    "operation_id": "assign_review_case",
+    "request": "AssignmentRequest",
+    "response": "ReviewCase",
+    "summary": "分派具資格覆核人員",
+    "roles": [
+      "research_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M06",
+    "method": "post",
+    "path": "/review-cases/{review_case_id}/conversations",
+    "operation_id": "open_servant_conversation",
+    "request": "ConversationRequest",
+    "response": "Conversation",
+    "summary": "啟動或續接 scoped Agora Servant 對話",
+    "roles": [
+      "analyst"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M06",
+    "method": "post",
+    "path": "/review-cases/{review_case_id}/revision-requests",
+    "operation_id": "request_servant_revision",
+    "request": "RevisionRequest",
+    "response": "Revision",
+    "summary": "送出有版本前提的報告修改要求",
+    "roles": [
+      "analyst"
+    ],
+    "auth": "staff",
+    "status": 202,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M06",
+    "method": "post",
+    "path": "/webhooks/servant-revisions",
+    "operation_id": "receive_servant_revision",
+    "request": "RevisionCallback",
+    "response": "CallbackReceipt",
+    "summary": "接收新 artifact；過時回覆不覆寫審查版",
+    "roles": [
+      "servant_adapter"
+    ],
+    "auth": "integration",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M07",
+    "method": "post",
+    "path": "/reports",
+    "operation_id": "create_report",
+    "request": "ReportCreate",
+    "response": "AdvisoryReport",
+    "summary": "將候選研究建立為正式投顧報告工作項目",
+    "roles": [
+      "analyst"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M07",
+    "method": "post",
+    "path": "/reports/{report_id}/versions",
+    "operation_id": "create_report_version",
+    "request": "ReportVersionCreate",
+    "response": "ReportVersion",
+    "summary": "建立不可覆寫的報告／訊息／受眾規則版本",
+    "roles": [
+      "analyst"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M07",
+    "method": "get",
+    "path": "/report-versions/{report_version_id}",
+    "operation_id": "get_report_version",
+    "request": null,
+    "response": "ReportVersion",
+    "summary": "取得簽章包與研究證據鏈",
+    "roles": [
+      "analyst",
+      "analyst_reviewer",
+      "compliance_reviewer"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M07",
+    "method": "post",
+    "path": "/report-versions/{report_version_id}/reviews",
+    "operation_id": "record_report_review",
+    "request": "ReportReviewRequest",
+    "response": "ReviewDecision",
+    "summary": "專業或法遵審查綁定精確版次及雜湊",
+    "roles": [
+      "analyst_reviewer",
+      "compliance_reviewer"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M07",
+    "method": "post",
+    "path": "/report-versions/{report_version_id}/freeze",
+    "operation_id": "freeze_report_version",
+    "request": "FreezeReportRequest",
+    "response": "ReportVersion",
+    "summary": "凍結報告、建議、各渠道文本與受眾規則",
+    "roles": [
+      "analyst"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M07",
+    "method": "post",
+    "path": "/report-versions/{report_version_id}/signature",
+    "operation_id": "request_analyst_signature",
+    "request": "AnalystSignatureRequest",
+    "response": "SignatureSession",
+    "summary": "授權分析師簽署已完成所有審查的版本",
+    "roles": [
+      "analyst_signer"
+    ],
+    "auth": "staff",
+    "status": 202,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M07",
+    "method": "post",
+    "path": "/webhooks/analyst-signatures",
+    "operation_id": "receive_analyst_signature",
+    "request": "AnalystSignatureCallback",
+    "response": "CallbackReceipt",
+    "summary": "驗證最終簽章；成功事件自動觸發發布",
+    "roles": [
+      "signature_adapter"
+    ],
+    "auth": "integration",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M07",
+    "method": "post",
+    "path": "/signatures/{signature_id}/revocation",
+    "operation_id": "revoke_signature",
+    "request": "SignatureRevocationRequest",
+    "response": "SignatureRevocation",
+    "summary": "新增撤銷證據，保留原簽章與下游撤回事件",
+    "roles": [
+      "compliance_supervisor"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M08",
+    "method": "post",
+    "path": "/recommendation-series",
+    "operation_id": "create_recommendation_series",
+    "request": "RecommendationSeriesCreate",
+    "response": "RecommendationSeries",
+    "summary": "建立帶進、更新、帶出共同系列",
+    "roles": [
+      "analyst"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M08",
+    "method": "post",
+    "path": "/recommendation-series/{series_id}/versions",
+    "operation_id": "create_recommendation_version",
+    "request": "RecommendationVersionCreate",
+    "response": "RecommendationVersion",
+    "summary": "建議版次必須對應研究依據及後續簽章包",
+    "roles": [
+      "analyst"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M08",
+    "method": "get",
+    "path": "/publications",
+    "operation_id": "list_publications",
+    "request": null,
+    "response": "PublicationPage",
+    "summary": "檢視簽章後自動發布狀態",
+    "roles": [
+      "analyst",
+      "service_agent",
+      "compliance_reviewer"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M08",
+    "method": "get",
+    "path": "/publications/{publication_id}",
+    "operation_id": "get_publication",
+    "request": null,
+    "response": "Publication",
+    "summary": "檢視版本、受眾快照、渠道狀態",
+    "roles": [
+      "analyst",
+      "service_agent",
+      "compliance_reviewer"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M08",
+    "method": "post",
+    "path": "/publications/{publication_id}/withdrawal",
+    "operation_id": "withdraw_publication",
+    "request": "PublicationWithdrawal",
+    "response": "Publication",
+    "summary": "撤回後停用尚未送出內容並保留歷史",
+    "roles": [
+      "analyst_reviewer",
+      "compliance_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M08",
+    "method": "post",
+    "path": "/publications/{publication_id}/correction-links",
+    "operation_id": "link_publication_correction",
+    "request": "PublicationCorrection",
+    "response": "Publication",
+    "summary": "關聯另已簽署的新更正版本，禁止覆寫原訊息",
+    "roles": [
+      "analyst_reviewer"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M09",
+    "method": "get",
+    "path": "/member/feed",
+    "operation_id": "get_member_feed",
+    "request": null,
+    "response": "MemberFeedPage",
+    "summary": "LegendFlow 取得目前授權的已發布訊息",
+    "roles": [
+      "member"
+    ],
+    "auth": "customer",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M09",
+    "method": "get",
+    "path": "/member/reports/{report_version_id}/access",
+    "operation_id": "request_member_report_access",
+    "request": null,
+    "response": "AccessTicket",
+    "summary": "即時檢查契約權限後提供短效報告存取票證",
+    "roles": [
+      "member"
+    ],
+    "auth": "customer",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M09",
+    "method": "post",
+    "path": "/member/channel-bindings",
+    "operation_id": "bind_member_channel",
+    "request": "ChannelBindingRequest",
+    "response": "ChannelBinding",
+    "summary": "驗證官方渠道身分後設定接收渠道",
+    "roles": [
+      "member"
+    ],
+    "auth": "customer",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M09",
+    "method": "post",
+    "path": "/member/communication-preferences",
+    "operation_id": "set_communication_preference",
+    "request": "CommunicationPreferenceRequest",
+    "response": "CommunicationPreference",
+    "summary": "區分服務通知與行銷同意",
+    "roles": [
+      "member"
+    ],
+    "auth": "customer",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M09",
+    "method": "get",
+    "path": "/deliveries",
+    "operation_id": "list_deliveries",
+    "request": null,
+    "response": "DeliveryPage",
+    "summary": "逐客戶、逐渠道投遞狀態查詢",
+    "roles": [
+      "service_agent",
+      "delivery_operator"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M09",
+    "method": "post",
+    "path": "/webhooks/message-receipts",
+    "operation_id": "receive_message_receipt",
+    "request": "DeliveryReceiptRequest",
+    "response": "CallbackReceipt",
+    "summary": "驗證供應商 accepted/sent/delivered/failed，未知讀取仍未知",
+    "roles": [
+      "messaging_adapter"
+    ],
+    "auth": "integration",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M09",
+    "method": "post",
+    "path": "/deliveries/{delivery_id}/reconciliation",
+    "operation_id": "reconcile_delivery",
+    "request": "ReconciliationRequest",
+    "response": "Delivery",
+    "summary": "查詢模糊投遞狀態後再判斷是否安全重送",
+    "roles": [
+      "delivery_operator"
+    ],
+    "auth": "staff",
+    "status": 202,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M09",
+    "method": "post",
+    "path": "/dead-letters/{dead_letter_id}/redrive",
+    "operation_id": "redrive_delivery_event",
+    "request": "RedriveRequest",
+    "response": "CallbackReceipt",
+    "summary": "經檢查內容期限與最新權限後重新入列",
+    "roles": [
+      "delivery_supervisor"
+    ],
+    "auth": "staff",
+    "status": 202,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M10",
+    "method": "get",
+    "path": "/crm/worklists",
+    "operation_id": "list_crm_worklists",
+    "request": null,
+    "response": "CrmWorkItemPage",
+    "summary": "續約、升級、補件、流失與留存工作清單",
+    "roles": [
+      "sales",
+      "sales_supervisor",
+      "marketing"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M10",
+    "method": "post",
+    "path": "/crm/opportunities",
+    "operation_id": "create_opportunity",
+    "request": "OpportunityCreate",
+    "response": "Opportunity",
+    "summary": "建立具體續約、升級或重新開發機會",
+    "roles": [
+      "sales"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M10",
+    "method": "post",
+    "path": "/crm/opportunities/{opportunity_id}/activities",
+    "operation_id": "record_sales_activity",
+    "request": "SalesActivityCreate",
+    "response": "SalesActivity",
+    "summary": "留下真實業務介入、客戶需求與下一步證據",
+    "roles": [
+      "sales"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M10",
+    "method": "post",
+    "path": "/crm/opportunities/{opportunity_id}/next-actions",
+    "operation_id": "set_next_action",
+    "request": "NextActionRequest",
+    "response": "CrmWorkItem",
+    "summary": "指定負責人、期限與執行動作",
+    "roles": [
+      "sales",
+      "sales_supervisor"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M10",
+    "method": "post",
+    "path": "/crm/opportunities/{opportunity_id}/conversion-claims",
+    "operation_id": "claim_conversion",
+    "request": "ConversionClaim",
+    "response": "Conversion",
+    "summary": "提出與成功續約／升級交易相連的業務歸因",
+    "roles": [
+      "sales"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M10",
+    "method": "post",
+    "path": "/crm/conversions/{conversion_id}/decision",
+    "operation_id": "decide_conversion",
+    "request": "ConversionDecision",
+    "response": "Conversion",
+    "summary": "以證據及付款／生效事實裁定轉換歸因",
+    "roles": [
+      "sales_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M10",
+    "method": "post",
+    "path": "/crm/suppressions",
+    "operation_id": "create_crm_suppression",
+    "request": "SuppressionRequest",
+    "response": "Suppression",
+    "summary": "拒絕行銷、客訴或受限狀態暫停銷售觸達",
+    "roles": [
+      "service_agent",
+      "sales_supervisor"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M10",
+    "method": "get",
+    "path": "/crm/funnel-metrics",
+    "operation_id": "get_funnel_metrics",
+    "request": null,
+    "response": "FunnelMetrics",
+    "summary": "依來源、服務代碼與 cohort 檢視轉換／留存",
+    "roles": [
+      "sales_supervisor",
+      "marketing"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M11",
+    "method": "get",
+    "path": "/ownership/company-pool",
+    "operation_id": "list_company_pool",
+    "request": null,
+    "response": "PoolEntryPage",
+    "summary": "查看可重新開發的公司客戶池",
+    "roles": [
+      "sales",
+      "sales_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M11",
+    "method": "post",
+    "path": "/customers/{customer_id}/maintenance-assignments",
+    "operation_id": "assign_maintenance_owner",
+    "request": "MaintenanceAssignmentRequest",
+    "response": "MaintenanceAssignment",
+    "summary": "指定維護責任與有效期間，不直接給獎金",
+    "roles": [
+      "sales_supervisor"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M11",
+    "method": "post",
+    "path": "/ownership/pool-entries/{pool_entry_id}/claim",
+    "operation_id": "claim_pool_customer",
+    "request": "PoolClaimRequest",
+    "response": "MaintenanceAssignment",
+    "summary": "競爭領取以版本鎖保證只有一位新維護人",
+    "roles": [
+      "sales"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M11",
+    "method": "post",
+    "path": "/ownership/assignments/{assignment_id}/release",
+    "operation_id": "release_maintenance_owner",
+    "request": "ReasonRequest",
+    "response": "PoolEntry",
+    "summary": "釋出維護關係但不撤回有效投顧服務",
+    "roles": [
+      "sales_supervisor"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M11",
+    "method": "post",
+    "path": "/ownership/departures",
+    "operation_id": "record_employee_departure",
+    "request": "EmployeeDepartureRequest",
+    "response": "DepartureReceipt",
+    "summary": "業務離職即刻回公司池並停用授權",
+    "roles": [
+      "hr_operator"
+    ],
+    "auth": "staff",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M11",
+    "method": "post",
+    "path": "/ownership/pool-evaluations",
+    "operation_id": "evaluate_company_pool",
+    "request": "PoolEvaluationRequest",
+    "response": "PoolEvaluationResult",
+    "summary": "規則化計算付費服務中斷七日；不是七日未聯絡",
+    "roles": [
+      "ownership_service"
+    ],
+    "auth": "service",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M12",
+    "method": "post",
+    "path": "/commissions/policies",
+    "operation_id": "create_commission_policy",
+    "request": "CommissionPolicyCreate",
+    "response": "CommissionPolicy",
+    "summary": "建立100/50/25、30/70及未稅收入規則版次",
+    "roles": [
+      "commission_operator"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M12",
+    "method": "post",
+    "path": "/commissions/policies/{policy_id}/approval",
+    "operation_id": "approve_commission_policy",
+    "request": "PolicyApprovalRequest",
+    "response": "CommissionPolicy",
+    "summary": "核准池率及尚待定義之交互規則，異人覆核",
+    "roles": [
+      "commission_approver"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M12",
+    "method": "post",
+    "path": "/commissions/previews",
+    "operation_id": "preview_commissions",
+    "request": "CommissionRunRequest",
+    "response": "CommissionPreview",
+    "summary": "純試算：回傳假設、未核准條件及逐筆拆分",
+    "roles": [
+      "commission_operator"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M12",
+    "method": "post",
+    "path": "/commissions/runs",
+    "operation_id": "create_commission_run",
+    "request": "CommissionRunRequest",
+    "response": "CommissionRun",
+    "summary": "僅核准政策與已結算財務基礎可入正式台帳",
+    "roles": [
+      "commission_operator"
+    ],
+    "auth": "staff",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M12",
+    "method": "get",
+    "path": "/commissions/runs/{run_id}",
+    "operation_id": "get_commission_run",
+    "request": null,
+    "response": "CommissionRun",
+    "summary": "查看計算批次、差異與核准狀態",
+    "roles": [
+      "commission_operator",
+      "commission_approver"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M12",
+    "method": "get",
+    "path": "/commissions/entries",
+    "operation_id": "list_commission_entries",
+    "request": null,
+    "response": "CommissionEntryPage",
+    "summary": "依權限查看逐筆獎金歸因和退款調整",
+    "roles": [
+      "commission_operator",
+      "commission_approver",
+      "sales"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M12",
+    "method": "post",
+    "path": "/commissions/runs/{run_id}/approval",
+    "operation_id": "approve_commission_run",
+    "request": "Decision",
+    "response": "CommissionRun",
+    "summary": "異人核對批次與公式後核准",
+    "roles": [
+      "commission_approver"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M12",
+    "method": "post",
+    "path": "/commissions/adjustments",
+    "operation_id": "create_commission_adjustment",
+    "request": "CommissionAdjustmentRequest",
+    "response": "CommissionAdjustment",
+    "summary": "原收入／原受領人連結的負向調整，不轉嫁接手人",
+    "roles": [
+      "commission_operator"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M12",
+    "method": "post",
+    "path": "/commissions/payout-batches",
+    "operation_id": "create_commission_payout_batch",
+    "request": "PayoutBatchRequest",
+    "response": "PayoutBatch",
+    "summary": "產生核准批次的薪酬介接檔與控制總額",
+    "roles": [
+      "payroll_operator"
+    ],
+    "auth": "staff",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M13",
+    "method": "post",
+    "path": "/service-cases",
+    "operation_id": "create_service_case",
+    "request": "ServiceCaseCreate",
+    "response": "ServiceCase",
+    "summary": "線上、電話、現場、郵件與官方訊息整併案件",
+    "roles": [
+      "service_agent"
+    ],
+    "auth": "customer",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M13",
+    "method": "get",
+    "path": "/service-cases",
+    "operation_id": "list_service_cases",
+    "request": null,
+    "response": "ServiceCasePage",
+    "summary": "客服佇列及 SLA 優先順序",
+    "roles": [
+      "service_agent",
+      "service_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M13",
+    "method": "get",
+    "path": "/service-cases/{case_id}",
+    "operation_id": "get_service_case",
+    "request": null,
+    "response": "ServiceCase",
+    "summary": "客服時間軸與關聯契約／研究／退款",
+    "roles": [
+      "service_agent"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M13",
+    "method": "post",
+    "path": "/service-cases/{case_id}/interactions",
+    "operation_id": "add_case_interaction",
+    "request": "CaseInteractionCreate",
+    "response": "CaseInteraction",
+    "summary": "記錄跨渠道互動與原始內容證據",
+    "roles": [
+      "service_agent"
+    ],
+    "auth": "customer",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M13",
+    "method": "post",
+    "path": "/service-cases/{case_id}/assignment",
+    "operation_id": "assign_service_case",
+    "request": "AssignmentRequest",
+    "response": "ServiceCase",
+    "summary": "客服承辦人與業務維護人分離",
+    "roles": [
+      "service_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M13",
+    "method": "post",
+    "path": "/service-cases/{case_id}/escalations",
+    "operation_id": "escalate_service_case",
+    "request": "CaseEscalationRequest",
+    "response": "ServiceCase",
+    "summary": "升級分析師、財會或法遵並限制敏感資料",
+    "roles": [
+      "service_agent"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M13",
+    "method": "post",
+    "path": "/service-cases/{case_id}/response-drafts",
+    "operation_id": "draft_service_response",
+    "request": "ResponseDraftRequest",
+    "response": "ResponseDraft",
+    "summary": "LLM 僅使用獲准知識與既有案件資訊起草",
+    "roles": [
+      "service_agent"
+    ],
+    "auth": "staff",
+    "status": 202,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M13",
+    "method": "post",
+    "path": "/service-cases/{case_id}/resolution",
+    "operation_id": "resolve_service_case",
+    "request": "CaseResolutionRequest",
+    "response": "ServiceCase",
+    "summary": "記錄解決方式及客戶告知證據",
+    "roles": [
+      "service_agent"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M13",
+    "method": "post",
+    "path": "/service-cases/{case_id}/reopen",
+    "operation_id": "reopen_service_case",
+    "request": "ReasonRequest",
+    "response": "ServiceCase",
+    "summary": "客戶回覆或未解決問題重新開案",
+    "roles": [
+      "service_agent"
+    ],
+    "auth": "customer",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/finance/invoices",
+    "operation_id": "create_invoice",
+    "request": "InvoiceCreate",
+    "response": "Invoice",
+    "summary": "依契約、稅務代碼與服務期建立應收",
+    "roles": [
+      "finance_operator"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/finance/payment-intents",
+    "operation_id": "create_payment_intent",
+    "request": "PaymentIntentCreate",
+    "response": "PaymentIntent",
+    "summary": "建立支付意圖；簽約前後款項保持獨立狀態",
+    "roles": [
+      "finance_operator"
+    ],
+    "auth": "customer",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/webhooks/payments",
+    "operation_id": "receive_payment_webhook",
+    "request": "PaymentCallback",
+    "response": "CallbackReceipt",
+    "summary": "回呼驗簽與交易去重；不直接認列收入",
+    "roles": [
+      "payment_adapter"
+    ],
+    "auth": "integration",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/finance/settlement-imports",
+    "operation_id": "import_settlement",
+    "request": "SettlementImportRequest",
+    "response": "SettlementImport",
+    "summary": "匯入金流／銀行對帳檔與控制總數",
+    "roles": [
+      "finance_operator"
+    ],
+    "auth": "staff",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "get",
+    "path": "/finance/reconciliation-items",
+    "operation_id": "list_reconciliation_items",
+    "request": null,
+    "response": "ReconciliationItemPage",
+    "summary": "列示短溢付、重複、手續費與未知交易",
+    "roles": [
+      "finance_operator"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/finance/reconciliation-items/{item_id}/resolution",
+    "operation_id": "resolve_reconciliation_item",
+    "request": "ReconciliationResolution",
+    "response": "ReconciliationItem",
+    "summary": "覆核有差異對帳項目",
+    "roles": [
+      "finance_checker"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/finance/revenue-runs",
+    "operation_id": "run_revenue_recognition",
+    "request": "RevenueRunRequest",
+    "response": "RevenueRun",
+    "summary": "依核准服務期攤認收入並產生獎金基礎事件",
+    "roles": [
+      "finance_operator"
+    ],
+    "auth": "staff",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/finance/refunds",
+    "operation_id": "request_refund",
+    "request": "RefundCreate",
+    "response": "Refund",
+    "summary": "區分未履約預收退回與已認列收入沖回",
+    "roles": [
+      "finance_operator",
+      "service_agent"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/finance/refunds/{refund_id}/approval",
+    "operation_id": "approve_refund",
+    "request": "Decision",
+    "response": "Refund",
+    "summary": "退款金額／原付款／收入分攤由異人核准",
+    "roles": [
+      "finance_checker"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/finance/refunds/{refund_id}/execution",
+    "operation_id": "execute_refund",
+    "request": "RefundExecutionRequest",
+    "response": "Refund",
+    "summary": "受控執行核准退款，timeout 先查帳再重送",
+    "roles": [
+      "refund_service"
+    ],
+    "auth": "service",
+    "status": 202,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/webhooks/refunds",
+    "operation_id": "receive_refund_webhook",
+    "request": "RefundCallback",
+    "response": "CallbackReceipt",
+    "summary": "退款供應商確認及帳務沖回",
+    "roles": [
+      "payment_adapter"
+    ],
+    "auth": "integration",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/finance/accounting-exports",
+    "operation_id": "create_accounting_export",
+    "request": "AccountingExportRequest",
+    "response": "AccountingExport",
+    "summary": "輸出平衡借貸、來源索引與會計映射版本",
+    "roles": [
+      "finance_operator"
+    ],
+    "auth": "staff",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/finance/accounting-exports/{export_id}/acknowledgement",
+    "operation_id": "acknowledge_accounting_export",
+    "request": "ExportAckRequest",
+    "response": "AccountingExport",
+    "summary": "會計系統回覆成功／部分失敗，禁止重複過帳",
+    "roles": [
+      "accounting_adapter"
+    ],
+    "auth": "integration",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "get",
+    "path": "/audit/events",
+    "operation_id": "list_audit_events",
+    "request": null,
+    "response": "AuditEventPage",
+    "summary": "依權限查核系統與作業稽核紀錄",
+    "roles": [
+      "internal_auditor",
+      "compliance_reviewer"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/audit/evidence-exports",
+    "operation_id": "create_evidence_export",
+    "request": "EvidenceExportRequest",
+    "response": "EvidenceExport",
+    "summary": "重建客戶或發布完整證據鏈並留匯出存取紀錄",
+    "roles": [
+      "internal_auditor"
+    ],
+    "auth": "staff",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/audit/legal-holds",
+    "operation_id": "create_legal_hold",
+    "request": "LegalHoldRequest",
+    "response": "LegalHold",
+    "summary": "受控保全阻止自動刪除",
+    "roles": [
+      "compliance_supervisor"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/audit/control-exceptions",
+    "operation_id": "record_control_exception",
+    "request": "ControlExceptionRequest",
+    "response": "ControlException",
+    "summary": "可追蹤內控缺失、改善人、期限與覆核",
+    "roles": [
+      "internal_auditor"
+    ],
+    "auth": "staff",
+    "status": 201,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M01",
+    "method": "get",
+    "path": "/customer-merges",
+    "operation_id": "list_customer_merges",
+    "request": null,
+    "response": "MergeCasePage",
+    "summary": "列出等待異人覆核的身分合併案件",
+    "roles": [
+      "cms_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M01",
+    "method": "get",
+    "path": "/customer-merges/{merge_case_id}",
+    "operation_id": "get_customer_merge",
+    "request": null,
+    "response": "MergeCase",
+    "summary": "查詢合併證據與原始主檔關係",
+    "roles": [
+      "cms_operator",
+      "cms_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M03",
+    "method": "get",
+    "path": "/documents/{asset_id}/status",
+    "operation_id": "get_document_status",
+    "request": null,
+    "response": "DocumentStatus",
+    "summary": "查詢本人或受權文件的隔離掃描狀態",
+    "roles": [
+      "kyc_reviewer"
+    ],
+    "auth": "customer",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M06",
+    "method": "get",
+    "path": "/revision-requests/{revision_id}",
+    "operation_id": "get_revision_request",
+    "request": null,
+    "response": "Revision",
+    "summary": "查詢Servant非同步修訂進度及版本",
+    "roles": [
+      "analyst",
+      "analyst_reviewer"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M10",
+    "method": "get",
+    "path": "/crm/opportunities",
+    "operation_id": "list_opportunities",
+    "request": null,
+    "response": "OpportunityPage",
+    "summary": "依owner與客戶scope檢視機會清單",
+    "roles": [
+      "sales",
+      "sales_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M10",
+    "method": "get",
+    "path": "/crm/opportunities/{opportunity_id}",
+    "operation_id": "get_opportunity",
+    "request": null,
+    "response": "Opportunity",
+    "summary": "查詢具體業務機會與狀態",
+    "roles": [
+      "sales",
+      "sales_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M11",
+    "method": "get",
+    "path": "/customers/{customer_id}/ownership-history",
+    "operation_id": "get_ownership_history",
+    "request": null,
+    "response": "MaintenanceAssignmentPage",
+    "summary": "查看有效期間與交接歷史，不以現owner覆寫舊獎金",
+    "roles": [
+      "sales",
+      "sales_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M12",
+    "method": "get",
+    "path": "/commissions/payout-batches/{batch_id}",
+    "operation_id": "get_commission_payout_batch",
+    "request": null,
+    "response": "PayoutBatch",
+    "summary": "查詢薪酬匯出、核准及接收狀態",
+    "roles": [
+      "payroll_operator",
+      "commission_approver"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M12",
+    "method": "post",
+    "path": "/commissions/payout-batches/{batch_id}/approval",
+    "operation_id": "approve_commission_payout_batch",
+    "request": "Decision",
+    "response": "PayoutBatch",
+    "summary": "薪酬輸出由不同人核准與原run控制總額對比",
+    "roles": [
+      "commission_approver"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M12",
+    "method": "post",
+    "path": "/commissions/payout-batches/{batch_id}/acknowledgement",
+    "operation_id": "acknowledge_commission_payout_batch",
+    "request": "PayoutAckRequest",
+    "response": "PayoutBatch",
+    "summary": "記錄薪酬接收結果，部分成功不重複發放",
+    "roles": [
+      "payroll_adapter"
+    ],
+    "auth": "integration",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M13",
+    "method": "get",
+    "path": "/service-response-drafts/{draft_id}",
+    "operation_id": "get_service_response_draft",
+    "request": null,
+    "response": "ResponseDraft",
+    "summary": "取回LLM草稿及引用供客服覆核",
+    "roles": [
+      "service_agent"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "get",
+    "path": "/finance/revenue-runs/{run_id}",
+    "operation_id": "get_revenue_run",
+    "request": null,
+    "response": "RevenueRun",
+    "summary": "檢視收入攤認批次與控制總額",
+    "roles": [
+      "finance_operator",
+      "finance_checker"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/finance/revenue-runs/{run_id}/approval",
+    "operation_id": "approve_revenue_run",
+    "request": "RevenueApprovalRequest",
+    "response": "RevenueRun",
+    "summary": "異人核准攤認批次，核准後才能過帳及產生獎金基礎",
+    "roles": [
+      "finance_checker"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "get",
+    "path": "/finance/refunds/{refund_id}",
+    "operation_id": "get_refund",
+    "request": null,
+    "response": "Refund",
+    "summary": "查詢退款、對帳與收入沖回進度",
+    "roles": [
+      "finance_operator",
+      "service_agent"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "get",
+    "path": "/finance/accounting-exports/{export_id}",
+    "operation_id": "get_accounting_export",
+    "request": null,
+    "response": "AccountingExport",
+    "summary": "查詢會計匯出hash與部分接收回覆",
+    "roles": [
+      "finance_operator",
+      "finance_checker"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "get",
+    "path": "/audit/evidence-exports/{export_id}",
+    "operation_id": "get_evidence_export",
+    "request": null,
+    "response": "EvidenceExport",
+    "summary": "查詢稽核匯出與到期票證流程",
+    "roles": [
+      "internal_auditor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/audit/legal-holds/{hold_id}/release",
+    "operation_id": "release_legal_hold",
+    "request": "LegalHoldReleaseRequest",
+    "response": "LegalHold",
+    "summary": "依權威解除證據保全，不能由排程自行解除",
+    "roles": [
+      "compliance_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M14",
+    "method": "post",
+    "path": "/audit/control-exceptions/{exception_id}/actions",
+    "operation_id": "act_on_control_exception",
+    "request": "ControlExceptionActionRequest",
+    "response": "ControlException",
+    "summary": "改善承辦與獨立稽核覆核保留歷程",
+    "roles": [
+      "control_remediation_owner",
+      "internal_auditor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M13",
+    "method": "post",
+    "path": "/service-cases/{case_id}/responses",
+    "operation_id": "send_service_response",
+    "request": "ServiceResponseRequest",
+    "response": "ServiceResponse",
+    "summary": "核定精確草稿或低風險固定模板後由本平台送出客服回覆",
+    "roles": [
+      "service_agent",
+      "service_supervisor",
+      "service_response_service"
+    ],
+    "auth": "staff_or_service",
+    "status": 202,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M13",
+    "method": "get",
+    "path": "/service-responses/{response_id}",
+    "operation_id": "get_service_response",
+    "request": null,
+    "response": "ServiceResponse",
+    "summary": "查詢客服回覆之排程、接受、送達或未知結果",
+    "roles": [
+      "service_agent",
+      "service_supervisor"
+    ],
+    "auth": "staff",
+    "status": 200,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M13",
+    "method": "post",
+    "path": "/webhooks/service-response-receipts",
+    "operation_id": "receive_service_response_receipt",
+    "request": "ServiceResponseReceipt",
+    "response": "CallbackReceipt",
+    "summary": "接收客服回覆渠道receipt，不能用outbound紀錄冒充送達",
+    "roles": [
+      "service_messaging_adapter"
+    ],
+    "auth": "integration",
+    "status": 202,
+    "compare_and_set": false,
+    "emits": null
+  },
+  {
+    "module": "M13",
+    "method": "post",
+    "path": "/service-response-drafts/{draft_id}/approval",
+    "operation_id": "approve_service_response_draft",
+    "request": "ServiceResponseApprovalRequest",
+    "response": "ServiceResponseApproval",
+    "summary": "對固定草稿做人工核定或可信固定模板規則核定，產生server approval record",
+    "roles": [
+      "service_agent",
+      "service_supervisor",
+      "service_response_service"
+    ],
+    "auth": "staff_or_service",
+    "status": 201,
+    "compare_and_set": true,
+    "emits": null
+  },
+  {
+    "module": "M01",
+    "method": "patch",
+    "path": "/customers/{customer_id}",
+    "operation_id": "update_customer",
+    "request": "CustomerUpdate",
+    "response": "Customer",
+    "summary": "本人／受權客服更新白名單資料，驗證聯絡資料以proof另核",
+    "roles": [
+      "cms_operator",
+      "service_agent"
+    ],
+    "auth": "customer",
+    "status": 200,
+    "compare_and_set": true,
+    "emits": null
+  }
+]

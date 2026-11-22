@@ -1,0 +1,50 @@
+{
+  "verified_at": "2026-11-22T13:11:55.692717+00:00",
+  "mode": "standalone",
+  "files": [
+    {
+      "path": "database/migrations/0001_domains.sql",
+      "sha256": "f45b9ad4cb4f72b5c38db67140d2ae7eb1555e5f74ab77f5d02c1964511595de",
+      "assertions": 0,
+      "status": "passed"
+    },
+    {
+      "path": "database/migrations/0002_isolation_indexes.sql",
+      "sha256": "69926036f009bc751a67f4946d5d6995d1c9dd76dcf0d127e06a3be4851917d6",
+      "assertions": 0,
+      "status": "passed"
+    },
+    {
+      "path": "database/migrations/0003_business_guards.sql",
+      "sha256": "6a6b4c38626451fe97384350c9900ee20f9b0dd5139d0caedf88c48b9a6c41bd",
+      "assertions": 0,
+      "status": "passed"
+    },
+    {
+      "path": "database/migrations/0004_database_roles.sql",
+      "sha256": "b5a49a02c39caf0bc0687e728723f1c2844bccc38af402056a80304fa98b031c",
+      "assertions": 0,
+      "status": "passed"
+    },
+    {
+      "path": "database/seeds/001_synthetic.sql",
+      "sha256": "2369058c81e142fc85b1737fbeb47c98ae24e24b8a98fa2147f954dbe2936585",
+      "assertions": 0,
+      "status": "passed"
+    },
+    {
+      "path": "database/tests/001_invariants.sql",
+      "sha256": "b3de3bf58a32414b4a3cbeafef8c9b321aa6ba28c1f81706d8ee1e6957ac886a",
+      "assertions": 52,
+      "status": "passed"
+    }
+  ],
+  "rls_execution": "not_run_standalone_is_privileged",
+  "concurrency_execution": "not_run_requires_application_integration_tests",
+  "status": "passed",
+  "database_version": "PostgreSQL 16.2 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 10.2.1 20210130 (Red Hat 10.2.1-11), 64-bit",
+  "persisted_outbox_wire_schema": "passed",
+  "persisted_outbox_payload_sha256": "passed",
+  "persisted_outbox_rows_checked": 1,
+  "assertions_passed": 52
+}

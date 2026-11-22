@@ -1,0 +1,24 @@
+{
+  "event_id": "3d8d20f3-1c81-5674-a21a-b90d84065700",
+  "event_type": "ownership.pool_entered",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M11",
+  "aggregate_type": "pool_entry",
+  "aggregate_id": "ac2cbf6d-c3a3-50db-9ef2-6a819eea7e54",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "ownership.pool_entered:synthetic-1",
+  "classification": "customer_confidential",
+  "payload_sha256": "4147d4cd1263cb1e8d65a34be2cfc906a447ece04e474d9c9efc5bf764a072de",
+  "payload": {
+    "pool_entry_id": "ac2cbf6d-c3a3-50db-9ef2-6a819eea7e54",
+    "customer_id": "44bffd49-7fd0-5e7c-88d8-d9c83134c813",
+    "entry_reason": "unassigned_web",
+    "policy_version": "synthetic_policy_version"
+  }
+}

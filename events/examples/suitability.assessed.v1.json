@@ -1,0 +1,24 @@
+{
+  "event_id": "b7258e49-a5ca-5389-b4ad-a35e57ecc453",
+  "event_type": "suitability.assessed",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M03",
+  "aggregate_type": "suitability_assessment",
+  "aggregate_id": "42a9c97b-4228-5413-a96a-fda80bfc8aac",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "suitability.assessed:synthetic-1",
+  "classification": "customer_confidential",
+  "payload_sha256": "32c736043dda58e60b85a712c05cfcbc24ce013457e74b07e0a8ba94d1c01fc6",
+  "payload": {
+    "assessment_id": "42a9c97b-4228-5413-a96a-fda80bfc8aac",
+    "application_id": "816937f0-d01c-5f35-bc3f-885a8d9a28af",
+    "state": "suitable",
+    "rule_version": "synthetic_rule_version"
+  }
+}

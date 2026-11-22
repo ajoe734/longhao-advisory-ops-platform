@@ -1,0 +1,24 @@
+{
+  "event_id": "44377f7f-f78a-5d32-833a-65a0091291c6",
+  "event_type": "commission.run_calculated",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M12",
+  "aggregate_type": "commission_run",
+  "aggregate_id": "c6357188-b19d-5992-acc8-8c07916a77d3",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "commission.run_calculated:synthetic-1",
+  "classification": "internal",
+  "payload_sha256": "ece3150a62e5bb7bec944336c2b07fbdc72c70f4338779c39753d621c1f7a67c",
+  "payload": {
+    "run_id": "c6357188-b19d-5992-acc8-8c07916a77d3",
+    "policy_id": "6b303713-ed41-575d-8b58-dc1ac842417c",
+    "entry_count": 0,
+    "calculation_manifest_sha256": "3560b58a25636fbc23c42af9537c2543658e4e3f5f11b3760a4c217f8ac82501"
+  }
+}

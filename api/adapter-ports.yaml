@@ -1,0 +1,99 @@
+version: 1.0.0
+contract_status: target_contract_requires_provider_mapping
+rules:
+  editable_repository: ajoe734/longhao-advisory-ops-platform
+  external_repository_mutation: prohibited
+  external_repository_pr_or_deployment: prohibited
+  development_blocked_by_unavailable_provider: false
+  integration_readiness_states: [implemented_mock_verified, provider_contract_available, provider_connected_verified]
+  authoritative_database_sharing: prohibited
+  raw_customer_or_aml_data_to_research: prohibited
+  external_outcome_unknown: query_before_retry
+  credentials: secret_manager_references_only
+  mock_is_production: false
+ports:
+  legendflow_identity:
+    owner: M01
+    operations: [create_customer, link_external_identity, update_customer]
+    inbound: verified_subject_proof
+    outbound: customer_resource
+    authentication: oidc_subject_exchange
+    staging_evidence: [issuer_audience_nonce, duplicate_identity, identity_takeover_denial]
+  legendflow_application:
+    owner: M02
+    operations: [create_application, create_customer_signature, get_application, get_contract, list_customer_entitlements]
+    authentication: customer_jwt_self_scope
+    staging_evidence: [customer_signs_first, company_acceptance_separate, no_premature_entitlement]
+  legendflow_member:
+    owner: M09
+    operations: [get_member_feed, request_member_report_access, bind_member_channel, set_communication_preference]
+    authentication: customer_jwt_self_scope
+    staging_evidence: [cross_customer_denial, entitlement_recheck, corrected_and_withdrawn_versions]
+  pantheon_candidate:
+    owner: M05
+    operations: [ingest_research_candidate, get_research_candidate, validate_research_candidate]
+    input_schema: CandidateCreate
+    output_schema: ResearchCandidate
+    upstream_native_endpoint: not_yet_verified
+    staging_evidence: [persona_autonomous, analyst_initiated, checksum_conflict, duplicate, stale_version, evidence_license]
+  agora_servant:
+    owner: M06
+    operations: [open_servant_conversation, request_servant_revision, receive_servant_revision]
+    input_schema: RevisionRequest
+    output_schema: RevisionCallback
+    upstream_native_endpoint: not_yet_verified
+    staging_evidence: [scoped_context, stale_result, immutable_new_artifact, no_signing_scope]
+  customer_signature_provider:
+    owner: M02
+    operations: [create_customer_signature, receive_customer_signature]
+    provider_selection: pending_approved_signing_method
+    staging_evidence: [exact_package_hash, identity_binding, evidence_verification, callback_replay, timeout_lookup]
+  analyst_signature_provider:
+    owner: M07
+    operations: [request_analyst_signature, receive_analyst_signature, revoke_signature]
+    provider_selection: pending_approved_signing_method
+    output_event: report.signature_verified
+    staging_evidence: [credential_at_signing, report_manifest_signed_file_hashes, prior_reviews, revocation, automatic_publication]
+  aml_screening_provider:
+    owner: M04
+    operations: [start_aml_screening, receive_aml_screening]
+    data_classification: aml_restricted
+    provider_selection: pending_due_diligence
+    staging_evidence: [list_version, possible_match_case, provider_outage_not_clear, restricted_payload, no_llm_clearance]
+  messaging_provider:
+    owner: M09
+    operations: [receive_message_receipt, reconcile_delivery]
+    input_events: [publication.created, publication.withdrawn, publication.corrected]
+    output_event: delivery.status_changed
+    provider_selection: pending_channel_configuration
+    staging_evidence: [dispatch_time_entitlement, expiry, idempotent_key, ambiguous_timeout, read_capability]
+  payment_provider:
+    owner: M14
+    operations: [create_payment_intent, receive_payment_webhook, execute_refund, receive_refund_webhook]
+    provider_selection: pending_payment_agreement
+    staging_evidence: [currency_amount_match, replay, refund_approval, provider_lookup, partial_refund]
+  bank_settlement:
+    owner: M14
+    operations: [import_settlement, list_reconciliation_items, resolve_reconciliation_item]
+    staging_evidence: [gross_fee_net, control_count, duplicate_file, unmatched_transaction]
+  accounting_provider:
+    owner: M14
+    operations: [create_accounting_export, acknowledge_accounting_export]
+    staging_evidence: [balanced_journal, account_tax_mapping_versions, partial_ack, replay_no_duplicate_posting]
+  payroll_provider:
+    owner: M12
+    operations: [create_commission_payout_batch]
+    staging_evidence: [approved_run_only, original_recipient_adjustment, no_automatic_wage_offset, control_totals]
+  operational_llm:
+    owner: M13
+    operations: [draft_service_response]
+    allowed_inputs: [scoped_case_summary, approved_knowledge_refs, existing_signed_publication_refs]
+    disallowed_inputs: [aml_investigation, raw_identity_documents, signing_key, payment_credentials]
+    staging_evidence: [prompt_injection, source_citations, unknown_answer_escalation, no_new_investment_judgment]
+  service_messaging_provider:
+    owner: M13
+    operations: [approve_service_response_draft, send_service_response, get_service_response, receive_service_response_receipt]
+    output_event: support.response_status_changed
+    implementation_location: this_repository_only
+    external_repository_changes: prohibited
+    staging_evidence: [exact_draft_hash, verified_channel_binding, approval_scope, accepted_not_delivered, timeout_query_first]

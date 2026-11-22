@@ -1,0 +1,23 @@
+{
+  "event_id": "85a2c3b7-8547-558c-85c5-2e7e2cdf428f",
+  "event_type": "audit.legal_hold_changed",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M14",
+  "aggregate_type": "legal_hold",
+  "aggregate_id": "11a1010e-ef27-55b4-a43a-9bff86c5186a",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "audit.legal_hold_changed:synthetic-1",
+  "classification": "internal",
+  "payload_sha256": "e29271a2ba3234176a3fcd5ab3924f9f8e508f578d89b6207883535df1b6b2bf",
+  "payload": {
+    "legal_hold_id": "11a1010e-ef27-55b4-a43a-9bff86c5186a",
+    "state": "active",
+    "scope": "customer"
+  }
+}

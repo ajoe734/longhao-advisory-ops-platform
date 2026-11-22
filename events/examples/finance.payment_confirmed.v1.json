@@ -1,0 +1,25 @@
+{
+  "event_id": "e85d1308-ee73-5938-90f9-b4ad779ef9be",
+  "event_type": "finance.payment_confirmed",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M14",
+  "aggregate_type": "payment",
+  "aggregate_id": "22f0c92e-709d-5e6a-9ad5-57f372576bf1",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "finance.payment_confirmed:synthetic-1",
+  "classification": "customer_confidential",
+  "payload_sha256": "6f1dc5aa31fceda4066b6ee6da1054e7c349b28299d24d3e2fa5e93373d9834b",
+  "payload": {
+    "payment_id": "22f0c92e-709d-5e6a-9ad5-57f372576bf1",
+    "application_id": "816937f0-d01c-5f35-bc3f-885a8d9a28af",
+    "invoice_id": null,
+    "confirmed_at": "2026-11-22T00:00:00Z",
+    "evidence_snapshot_id": "18921993-8665-59b9-8395-4f2e3a66c002"
+  }
+}

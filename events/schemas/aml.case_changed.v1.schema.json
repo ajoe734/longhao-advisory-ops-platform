@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.example.invalid/longgood/aml.case_changed.v1.schema.json",
+  "title": "aml.case_changed",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "event_type": {
+      "const": "aml.case_changed",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0",
+      "type": "string"
+    },
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "producer": {
+      "const": "M04",
+      "type": "string"
+    },
+    "aggregate_type": {
+      "const": "aml_case",
+      "type": "string"
+    },
+    "aggregate_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "aggregate_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "sequence_no": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+      "description": "UTC RFC3339；不得用來源交易時間倒填發布時間。"
+    },
+    "emitted_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+      "description": "UTC RFC3339；不得用來源交易時間倒填發布時間。"
+    },
+    "correlation_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "causation_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "uuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "idempotency_key": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "classification": {
+      "const": "aml_restricted",
+      "type": "string"
+    },
+    "payload_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "screening_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "restricted_record_version": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "case_id",
+        "screening_id",
+        "restricted_record_version"
+      ]
+    }
+  },
+  "required": [
+    "event_id",
+    "event_type",
+    "schema_version",
+    "tenant_id",
+    "producer",
+    "aggregate_type",
+    "aggregate_id",
+    "aggregate_version",
+    "sequence_no",
+    "occurred_at",
+    "emitted_at",
+    "correlation_id",
+    "causation_id",
+    "idempotency_key",
+    "classification",
+    "payload_sha256",
+    "payload"
+  ],
+  "description": "僅AML隔離topic可訂閱；一般CRM不見case存在與內容。"
+}

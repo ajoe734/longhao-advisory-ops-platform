@@ -1,0 +1,24 @@
+{
+  "event_id": "b82885b2-9af7-5978-8749-0456d6c50755",
+  "event_type": "research.candidate_superseded",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M05",
+  "aggregate_type": "research_candidate",
+  "aggregate_id": "2aefda2b-eda3-5a9b-aad8-557b55633a4c",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "research.candidate_superseded:synthetic-1",
+  "classification": "research_confidential",
+  "payload_sha256": "96595081978b81b9bc70545957df8e355a8608422a40ee845ed1c8e83806aff7",
+  "payload": {
+    "candidate_id": "2aefda2b-eda3-5a9b-aad8-557b55633a4c",
+    "replacement_candidate_id": "1c968e06-2037-57cb-84f1-34e442a8c338",
+    "previous_artifact_sha256": "f297bab73cfe2b58f9be02c9e367223ce5a6c156d56ff28723915c50280162de",
+    "replacement_artifact_sha256": "79f3722ed1a64fa965920583f1d2dba79d5317a71e38e4573ad2fef1a0f48c8f"
+  }
+}

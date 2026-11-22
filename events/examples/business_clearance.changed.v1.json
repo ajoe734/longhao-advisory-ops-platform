@@ -1,0 +1,24 @@
+{
+  "event_id": "6325669f-88a2-5389-86b6-a0aea680f965",
+  "event_type": "business_clearance.changed",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M04",
+  "aggregate_type": "business_clearance",
+  "aggregate_id": "ac9682b9-f563-5fd8-9962-326dd8c8fe66",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "business_clearance.changed:synthetic-1",
+  "classification": "customer_confidential",
+  "payload_sha256": "218d045bb5d6ed374f5fa0b80b731472061fa9a4fc32019238825333e0b343b5",
+  "payload": {
+    "clearance_id": "ac9682b9-f563-5fd8-9962-326dd8c8fe66",
+    "application_id": "816937f0-d01c-5f35-bc3f-885a8d9a28af",
+    "decision": "pending",
+    "expires_at": null
+  }
+}

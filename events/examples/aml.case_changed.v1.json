@@ -1,0 +1,23 @@
+{
+  "event_id": "13aa14ee-f0f9-533c-8014-c734408d1556",
+  "event_type": "aml.case_changed",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M04",
+  "aggregate_type": "aml_case",
+  "aggregate_id": "34c25b88-faec-5ca3-bb39-b1d3f0d33571",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "aml.case_changed:synthetic-1",
+  "classification": "aml_restricted",
+  "payload_sha256": "5c61226ef01d2f842c41463ff18e96a1e39c8258258f4d2b176b094ef7f5fdcd",
+  "payload": {
+    "case_id": "34c25b88-faec-5ca3-bb39-b1d3f0d33571",
+    "screening_id": "8830b633-bb91-5ed4-9140-6272db1bdc19",
+    "restricted_record_version": 1
+  }
+}

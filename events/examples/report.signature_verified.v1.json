@@ -1,0 +1,27 @@
+{
+  "event_id": "99ec2608-b328-5a55-b9a7-03c4069c5648",
+  "event_type": "report.signature_verified",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M07",
+  "aggregate_type": "report_version",
+  "aggregate_id": "8eb7d765-911a-533b-90c2-30699c0188b8",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "report.signature_verified:synthetic-1",
+  "classification": "research_confidential",
+  "payload_sha256": "77dcb84085dfb4f148972b9fde595f730e554c43544f5fd9b575af088cd53199",
+  "payload": {
+    "report_version_id": "8eb7d765-911a-533b-90c2-30699c0188b8",
+    "signature_id": "02036d19-ce23-52ba-858e-4dc6370f4dbb",
+    "report_content_sha256": "5aec1543ae4ba76f586fadc62f300b43244724d14b7b9ea9422c3c680ab88463",
+    "bundle_manifest_sha256": "0b3040ed4ba4f56820730e6e45293e70234638b027ee54046b519f34b777ad4a",
+    "signed_file_sha256": "39a295dc23db747dae2764357ae6d59004b7e4f71471e35629e691910ccd6908",
+    "verified_at": "2026-11-22T00:00:00Z",
+    "valid_until": "2026-12-22T00:00:00Z"
+  }
+}

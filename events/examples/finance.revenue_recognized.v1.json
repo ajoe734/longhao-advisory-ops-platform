@@ -1,0 +1,27 @@
+{
+  "event_id": "fc9b6587-1767-5063-a462-c3e272d6cb6b",
+  "event_type": "finance.revenue_recognized",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M14",
+  "aggregate_type": "revenue_recognition",
+  "aggregate_id": "1dc2c6d5-625b-508b-bf43-c6dc0c5efdc5",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "finance.revenue_recognized:synthetic-1",
+  "classification": "internal",
+  "payload_sha256": "ab143a04f24bfc20d0ca5b562608eaf24fb9a5bb724b29e9a21a781d2e3c49a3",
+  "payload": {
+    "recognition_id": "1dc2c6d5-625b-508b-bf43-c6dc0c5efdc5",
+    "contract_id": "f0392b34-676a-5749-8883-a3a8299fc185",
+    "contract_service_id": "2b4f9936-cac9-5e93-a2a7-89b591cb5a23",
+    "policy_version": "synthetic_policy_version",
+    "service_period_start": "2026-11-22",
+    "service_period_end": "2026-11-22",
+    "posted_journal_id": "ffc6844e-387b-5830-b4cb-3a0f28b0779c"
+  }
+}

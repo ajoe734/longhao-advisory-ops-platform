@@ -1,0 +1,24 @@
+{
+  "event_id": "f71a5e7d-4eaf-5cc2-99ca-dad60f8fc35a",
+  "event_type": "publication.withdrawn",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M08",
+  "aggregate_type": "publication",
+  "aggregate_id": "42563731-a918-572d-a9b4-fe67ecd1dcd1",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "publication.withdrawn:synthetic-1",
+  "classification": "research_confidential",
+  "payload_sha256": "925e65e9999595441e20097db5ba54db6c4cc880e66c1ba2e434fef54ece4734",
+  "payload": {
+    "publication_id": "42563731-a918-572d-a9b4-fe67ecd1dcd1",
+    "withdrawal_record_id": "d3f06ab4-5215-5496-8203-69c63c067b24",
+    "effective_at": "2026-11-22T00:00:00Z",
+    "notify_recipients": false
+  }
+}

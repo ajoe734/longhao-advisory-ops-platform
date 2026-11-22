@@ -1,0 +1,36 @@
+{
+  "status": "passed",
+  "verified_at": "2026-11-22T13:11:10.081298+00:00",
+  "mode": "postgresql_standalone",
+  "source": "actual SELECT from persisted core.outbox after migrations and transactional synthetic seed",
+  "event_type": "report.signature_verified",
+  "schema_version": "1.0.0",
+  "schema_valid": true,
+  "payload_sha256_matches": true,
+  "aggregate_identity_matches": true,
+  "signature_not_expired_when_verified": true,
+  "checked_files": [
+    {
+      "path": "database/migrations/0001_domains.sql",
+      "sha256": "f45b9ad4cb4f72b5c38db67140d2ae7eb1555e5f74ab77f5d02c1964511595de"
+    },
+    {
+      "path": "database/migrations/0002_isolation_indexes.sql",
+      "sha256": "69926036f009bc751a67f4946d5d6995d1c9dd76dcf0d127e06a3be4851917d6"
+    },
+    {
+      "path": "database/migrations/0003_business_guards.sql",
+      "sha256": "6a6b4c38626451fe97384350c9900ee20f9b0dd5139d0caedf88c48b9a6c41bd"
+    },
+    {
+      "path": "database/migrations/0004_database_roles.sql",
+      "sha256": "b5a49a02c39caf0bc0687e728723f1c2844bccc38af402056a80304fa98b031c"
+    },
+    {
+      "path": "database/seeds/001_synthetic.sql",
+      "sha256": "2369058c81e142fc85b1737fbeb47c98ae24e24b8a98fa2147f954dbe2936585"
+    }
+  ],
+  "schema_sha256": "44e17b3f197ce2275045b9ea9de4585d376e9a164dfedb31431be335bdbe7867",
+  "scope_limit": "Migration 0003 enforces signature and matching outbox commit; it does not implement a dispatcher or generate an application event. This test validates stored DB-to-wire compatibility. Standalone cannot certify RLS/runtime permissions, live signing providers or actual publication."
+}

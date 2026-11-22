@@ -1,0 +1,26 @@
+{
+  "event_id": "2bd2cf6d-440f-5a5a-9b5f-b65a110f46ae",
+  "event_type": "report.version_frozen",
+  "schema_version": "1.0.0",
+  "tenant_id": "3e624789-e990-5c6b-bf39-82de2afce2c8",
+  "producer": "M07",
+  "aggregate_type": "report_version",
+  "aggregate_id": "8eb7d765-911a-533b-90c2-30699c0188b8",
+  "aggregate_version": 1,
+  "sequence_no": 1,
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "emitted_at": "2026-11-22T00:00:00Z",
+  "correlation_id": "cddd12b3-39b8-5ff2-8d91-8affe3b00295",
+  "causation_id": null,
+  "idempotency_key": "report.version_frozen:synthetic-1",
+  "classification": "research_confidential",
+  "payload_sha256": "d437aac1b4cb1ac6377b119aff9806fb9491f63a9ac5fc5e79044ef9e47b91d8",
+  "payload": {
+    "report_version_id": "8eb7d765-911a-533b-90c2-30699c0188b8",
+    "report_content_sha256": "5aec1543ae4ba76f586fadc62f300b43244724d14b7b9ea9422c3c680ab88463",
+    "bundle_manifest_sha256": "0b3040ed4ba4f56820730e6e45293e70234638b027ee54046b519f34b777ad4a",
+    "review_decision_ids": [
+      "f9f925d0-2989-5217-a224-c5f11766e62c"
+    ]
+  }
+}

@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.example.invalid/longgood/customer.profile_updated.v1.schema.json",
+  "title": "customer.profile_updated",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "event_type": {
+      "const": "customer.profile_updated",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0",
+      "type": "string"
+    },
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "producer": {
+      "const": "M01",
+      "type": "string"
+    },
+    "aggregate_type": {
+      "const": "customer",
+      "type": "string"
+    },
+    "aggregate_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "aggregate_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "sequence_no": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+      "description": "UTC RFC3339；不得用來源交易時間倒填發布時間。"
+    },
+    "emitted_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+      "description": "UTC RFC3339；不得用來源交易時間倒填發布時間。"
+    },
+    "correlation_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "causation_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "uuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "idempotency_key": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "classification": {
+      "const": "customer_confidential",
+      "type": "string"
+    },
+    "payload_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "customer_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "changed_field_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "display_name",
+              "contact_channel",
+              "identity_evidence",
+              "residency",
+              "beneficial_owner"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 5
+        },
+        "profile_evidence_ref": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "customer_id",
+        "changed_field_codes",
+        "profile_evidence_ref"
+      ]
+    }
+  },
+  "required": [
+    "event_id",
+    "event_type",
+    "schema_version",
+    "tenant_id",
+    "producer",
+    "aggregate_type",
+    "aggregate_id",
+    "aggregate_version",
+    "sequence_no",
+    "occurred_at",
+    "emitted_at",
+    "correlation_id",
+    "causation_id",
+    "idempotency_key",
+    "classification",
+    "payload_sha256",
+    "payload"
+  ],
+  "description": "僅欄位代碼，不攜直接個資；必要時觸發重評。"
+}
