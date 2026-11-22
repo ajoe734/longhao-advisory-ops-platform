@@ -31,7 +31,7 @@
 
 ## 正常PostgreSQL/RLS與CI
 
-本工作環境無法啟動一般socket server，standalone執行具特權，**不能證明RLS或runtime roles已通過**。CI工作流另以正常PostgreSQL16 service執行migration、業務assertions及獨立RLS/role suite；實際結果以本commit對應[GitHub Actions](https://github.com/ajoe734/longhao-advisory-ops-platform/actions)為準，未執行前不列PASS。
+本工作環境無法啟動一般socket server，standalone執行具特權，**不能證明RLS或runtime roles已通過**。正常PostgreSQL16 CI已在[run 45026440882的資料庫job](https://github.com/ajoe734/longhao-advisory-ops-platform/actions/runs/45026440882/job/137220397308)通過4份migration、52項業務約束及12項RLS/角色隔離，共64項assertions。此run的文件job因pip cache未指定requirements-dev.txt路徑而在安裝前失敗；已補cache-dependency-path，完整後續結果見[GitHub Actions](https://github.com/ajoe734/longhao-advisory-ops-platform/actions)。不得將單一job通過誤稱整個run通過。
 
 ## 不混淆的未完成項
 

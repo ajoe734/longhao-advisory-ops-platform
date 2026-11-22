@@ -20,8 +20,8 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "bytes": 2109,
-      "sha256": "64a0ac08eadbea9754fa49127b2374af4e8a8a68e1238049e7cebf3c19cfcadd"
+      "bytes": 2163,
+      "sha256": "ef3c40b8ba34488e48cdb788176f94b250150bf524434463e6adc81cd817e7ad"
     },
     {
       "path": ".gitignore",
@@ -1110,8 +1110,8 @@
     },
     {
       "path": "project/verification.md",
-      "bytes": 3141,
-      "sha256": "6f2b320215f8b1f9d077785735fdf928cba04da70a344ad71e3a97b5e5972caa"
+      "bytes": 3411,
+      "sha256": "9dd373d05cd81b60b3fc7ffe95fde3b490960defdd765ca26dd2023c08d00586"
     },
     {
       "path": "qa/test-catalog.json",
