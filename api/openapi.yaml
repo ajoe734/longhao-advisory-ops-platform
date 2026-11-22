@@ -1,0 +1,177 @@
+openapi: 3.1.0
+info:
+  title: LongGood Operations API
+  version: 0.1.0
+  description: Draft API contract. Vendor schemas and legal decisions remain TBD.
+servers:
+  - url: /api/v1
+security:
+  - staffBearer: []
+paths:
+  /customers:
+    post:
+      summary: Create or resolve customer identity
+      operationId: createOrResolveCustomer
+      tags: [CMS]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerCreate'
+      responses:
+        '201':
+          description: Customer resolved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+  /applications:
+    post:
+      summary: Start application
+      operationId: createApplication
+      tags: [Contract]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplicationCreate'
+      responses:
+        '201':
+          description: Application created
+  /applications/{applicationId}/customer-signature:
+    post:
+      summary: Record customer signature before due diligence
+      operationId: recordCustomerSignature
+      tags: [Contract]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - in: path
+          name: applicationId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '202':
+          description: Signature evidence accepted for verification
+  /applications/{applicationId}/due-diligence:
+    post:
+      summary: Submit KYC, suitability and applicable AML/CFT information
+      operationId: submitDueDiligence
+      tags: [DueDiligence]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - in: path
+          name: applicationId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '202':
+          description: Submission queued for checks/review
+  /applications/{applicationId}/company-acceptance:
+    post:
+      summary: Record authorized company acceptance decision
+      operationId: decideCompanyAcceptance
+      tags: [Contract]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - in: path
+          name: applicationId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Decision recorded
+  /research-candidates:
+    post:
+      summary: Ingest Pantheon research candidate event
+      operationId: ingestResearchCandidate
+      tags: [Research]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Candidate accepted or duplicate acknowledged
+  /review-cases/{reviewCaseId}/servant-revision-requests:
+    post:
+      summary: Request research revision through Agora/Servant
+      operationId: requestServantRevision
+      tags: [Research]
+      parameters:
+        - in: path
+          name: reviewCaseId
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Revision request queued
+  /report-versions/{reportVersionId}/signature:
+    post:
+      summary: Record analyst signature evidence for exact immutable version
+      operationId: signReportVersion
+      tags: [Advisory]
+      parameters:
+        - in: path
+          name: reportVersionId
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Signature verification started
+  /publications:
+    get:
+      summary: List approved publications for internal review
+      operationId: listPublications
+      tags: [Advisory]
+      responses:
+        '200':
+          description: Publication list
+  /cases:
+    post:
+      summary: Create omnichannel service case
+      operationId: createServiceCase
+      tags: [CustomerService]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: Case created
+components:
+  securitySchemes:
+    staffBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 128 }
+  schemas:
+    CustomerCreate:
+      type: object
+      required: [externalSystem, externalSubject]
+      properties:
+        externalSystem: { type: string, enum: [legendflow, manual] }
+        externalSubject: { type: string }
+        email: { type: string, format: email }
+    Customer:
+      type: object
+      required: [customerId, status]
+      properties:
+        customerId: { type: string, format: uuid }
+        status: { type: string }
+    ApplicationCreate:
+      type: object
+      required: [customerId, contractPackageVersionId]
+      properties:
+        customerId: { type: string, format: uuid }
+        contractPackageVersionId: { type: string, format: uuid }
+        serviceSelection: { type: object }
