@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 from modules.contracts_entitlements.domain import (
     ActorContext,
+    ClearanceStatus,
+    ConflictError,
     ForbiddenError,
+    KycStatus,
+    NotFoundError,
     StaleVersionError,
     ValidationError,
     canonical_hash,
@@ -226,7 +232,7 @@ def test_uat_m02_009_amendment_does_not_grant_early_access(m02):
     )
     assert amendment.data["state"] == "draft"
 
-    m02["service"].evaluate_entitlements(entitlement_service_ctx(), contract_id, {"cause_event_id": new_id(), "policy_version": "v1"}, expected_version=2, idempotency_key="eval-post-amend")
+    m02["service"].evaluate_entitlements(entitlement_service_ctx(), contract_id, {"cause_event_id": new_id(), "policy_version": "v1"}, expected_version=3, idempotency_key="eval-post-amend")
     items = m02["service"].list_customer_entitlements(operator_ctx(), CUSTOMER_ACTOR).data["items"]
     states = sorted(row["state"] for row in items)
     assert states == ["active", "eligible"]
@@ -319,3 +325,323 @@ def test_uat_m02_012_termination_preserves_contract_and_signature_evidence(m02):
     assert signature_still_present.application_id == APPLICATION_A
     refund_jobs = [job for job in m02["repository"].snapshot().jobs.values() if job.kind == "refund_review"]
     assert len(refund_jobs) == 1
+
+
+# ---- regression: candidate 409bd4111339 reopen findings F2-F6 -----------------
+
+
+def test_regression_f2_receive_customer_signature_is_isolated_by_tenant(m02):
+    package, package_sha256 = create_approved_package(m02, package_code="advisory-f2-tenant", idempotency_key="pkg-f2-tenant")
+    register_application(m02, APPLICATION_A, CUSTOMER_ACTOR, package["id"])
+    consent_id = "60000000-0000-0000-0000-000000000031"
+    m02["evidence"].add(TENANT, consent_id)
+    session_resp = m02["service"].create_customer_signature(
+        operator_ctx(), APPLICATION_A,
+        {"package_version_id": package["id"], "package_sha256": package_sha256, "electronic_signing_consent_id": consent_id, "return_route": "application_progress"},
+        expected_version=1, idempotency_key="sign-f2-tenant",
+    )
+    provider_ref = session_resp.data["provider_session_ref"]
+    other_tenant_ctx = ActorContext(
+        "10000000-0000-0000-0000-000000000099", "90000000-0000-0000-0000-000000000002",
+        frozenset({"signature_adapter"}), principal_type="service",
+    )
+    callback = {
+        "event_id": new_id(), "provider_session_ref": provider_ref, "application_id": APPLICATION_A,
+        "package_version_id": package["id"], "document_sha256": package_sha256, "result": "failed",
+    }
+    with pytest.raises(NotFoundError):
+        m02["service"].receive_customer_signature(other_tenant_ctx, callback, idempotency_key="receive-f2-tenant")
+    session = next(row for row in m02["repository"].snapshot().sessions.values() if row.application_id == APPLICATION_A)
+    assert session.status == "pending"
+
+
+def test_regression_f2_receive_customer_signature_requires_signature_adapter_role(m02):
+    package, package_sha256 = create_approved_package(m02, package_code="advisory-f2-role", idempotency_key="pkg-f2-role")
+    register_application(m02, APPLICATION_A, CUSTOMER_ACTOR, package["id"])
+    consent_id = "60000000-0000-0000-0000-000000000032"
+    m02["evidence"].add(TENANT, consent_id)
+    session_resp = m02["service"].create_customer_signature(
+        operator_ctx(), APPLICATION_A,
+        {"package_version_id": package["id"], "package_sha256": package_sha256, "electronic_signing_consent_id": consent_id, "return_route": "application_progress"},
+        expected_version=1, idempotency_key="sign-f2-role",
+    )
+    callback = {
+        "event_id": new_id(), "provider_session_ref": session_resp.data["provider_session_ref"], "application_id": APPLICATION_A,
+        "package_version_id": package["id"], "document_sha256": package_sha256, "result": "failed",
+    }
+    with pytest.raises(ForbiddenError):
+        m02["service"].receive_customer_signature(operator_ctx(), callback, idempotency_key="receive-f2-role")
+
+
+def test_regression_f2_package_hash_mismatch_persists_session_failure(m02):
+    package, package_sha256 = create_approved_package(m02, package_code="advisory-f2-hash", idempotency_key="pkg-f2-hash")
+    register_application(m02, APPLICATION_A, CUSTOMER_ACTOR, package["id"])
+    consent_id = "60000000-0000-0000-0000-000000000033"
+    m02["evidence"].add(TENANT, consent_id)
+    session_resp = m02["service"].create_customer_signature(
+        operator_ctx(), APPLICATION_A,
+        {"package_version_id": package["id"], "package_sha256": package_sha256, "electronic_signing_consent_id": consent_id, "return_route": "application_progress"},
+        expected_version=1, idempotency_key="sign-f2-hash",
+    )
+    webhook_ctx = ActorContext(TENANT, "90000000-0000-0000-0000-000000000001", frozenset({"signature_adapter"}), principal_type="service")
+    callback = {
+        "event_id": new_id(), "provider_session_ref": session_resp.data["provider_session_ref"], "application_id": APPLICATION_A,
+        "package_version_id": package["id"], "document_sha256": "f" * 64,
+        "signed_asset_id": new_id(), "signed_file_sha256": "c" * 64, "provider_signed_at": wire_time(NOW),
+        "verification_evidence_asset_id": new_id(), "result": "signed",
+    }
+    with pytest.raises(ValidationError) as excinfo:
+        m02["service"].receive_customer_signature(webhook_ctx, callback, idempotency_key="receive-f2-hash")
+    assert excinfo.value.code == "package_hash_mismatch"
+    # The session-failed mutation must survive even though the command itself raises;
+    # the old code raised *inside* the atomic callback, rolling the status change back.
+    session = next(row for row in m02["repository"].snapshot().sessions.values() if row.application_id == APPLICATION_A)
+    assert session.status == "failed"
+
+
+def test_regression_f3_decide_company_acceptance_rejects_mismatched_package_version(m02):
+    package_v1, hash_v1 = create_approved_package(m02, package_code="advisory-f3-version", idempotency_key="pkg-f3-v1")
+    package_v2, _ = create_approved_package(
+        m02, package_code="advisory-f3-version", documents=[document_ref("50000000-0000-0000-0000-000000000098")], idempotency_key="pkg-f3-v2",
+    )
+    register_application(m02, APPLICATION_A, CUSTOMER_ACTOR, package_v1["id"])
+    _, _, signature_id = sign_application(m02, APPLICATION_A, package_v1, hash_v1)
+    kyc_id, suit_id, clear_id = new_id(), new_id(), new_id()
+    set_gates(m02, APPLICATION_A, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id)
+
+    with pytest.raises(ValidationError) as excinfo:
+        accept_application(m02, APPLICATION_A, package_v2, signature_id, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id)
+    assert excinfo.value.code == "package_version_mismatch"
+    assert m02["repository"].snapshot().contracts == {}
+
+
+def test_regression_f3_decide_company_acceptance_rejects_unapproved_package(m02):
+    draft_resp = m02["service"].create_contract_package(
+        operator_ctx(),
+        {"package_code": "advisory-f3-draft", "version_label": "v1", "documents": [document_ref("50000000-0000-0000-0000-000000000097")],
+         "service_codes": ["annual_advisory"], "effective_from": wire_time(NOW), "acceptance_terms_version": "terms-v1"},
+        idempotency_key="pkg-f3-draft",
+    )
+    draft_package = draft_resp.data
+    approved_package, package_sha256 = create_approved_package(m02, package_code="advisory-f3-live", idempotency_key="pkg-f3-live")
+    register_application(m02, APPLICATION_A, CUSTOMER_ACTOR, approved_package["id"])
+    _, _, signature_id = sign_application(m02, APPLICATION_A, approved_package, package_sha256)
+    kyc_id, suit_id, clear_id = new_id(), new_id(), new_id()
+    set_gates(m02, APPLICATION_A, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id)
+
+    with pytest.raises(ValidationError) as excinfo:
+        accept_application(m02, APPLICATION_A, draft_package, signature_id, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id)
+    assert excinfo.value.code == "package_not_approved"
+
+
+def test_regression_f3_decide_company_acceptance_rejects_duplicate_accept(m02):
+    package, package_sha256 = create_approved_package(m02, package_code="advisory-f3-dup", idempotency_key="pkg-f3-dup")
+    register_application(m02, APPLICATION_A, CUSTOMER_ACTOR, package["id"])
+    _, _, signature_id = sign_application(m02, APPLICATION_A, package, package_sha256)
+    kyc_id, suit_id, clear_id = new_id(), new_id(), new_id()
+    set_gates(m02, APPLICATION_A, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id)
+
+    first = accept_application(
+        m02, APPLICATION_A, package, signature_id, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id, idempotency_key="accept-f3-first",
+    )
+    assert first.data["contract_id"] is not None
+
+    with pytest.raises(ConflictError) as excinfo:
+        accept_application(
+            m02, APPLICATION_A, package, signature_id, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id, idempotency_key="accept-f3-second",
+        )
+    assert excinfo.value.code == "contract_already_exists"
+    contracts = [c for c in m02["repository"].snapshot().contracts.values() if c.application_id == APPLICATION_A]
+    assert len(contracts) == 1
+
+
+def test_regression_f4_evaluate_entitlements_suspends_when_live_gates_fail(m02):
+    package, package_sha256 = create_approved_package(m02, package_code="advisory-f4-gates", idempotency_key="pkg-f4-gates")
+    register_application(m02, APPLICATION_A, CUSTOMER_ACTOR, package["id"])
+    _, _, signature_id = sign_application(m02, APPLICATION_A, package, package_sha256)
+    kyc_id, suit_id, clear_id = new_id(), new_id(), new_id()
+    set_gates(m02, APPLICATION_A, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id)
+    m02["payments"].set_condition(TENANT, APPLICATION_A, "pay-f4-gates")
+    contract_id = accept_application(
+        m02, APPLICATION_A, package, signature_id, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id, idempotency_key="accept-f4-gates",
+    ).data["contract_id"]
+
+    # Compliance later reverses its decision; evaluate_entitlements must re-read the
+    # authoritative port live, not just the payment condition captured at acceptance.
+    m02["gates"].set_kyc(TENANT, APPLICATION_A, KycStatus(kyc_id, "rejected", 2))
+    m02["gates"].set_clearance(TENANT, APPLICATION_A, ClearanceStatus(clear_id, "denied", 2, None))
+
+    result = m02["service"].evaluate_entitlements(
+        entitlement_service_ctx(), contract_id, {"cause_event_id": new_id(), "policy_version": "v1"},
+        expected_version=1, idempotency_key="eval-f4-gates",
+    )
+    assert result.data["decision"] != "grant"
+    entitlement = next(row for row in m02["repository"].snapshot().entitlements.values() if row.contract_id == contract_id)
+    assert entitlement.status == "suspended"
+
+
+def test_regression_f4_evaluate_entitlements_rejects_evaluation_before_acceptance(m02):
+    package, package_sha256 = create_approved_package(m02, package_code="advisory-f4-backdate", idempotency_key="pkg-f4-backdate")
+    register_application(m02, APPLICATION_A, CUSTOMER_ACTOR, package["id"])
+    _, _, signature_id = sign_application(m02, APPLICATION_A, package, package_sha256)
+    kyc_id, suit_id, clear_id = new_id(), new_id(), new_id()
+    set_gates(m02, APPLICATION_A, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id)
+    m02["payments"].set_condition(TENANT, APPLICATION_A, "pay-f4-backdate")
+    contract_id = accept_application(
+        m02, APPLICATION_A, package, signature_id, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id, idempotency_key="accept-f4-backdate",
+    ).data["contract_id"]
+
+    backdated = wire_time(NOW - timedelta(days=1))
+    with pytest.raises(ValidationError) as excinfo:
+        m02["service"].evaluate_entitlements(
+            entitlement_service_ctx(), contract_id, {"cause_event_id": new_id(), "policy_version": "v1", "evaluation_at": backdated},
+            expected_version=1, idempotency_key="eval-f4-backdate",
+        )
+    assert excinfo.value.code == "effective_before_acceptance"
+
+
+def test_regression_f4_evaluate_entitlements_emits_the_actual_decision_id(m02):
+    package, package_sha256 = create_approved_package(m02, package_code="advisory-f4-decid", idempotency_key="pkg-f4-decid")
+    register_application(m02, APPLICATION_A, CUSTOMER_ACTOR, package["id"])
+    _, _, signature_id = sign_application(m02, APPLICATION_A, package, package_sha256)
+    kyc_id, suit_id, clear_id = new_id(), new_id(), new_id()
+    set_gates(m02, APPLICATION_A, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id)
+    m02["payments"].set_condition(TENANT, APPLICATION_A, "pay-f4-decid")
+    contract_id = accept_application(
+        m02, APPLICATION_A, package, signature_id, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id, idempotency_key="accept-f4-decid",
+    ).data["contract_id"]
+
+    cause_event_id = new_id()
+    result = m02["service"].evaluate_entitlements(
+        entitlement_service_ctx(), contract_id, {"cause_event_id": cause_event_id, "policy_version": "v1"},
+        expected_version=1, idempotency_key="eval-f4-decid",
+    )
+    decision_id = result.data["id"]
+    assert decision_id != cause_event_id
+    changed_events = [e for e in m02["repository"].snapshot().outbox.values() if e.event_type == "entitlement.changed"]
+    assert changed_events
+    for event in changed_events:
+        assert event.payload["decision_id"] == decision_id
+        assert event.causation_id == cause_event_id
+
+
+def test_regression_f4_terminate_contract_records_entitlement_decision(m02):
+    package, package_sha256 = create_approved_package(m02, package_code="advisory-f4-term", idempotency_key="pkg-f4-term")
+    register_application(m02, APPLICATION_A, CUSTOMER_ACTOR, package["id"])
+    _, _, signature_id = sign_application(m02, APPLICATION_A, package, package_sha256)
+    kyc_id, suit_id, clear_id = new_id(), new_id(), new_id()
+    set_gates(m02, APPLICATION_A, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id)
+    m02["payments"].set_condition(TENANT, APPLICATION_A, "pay-f4-term")
+    contract_id = accept_application(
+        m02, APPLICATION_A, package, signature_id, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id, idempotency_key="accept-f4-term",
+    ).data["contract_id"]
+    m02["service"].evaluate_entitlements(
+        entitlement_service_ctx(), contract_id, {"cause_event_id": new_id(), "policy_version": "v1"}, expected_version=1, idempotency_key="eval-f4-term-pre",
+    )
+
+    evidence_id = "60000000-0000-0000-0000-000000000091"
+    m02["evidence"].add(TENANT, evidence_id)
+    m02["service"].terminate_contract(
+        operator_ctx(), contract_id,
+        {"requested_at": wire_time(NOW), "effective_at": wire_time(NOW), "reason_code": "customer_withdrawal",
+         "customer_request_evidence_id": evidence_id, "refund_evaluation_required": False},
+        expected_version=2, idempotency_key="terminate-f4-term",
+    )
+    entitlement = next(row for row in m02["repository"].snapshot().entitlements.values() if row.contract_id == contract_id)
+    assert entitlement.status == "revoked"
+    assert entitlement.last_decision_id is not None
+    decision = m02["repository"].snapshot().entitlement_decisions.get((TENANT, entitlement.last_decision_id))
+    assert decision is not None
+    assert decision.decision == "revoke"
+    assert entitlement.id in decision.entitlement_ids
+    changed_events = [
+        e for e in m02["repository"].snapshot().outbox.values()
+        if e.event_type == "entitlement.changed" and e.aggregate_id == entitlement.id
+    ]
+    assert any(e.payload["decision_id"] == decision.id for e in changed_events)
+
+
+def test_regression_f6_create_customer_signature_replay_does_not_duplicate_provider_session(m02):
+    package, package_sha256 = create_approved_package(m02, package_code="advisory-f6-replay", idempotency_key="pkg-f6-replay")
+    register_application(m02, APPLICATION_A, CUSTOMER_ACTOR, package["id"])
+    consent_id = "60000000-0000-0000-0000-000000000041"
+    m02["evidence"].add(TENANT, consent_id)
+    body = {
+        "package_version_id": package["id"], "package_sha256": package_sha256,
+        "electronic_signing_consent_id": consent_id, "return_route": "application_progress",
+    }
+
+    first = m02["service"].create_customer_signature(operator_ctx(), APPLICATION_A, body, expected_version=1, idempotency_key="sign-f6-replay")
+    second = m02["service"].create_customer_signature(operator_ctx(), APPLICATION_A, body, expected_version=1, idempotency_key="sign-f6-replay")
+
+    assert second.idempotency_replayed is True
+    assert first.data == second.data
+    assert len(m02["signer"].sessions) == 1
+
+
+def test_regression_f6_create_contract_amendment_rejects_unapproved_or_missing_package(m02):
+    package, package_sha256 = create_approved_package(m02, package_code="advisory-f6-amend", idempotency_key="pkg-f6-amend")
+    register_application(m02, APPLICATION_A, CUSTOMER_ACTOR, package["id"], selections=[service_selection(billing_interval="month")])
+    _, _, signature_id = sign_application(m02, APPLICATION_A, package, package_sha256)
+    kyc_id, suit_id, clear_id = new_id(), new_id(), new_id()
+    set_gates(m02, APPLICATION_A, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id)
+    contract_id = accept_application(
+        m02, APPLICATION_A, package, signature_id, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id, idempotency_key="accept-f6-amend",
+    ).data["contract_id"]
+
+    draft_resp = m02["service"].create_contract_package(
+        operator_ctx(),
+        {"package_code": "advisory-f6-amend-v2", "version_label": "v1", "documents": [document_ref("50000000-0000-0000-0000-000000000096")],
+         "service_codes": ["annual_advisory"], "effective_from": wire_time(NOW), "acceptance_terms_version": "terms-v1"},
+        idempotency_key="pkg-f6-amend-draft",
+    )
+    draft_package = draft_resp.data
+
+    with pytest.raises(ValidationError) as excinfo:
+        m02["service"].create_contract_amendment(
+            operator_ctx(), contract_id,
+            {"amendment_type": "renewal", "new_package_version_id": draft_package["id"], "service_selections": [service_selection(billing_interval="month")], "effective_at": wire_time(NOW)},
+            expected_version=1, idempotency_key="amend-f6-draft",
+        )
+    assert excinfo.value.code == "package_not_approved"
+
+    with pytest.raises(NotFoundError):
+        m02["service"].create_contract_amendment(
+            operator_ctx(), contract_id,
+            {"amendment_type": "renewal", "new_package_version_id": new_id(), "service_selections": [service_selection(billing_interval="month")], "effective_at": wire_time(NOW)},
+            expected_version=1, idempotency_key="amend-f6-missing",
+        )
+
+
+def test_regression_f6_create_contract_amendment_processes_all_selections_and_bumps_contract_version(m02):
+    package, package_sha256 = create_approved_package(m02, package_code="advisory-f6-multi", idempotency_key="pkg-f6-multi")
+    selections = [
+        service_selection(service_code="svc-a", billing_interval="month"),
+        service_selection(service_code="svc-b", billing_interval="month"),
+    ]
+    register_application(m02, APPLICATION_A, CUSTOMER_ACTOR, package["id"], selections=selections)
+    _, _, signature_id = sign_application(m02, APPLICATION_A, package, package_sha256)
+    kyc_id, suit_id, clear_id = new_id(), new_id(), new_id()
+    set_gates(m02, APPLICATION_A, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id)
+    contract_id = accept_application(
+        m02, APPLICATION_A, package, signature_id, kyc_id=kyc_id, suitability_id=suit_id, clearance_id=clear_id, idempotency_key="accept-f6-multi",
+    ).data["contract_id"]
+    contract_before = m02["repository"].snapshot().contracts[(TENANT, contract_id)]
+    services_before = {
+        row.id for (tenant, _), row in m02["repository"].snapshot().contract_services.items()
+        if tenant == TENANT and row.contract_id == contract_id
+    }
+
+    m02["service"].create_contract_amendment(
+        operator_ctx(), contract_id,
+        {"amendment_type": "renewal", "new_package_version_id": package["id"], "service_selections": selections, "effective_at": wire_time(NOW)},
+        expected_version=contract_before.version, idempotency_key="amend-f6-multi",
+    )
+
+    contract_after = m02["repository"].snapshot().contracts[(TENANT, contract_id)]
+    assert contract_after.version == contract_before.version + 1
+    services_after = {
+        row.id for (tenant, _), row in m02["repository"].snapshot().contract_services.items()
+        if tenant == TENANT and row.contract_id == contract_id
+    }
+    assert len(services_after - services_before) == 2

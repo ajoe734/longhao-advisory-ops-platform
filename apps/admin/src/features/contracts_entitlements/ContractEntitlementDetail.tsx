@@ -17,8 +17,11 @@ export function ContractEntitlementDetail({
   if (contractState.kind === "denied") return <p role="alert">無權限查看此契約。</p>;
   if (contractState.kind === "error") return <p role="alert">{contractState.problem.code}（{contractState.problem.correlation_id}）</p>;
   if (contractState.kind === "empty") return <p>{contractState.message}</p>;
+  if (contractState.kind === "processing" && !contractState.value) {
+    return <p role="status">處理中，收據：{contractState.receiptId}；長任務不代表已完成，請以查詢結果為準。</p>;
+  }
 
-  const contract = contractState.value;
+  const contract = contractState.value as Contract;
   const canTerminate = isAllowed(contract.allowed_actions, "terminate_contract");
 
   return (

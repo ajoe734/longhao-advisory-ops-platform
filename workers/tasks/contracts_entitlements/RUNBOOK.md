@@ -12,7 +12,7 @@
 
 ## 事件消費邊界
 
-`M02EventConsumer` 只做 inbox 去重、payload hash／schema 檢查與 audit；收到 `kyc.decision_recorded`、`suitability.assessed`、`business_clearance.changed`、`finance.payment_confirmed` 只會建立一筆 `gate_changed_recheck`／`payment_confirmed_recheck` job，不直接改 entitlement 狀態——真正的授權判斷在 `evaluate_entitlements` 執行時，由各自 port 即時重查權威狀態完成。`kyc.refresh_required` 只建立 `kyc_refresh_pending_review` job 供人工複核，不自動 suspend；`LegendFlow` 或任何下游都不可憑事件自行開通或撤銷權限。
+`M02EventConsumer` 只做 inbox 去重、payload hash／schema 檢查與 audit；收到 `kyc.decision_recorded`、`suitability.assessed`、`business_clearance.changed`、`finance.payment_confirmed`、`finance.refund_confirmed` 只會建立一筆 `gate_changed_recheck`／`payment_confirmed_recheck`／`refund_confirmed_recheck` job，不直接改 entitlement 狀態——真正的授權判斷在 `evaluate_entitlements` 執行時，由各自 port 即時重查權威狀態完成（KYC／適合度／AML 任一失效都會把目標狀態降為 `suspended`，不只看付款條件）。`EntitlementRecheckWorker` 以 `TaskRunner.lease(..., kinds={"gate_changed_recheck","payment_confirmed_recheck","refund_confirmed_recheck"})` 只租用自己認得的 job kind，不會把 `refund_review`／`kyc_refresh_pending_review` 等其他 kind 的 job 租走又晾在 `leased`；`refund_confirmed_recheck` 的 job payload 用 `contract_id`（而非 `application_id`）直接定位契約。`kyc.refresh_required` 只建立 `kyc_refresh_pending_review` job 供人工複核，不自動 suspend；`LegendFlow` 或任何下游都不可憑事件自行開通或撤銷權限。
 
 ## 合成故障恢復演練
 

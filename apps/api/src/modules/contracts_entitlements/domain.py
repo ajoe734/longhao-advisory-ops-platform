@@ -462,7 +462,7 @@ class AmendmentRecord:
     customer_id: str
     package_version_id: str
     contract_id: str
-    new_contract_service_id: str
+    new_contract_service_ids: list[str]
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
 

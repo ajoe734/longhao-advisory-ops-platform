@@ -12,7 +12,7 @@
 
 ## 關鍵控制
 
-可信任 context 決定 tenant/actor；CAS（`If-Match`）、payload-bound idempotency、maker-checker（package 提案者不可自行核准；package 製作者/核准者不可同時擔任同一申辦的公司接受者 → `segregation_conflict`）、stale-assessment 檢查（公司接受引用的 KYC/適合度/AML 必須是當前版本，否則 412 `stale_assessment`）、審計與 outbox 原子提交、entitlement 狀態機（`locked → eligible → active → suspended/expired/revoked`）皆在同一交易內完成。
+可信任 context 決定 tenant/actor；CAS（`If-Match`）、payload-bound idempotency（外部 side effect，例如 `signature_provider.create_session`，一律先查有無既存 receipt 再呼叫，避免 replay 產生第二個 provider session）、maker-checker（package 提案者不可自行核准；package 製作者/核准者不可同時擔任同一申辦的公司接受者 → `segregation_conflict`）、stale-assessment 檢查（公司接受引用的 KYC/適合度/AML 必須是當前版本，否則 412 `stale_assessment`；且 signature 與引用的 package_version_id 須一致、package 須為 `approved`、同一 application 不可重複建立 contract）、審計與 outbox 原子提交、entitlement 狀態機（`locked → eligible → active → suspended/expired/revoked`）皆在同一交易內完成。`evaluate_entitlements` 每次重算會即時重讀 KYC/適合度/AML port（不只看 payment condition），任一失效即把目標狀態降為 `suspended`；`entitlement.changed`／`terminate_contract` 撤銷事件的 `decision_id` 一律對應真正落地的 `contract.entitlement_decision.id`。`receive_customer_signature` 只接受 `signature_adapter` 服務身分，且一律以 webhook 金鑰解析出的 `tenant_id` 比對 session 所屬租戶，不信任 callback body 自帶的任何租戶線索。
 
 ## 外部狀態（NOT_CONNECTED）
 

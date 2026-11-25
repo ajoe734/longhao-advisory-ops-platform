@@ -32,7 +32,7 @@ class StoreState:
     session_by_ref: dict[str, tuple[str, str]] = field(default_factory=dict)
     signatures: dict[tuple[str, str], CustomerSignature] = field(default_factory=dict)
     signatures_by_application: dict[tuple[str, str], str] = field(default_factory=dict)
-    provider_tx_index: dict[tuple[str, str], str] = field(default_factory=dict)
+    provider_tx_index: dict[tuple[str, str, str], str] = field(default_factory=dict)
     acceptance_decisions: dict[tuple[str, str], AcceptanceDecision] = field(default_factory=dict)
     company_acceptances: dict[tuple[str, str], CompanyAcceptance] = field(default_factory=dict)
     contracts: dict[tuple[str, str], Contract] = field(default_factory=dict)

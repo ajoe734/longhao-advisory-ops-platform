@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Protocol
 
-from modules.contracts_entitlements.domain import ActorContext, ConflictError, Job, new_id, utc_now
+from modules.contracts_entitlements.domain import ActorContext, ConflictError, Job, utc_now
 from modules.contracts_entitlements.repository import InMemoryRepository, StoreState
 from modules.contracts_entitlements.service import ContractsEntitlementsService
 
@@ -103,9 +103,10 @@ class OutboxPublisher:
             candidates = sorted(
                 (
                     (key, event) for key, event in state.outbox.items()
-                    if event.status in {"pending", "retry"}
-                    and (event.next_attempt_at is None or event.next_attempt_at <= now)
-                    and (event.lease_until is None or event.lease_until <= now)
+                    if (
+                        (event.status in {"pending", "retry"} and (event.next_attempt_at is None or event.next_attempt_at <= now))
+                        or (event.status == "leased" and event.lease_until is not None and event.lease_until <= now)
+                    )
                 ),
                 key=lambda item: (item[1].emitted_at, item[1].sequence_no),
             )[:limit]
@@ -159,15 +160,17 @@ class TaskRunner:
         self.repository = repository
         self._clock = clock
 
-    def lease(self, worker_id: str, limit: int = 20) -> list[Job]:
+    def lease(self, worker_id: str, limit: int = 20, *, kinds: set[str] | None = None) -> list[Job]:
         now = self._clock()
 
         def lease_jobs(state: StoreState) -> list[Job]:
             selected = [
                 job for job in state.jobs.values()
-                if job.status in {"pending", "retry"}
-                and (job.next_attempt_at is None or job.next_attempt_at <= now)
-                and (job.lease_until is None or job.lease_until <= now)
+                if (kinds is None or job.kind in kinds)
+                and (
+                    (job.status in {"pending", "retry"} and (job.next_attempt_at is None or job.next_attempt_at <= now))
+                    or (job.status == "leased" and job.lease_until is not None and job.lease_until <= now)
+                )
             ][:limit]
             for job in selected:
                 job.status = "leased"
@@ -231,22 +234,33 @@ class EntitlementRecheckWorker:
         self.service = service
         self._clock = clock
 
+    _KINDS = {"gate_changed_recheck", "payment_confirmed_recheck", "refund_confirmed_recheck"}
+
     def run_once(self, worker_id: str, limit: int = 20) -> WorkerResult:
         runner = TaskRunner(self.repository, clock=self._clock)
-        jobs = [job for job in runner.lease(worker_id, limit) if job.kind in {"gate_changed_recheck", "payment_confirmed_recheck"}]
+        jobs = runner.lease(worker_id, limit, kinds=self._KINDS)
         processed = retried = dead = 0
         for job in jobs:
             try:
-                application_id = job.payload["application_id"]
-                contract_id = self.repository.read(lambda state: state.contract_by_application.get((job.tenant_id, application_id)))
+                if job.kind == "refund_confirmed_recheck":
+                    contract_id = job.payload["contract_id"]
+                else:
+                    application_id = job.payload["application_id"]
+                    contract_id = self.repository.read(lambda state: state.contract_by_application.get((job.tenant_id, application_id)))
                 if contract_id is None:
                     runner.complete(job.tenant_id, job.id, worker_id)
                     processed += 1
                     continue
-                contract = self.repository.read(lambda state: state.contracts[(job.tenant_id, contract_id)])
+                contract = self.repository.read(lambda state: state.contracts.get((job.tenant_id, contract_id)))
+                if contract is None:
+                    runner.complete(job.tenant_id, job.id, worker_id)
+                    processed += 1
+                    continue
                 self.service.evaluate_entitlements(
                     _entitlement_service_identity(job.tenant_id), contract_id,
-                    {"cause_event_id": new_id(), "policy_version": "worker-auto-recheck-v1"},
+                    # job.id is deterministic across retries, unlike a fresh new_id(); otherwise the
+                    # idempotency fingerprint would differ on retry and a safe replay would 409 instead.
+                    {"cause_event_id": job.id, "policy_version": "worker-auto-recheck-v1"},
                     expected_version=contract.version, idempotency_key=f"worker-recheck:{job.id}",
                 )
                 runner.complete(job.tenant_id, job.id, worker_id)

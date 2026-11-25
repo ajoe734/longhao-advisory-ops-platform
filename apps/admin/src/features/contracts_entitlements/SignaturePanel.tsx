@@ -14,8 +14,11 @@ export function SignaturePanel({
   if (packageState.kind === "denied") return <p role="alert">無權限查看此契約文件；請聯絡業務單位。</p>;
   if (packageState.kind === "error") return <p role="alert">{packageState.problem.code}（{packageState.problem.correlation_id}）</p>;
   if (packageState.kind === "empty") return <p>{packageState.message}</p>;
+  if (packageState.kind === "processing" && !packageState.value) {
+    return <p role="status">契約文件處理中，收據：{packageState.receiptId}</p>;
+  }
 
-  const contractPackage = packageState.value;
+  const contractPackage = packageState.value as ContractPackage;
   const canSign = isAllowed(contractPackage.allowed_actions, "create_customer_signature") && contractPackage.state === "approved";
 
   return (

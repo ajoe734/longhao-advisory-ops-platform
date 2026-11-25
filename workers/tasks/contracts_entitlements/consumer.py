@@ -24,7 +24,7 @@ _CONTRACTS: dict[str, tuple[str, str, set[str], str | None]] = {
     "suitability.assessed": ("M03", "suitability_assessment", {"assessment_id", "application_id", "state", "rule_version"}, "gate_changed_recheck"),
     "business_clearance.changed": ("M04", "business_clearance", {"clearance_id", "application_id", "decision", "expires_at"}, "gate_changed_recheck"),
     "finance.payment_confirmed": ("M14", "payment", {"payment_id", "application_id", "invoice_id", "confirmed_at", "evidence_snapshot_id"}, "payment_confirmed_recheck"),
-    "finance.refund_confirmed": ("M14", "refund", {"refund_id", "contract_id", "original_payment_id", "allocation_snapshot_id", "confirmed_at"}, None),
+    "finance.refund_confirmed": ("M14", "refund", {"refund_id", "contract_id", "original_payment_id", "allocation_snapshot_id", "confirmed_at"}, "refund_confirmed_recheck"),
     "kyc.refresh_required": ("M03", "kyc_submission", {"customer_id", "submission_id", "refresh_case_id", "due_at"}, "kyc_refresh_pending_review"),
 }
 
@@ -116,9 +116,11 @@ class M02EventConsumer:
             return "application_noted"
         if job_kind is None:
             return f"{event_type}_noted"
+        key_field = _AGGREGATE_KEY_FIELD[event_type]
+        key_value = payload.get(key_field, envelope["aggregate_id"])
         job = Job(
             id=new_id(), tenant_id=tenant_id, kind=job_kind,
-            payload={"application_id": payload.get(_AGGREGATE_KEY_FIELD[event_type], envelope["aggregate_id"]), "source_event_type": event_type},
+            payload={key_field: key_value, "source_event_type": event_type},
             created_at=utc_now(), updated_at=utc_now(),
         )
         state.jobs[(tenant_id, job.id)] = job

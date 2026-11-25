@@ -220,7 +220,13 @@ class ContractsEntitlementsService:
             raise ValidationError("electronic signing consent evidence does not exist", code="evidence_not_found", field_name="electronic_signing_consent_id")
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
-        draft = self.signature_provider.create_session(context.tenant_id, application_id, package_version_id)
+        # The provider session must not be (re)created for an idempotent replay: only
+        # call out when no receipt for this exact key/payload exists yet.
+        existing_receipt = self._existing_receipt(context, "create_customer_signature", idempotency_key)
+        draft = (
+            self.signature_provider.create_session(context.tenant_id, application_id, package_version_id)
+            if existing_receipt is None else None
+        )
 
         def mutate(state: StoreState) -> _Outcome:
             session = SignatureSession(
@@ -236,6 +242,8 @@ class ContractsEntitlementsService:
         return self._run_command(context, "create_customer_signature", idempotency_key, {"application_id": application_id, **body}, correlation_id, mutate)
 
     def receive_customer_signature(self, context, body: dict[str, Any], *, idempotency_key: str, correlation_id: str | None = None) -> ServiceResponse:
+        if context.principal_type != "service" or "signature_adapter" not in context.roles:
+            raise ForbiddenError("only the signature adapter identity may receive signature callbacks")
         self._body(
             body,
             {"event_id", "provider_session_ref", "application_id", "package_version_id", "document_sha256",
@@ -257,7 +265,7 @@ class ContractsEntitlementsService:
 
         def mutate(state: StoreState) -> _Outcome:
             session_key = state.session_by_ref.get(body["provider_session_ref"])
-            if session_key is None:
+            if session_key is None or session_key[0] != context.tenant_id:
                 raise NotFoundError("signature session was not found")
             session = state.sessions[session_key]
             if session.application_id != application_id or session.package_version_id != package_version_id:
@@ -274,12 +282,13 @@ class ContractsEntitlementsService:
                 session.status = "failed"
                 session.version += 1
                 session.updated_at = now
-                raise ValidationError("signed document does not match the current approved package", code="package_hash_mismatch")
+                error = ValidationError("signed document does not match the current approved package", code="package_hash_mismatch")
+                return _Outcome({}, error.status, "signature_session", session.id, session.version, error=error)
             signed_file_sha256 = require_sha256(body["signed_file_sha256"], "signed_file_sha256")
             signed_asset_id = require_uuid(body["signed_asset_id"], "signed_asset_id")
             verification_evidence_asset_id = require_uuid(body["verification_evidence_asset_id"], "verification_evidence_asset_id")
             provider_signed_at = self._parse_time(body["provider_signed_at"], "provider_signed_at")
-            provider_tx_key = ("legendflow_esign", event_id)
+            provider_tx_key = (context.tenant_id, "legendflow_esign", event_id)
             existing_tx = state.provider_tx_index.get(provider_tx_key)
             if existing_tx is not None and existing_tx != session.id:
                 raise ConflictError("provider transaction id was already used by another signature", code="duplicate_provider_transaction")
@@ -337,6 +346,8 @@ class ContractsEntitlementsService:
         package = self._find_package(context.tenant_id, package_version_id)
         if package is None:
             raise NotFoundError("contract package was not found")
+        if package.state != "approved":
+            raise ValidationError("only an approved package may be used for company acceptance", code="package_not_approved")
         if context.actor_id in {package.proposed_by, package.approved_by}:
             raise ForbiddenError("the package drafter or approver cannot also decide company acceptance", code="segregation_conflict")
         correlation_id = self._correlation(correlation_id)
@@ -346,6 +357,8 @@ class ContractsEntitlementsService:
             signature = state.signatures.get((context.tenant_id, customer_signature_id))
             if signature is None or signature.application_id != application_id:
                 raise NotFoundError("customer signature was not found")
+            if signature.package_version_id != package_version_id:
+                raise ValidationError("customer signature does not match the referenced package version", code="package_version_mismatch")
 
             if body["decision"] != "accept":
                 decision = AcceptanceDecision(
@@ -367,6 +380,8 @@ class ContractsEntitlementsService:
                 )
                 return _Outcome(decision.to_api([]), 200, "acceptance_decision", decision.id, 1)
 
+            if state.contract_by_application.get((context.tenant_id, application_id)) is not None:
+                raise ConflictError("a contract already exists for this application", code="contract_already_exists")
             intended_effective_at = self._parse_time(body["intended_effective_at"], "intended_effective_at")
             kyc = self.kyc.current(context.tenant_id, application_id)
             if kyc is None or kyc.decision != "approved":
@@ -482,38 +497,47 @@ class ContractsEntitlementsService:
             self._cas(contract.version, expected_version)
             if contract.status not in {"accepted", "effective"}:
                 raise ConflictError("contract is not open for amendment", code="contract_not_amendable")
-            selection = body["service_selections"][0]
-            predecessor = next(
-                (row for (tenant, _), row in state.contract_services.items()
-                 if tenant == context.tenant_id and row.contract_id == contract_id and row.service_code == selection["service_code"]),
-                None,
-            )
-            if predecessor is None:
-                raise NotFoundError("no existing contract service matches this amendment")
-            if selection["billing_interval"] not in {"month", "year"}:
-                raise ValidationError("amendments require a recurring billing_interval", field_name="service_selections.0.billing_interval")
-            starts_at = max(effective_at, predecessor.ends_at)
-            ends_at = self._billing_period_end(starts_at, selection["billing_interval"])
-            new_service = ContractService(
-                id=new_id(), tenant_id=context.tenant_id, contract_id=contract_id, service_code=selection["service_code"],
-                service_chain_id=predecessor.service_chain_id, predecessor_service_id=predecessor.id, starts_at=starts_at,
-                ends_at=ends_at, untaxed_contract_amount=selection["quoted_price"]["amount"], tax_profile_ref=selection["tax_mapping_version"],
-                features_snapshot=selection, auto_renew=False, created_at=now, updated_at=now,
-            )
-            state.contract_services[(context.tenant_id, new_service.id)] = new_service
-            entitlement = Entitlement(
-                id=new_id(), tenant_id=context.tenant_id, customer_id=contract.customer_id, contract_id=contract_id,
-                contract_service_id=new_service.id, feature_code=new_service.service_code, valid_from=starts_at,
-                valid_until=ends_at, status="locked", created_at=now, updated_at=now,
-            )
-            state.entitlements[(context.tenant_id, entitlement.id)] = entitlement
-            state.entitlement_by_service_feature[(context.tenant_id, new_service.id, entitlement.feature_code)] = entitlement.id
+            new_package = state.packages.get((context.tenant_id, new_package_version_id))
+            if new_package is None:
+                raise NotFoundError("contract package was not found")
+            if new_package.state != "approved":
+                raise ValidationError("only an approved package may be used for an amendment", code="package_not_approved")
+            new_service_ids: list[str] = []
+            for selection in body["service_selections"]:
+                predecessor = next(
+                    (row for (tenant, _), row in state.contract_services.items()
+                     if tenant == context.tenant_id and row.contract_id == contract_id and row.service_code == selection["service_code"]),
+                    None,
+                )
+                if predecessor is None:
+                    raise NotFoundError("no existing contract service matches this amendment")
+                if selection["billing_interval"] not in {"month", "year"}:
+                    raise ValidationError("amendments require a recurring billing_interval", field_name="service_selections.billing_interval")
+                starts_at = max(effective_at, predecessor.ends_at)
+                ends_at = self._billing_period_end(starts_at, selection["billing_interval"])
+                new_service = ContractService(
+                    id=new_id(), tenant_id=context.tenant_id, contract_id=contract_id, service_code=selection["service_code"],
+                    service_chain_id=predecessor.service_chain_id, predecessor_service_id=predecessor.id, starts_at=starts_at,
+                    ends_at=ends_at, untaxed_contract_amount=selection["quoted_price"]["amount"], tax_profile_ref=selection["tax_mapping_version"],
+                    features_snapshot=selection, auto_renew=False, created_at=now, updated_at=now,
+                )
+                state.contract_services[(context.tenant_id, new_service.id)] = new_service
+                entitlement = Entitlement(
+                    id=new_id(), tenant_id=context.tenant_id, customer_id=contract.customer_id, contract_id=contract_id,
+                    contract_service_id=new_service.id, feature_code=new_service.service_code, valid_from=starts_at,
+                    valid_until=ends_at, status="locked", created_at=now, updated_at=now,
+                )
+                state.entitlements[(context.tenant_id, entitlement.id)] = entitlement
+                state.entitlement_by_service_feature[(context.tenant_id, new_service.id, entitlement.feature_code)] = entitlement.id
+                new_service_ids.append(new_service.id)
+            contract.version += 1
+            contract.updated_at = now
             record = AmendmentRecord(
                 id=new_id(), tenant_id=context.tenant_id, customer_id=contract.customer_id, package_version_id=new_package_version_id,
-                contract_id=contract_id, new_contract_service_id=new_service.id, created_at=now, updated_at=now,
+                contract_id=contract_id, new_contract_service_ids=new_service_ids, created_at=now, updated_at=now,
             )
             state.amendments[(context.tenant_id, record.id)] = record
-            return _Outcome(record.to_api(), 201, "contract_service", new_service.id, new_service.version)
+            return _Outcome(record.to_api(), 201, "contract", contract_id, contract.version)
 
         return self._run_command(context, "create_contract_amendment", idempotency_key, {"contract_id": contract_id, **body}, correlation_id, mutate)
 
@@ -552,6 +576,8 @@ class ContractsEntitlementsService:
             contract.obligations_ended_at = effective_at
             contract.version += 1
             contract.updated_at = now
+            decision_id = new_id()
+            revoked_entitlement_ids: list[str] = []
             for (tenant, _), service_row in state.contract_services.items():
                 if tenant != context.tenant_id or service_row.contract_id != contract_id:
                     continue
@@ -563,12 +589,14 @@ class ContractsEntitlementsService:
                     entitlement.status = "revoked"
                     entitlement.version += 1
                     entitlement.updated_at = now
+                    entitlement.last_decision_id = decision_id
+                    revoked_entitlement_ids.append(entitlement.id)
                     self._emit(
                         state, event_type="entitlement.changed", tenant_id=context.tenant_id, aggregate_type="entitlement",
                         aggregate_id=entitlement.id, aggregate_version=entitlement.version, correlation_id=correlation_id,
                         idempotency_key=f"{idempotency_key}:entitlement-{entitlement.id}",
                         payload={"entitlement_id": entitlement.id, "customer_id": entitlement.customer_id, "contract_id": contract_id,
-                                 "state": "revoked", "decision_id": new_id(), "valid_until": wire_time(entitlement.valid_until)},
+                                 "state": "revoked", "decision_id": decision_id, "valid_until": wire_time(entitlement.valid_until)},
                         now=now,
                     )
                 self._emit(
@@ -578,6 +606,15 @@ class ContractsEntitlementsService:
                     payload={"contract_service_id": service_row.id, "contract_id": contract_id, "customer_id": contract.customer_id, "ended_at": wire_time(effective_at)},
                     now=now,
                 )
+            if revoked_entitlement_ids:
+                decision = EntitlementDecision(
+                    id=decision_id, tenant_id=context.tenant_id, contract_id=contract_id, decision="revoke",
+                    policy_version="manual_termination", condition_snapshots=[{
+                        "gate": "contract_terminated", "result": "fail", "record_id": contract_id, "record_version": contract.version, "evaluated_at": wire_time(now),
+                    }],
+                    entitlement_ids=revoked_entitlement_ids, decided_at=now, created_at=now,
+                )
+                state.entitlement_decisions[(context.tenant_id, decision.id)] = decision
             self._emit(
                 state, event_type="contract.terminated", tenant_id=context.tenant_id, aggregate_type="contract",
                 aggregate_id=contract_id, aggregate_version=contract.version, correlation_id=correlation_id,
@@ -652,17 +689,24 @@ class ContractsEntitlementsService:
         def mutate(state: StoreState) -> _Outcome:
             contract = self._stored_contract(state, context.tenant_id, contract_id)
             self._cas(contract.version, expected_version)
+            acceptance = state.company_acceptances[(context.tenant_id, contract.company_acceptance_id)]
+            if now < acceptance.accepted_at:
+                raise ValidationError(
+                    "evaluation_at must not precede the company acceptance", field_name="evaluation_at", code="effective_before_acceptance",
+                )
             payment_ref = self.payments.condition_ref(context.tenant_id, contract.application_id)
+            gates_ok = self._gates_satisfied(context.tenant_id, contract.application_id, now)
             services = [row for (tenant, _), row in state.contract_services.items() if tenant == context.tenant_id and row.contract_id == contract_id]
             touched_ids: list[str] = []
             snapshots: list[dict[str, Any]] = []
             priority = {"grant": 5, "revoke": 4, "suspend": 3, "expire": 2, "deny": 1, "keep": 0}
             overall = "keep"
             went_active = False
+            decision_id = new_id()
             for service_row in services:
                 entitlement_id = state.entitlement_by_service_feature.get((context.tenant_id, service_row.id, service_row.service_code))
                 entitlement = state.entitlements[(context.tenant_id, entitlement_id)]
-                target = self._compute_target(entitlement, service_row, now, contract.status, payment_ref)
+                target = self._compute_target(entitlement, service_row, now, contract.status, payment_ref, gates_ok)
                 word = self._transition_word(entitlement.status, target, payment_ref)
                 if priority[word] > priority[overall]:
                     overall = word
@@ -679,8 +723,8 @@ class ContractsEntitlementsService:
                         aggregate_id=entitlement.id, aggregate_version=entitlement.version, correlation_id=correlation_id,
                         idempotency_key=f"{idempotency_key}:entitlement-{entitlement.id}",
                         payload={"entitlement_id": entitlement.id, "customer_id": entitlement.customer_id, "contract_id": contract_id,
-                                 "state": target, "decision_id": cause_event_id, "valid_until": wire_time(entitlement.valid_until)},
-                        now=now,
+                                 "state": target, "decision_id": decision_id, "valid_until": wire_time(entitlement.valid_until)},
+                        now=now, causation_id=cause_event_id,
                     )
                     if target == "expired":
                         self._emit(
@@ -688,7 +732,7 @@ class ContractsEntitlementsService:
                             aggregate_id=service_row.id, aggregate_version=1, correlation_id=correlation_id,
                             idempotency_key=f"{idempotency_key}:service-ended-{service_row.id}",
                             payload={"contract_service_id": service_row.id, "contract_id": contract_id, "customer_id": contract.customer_id, "ended_at": wire_time(now)},
-                            now=now,
+                            now=now, causation_id=cause_event_id,
                         )
                 snapshots.append({
                     "gate": "service_period", "result": "pass" if target == "active" else "pending" if target in {"eligible", "locked"} else "fail",
@@ -706,11 +750,11 @@ class ContractsEntitlementsService:
                     payload={"contract_id": contract_id, "customer_id": contract.customer_id, "effective_at": wire_time(now),
                              "service_starts_at": wire_time(min(row.starts_at for row in services)) if services else wire_time(now),
                              "service_ends_at": wire_time(max(row.ends_at for row in services)) if services else wire_time(now)},
-                    now=now,
+                    now=now, causation_id=cause_event_id,
                 )
             all_entitlement_ids = [state.entitlement_by_service_feature[(context.tenant_id, row.id, row.service_code)] for row in services]
             decision = EntitlementDecision(
-                id=new_id(), tenant_id=context.tenant_id, contract_id=contract_id, decision=overall, policy_version=policy_version,
+                id=decision_id, tenant_id=context.tenant_id, contract_id=contract_id, decision=overall, policy_version=policy_version,
                 condition_snapshots=snapshots or [{"gate": "contract_effective", "result": "pending", "record_id": contract_id, "record_version": contract.version, "evaluated_at": wire_time(now)}],
                 entitlement_ids=all_entitlement_ids, decided_at=now, created_at=now,
             )
@@ -770,6 +814,10 @@ class ContractsEntitlementsService:
         return self._run_command(context, "suspend_entitlement", idempotency_key, {"entitlement_id": entitlement_id, **body}, correlation_id, mutate)
 
     # ---- command transaction helpers ---------------------------------------
+
+    def _existing_receipt(self, context, operation: str, key: str) -> IdempotencyReceipt | None:
+        receipt_key = (context.tenant_id, context.actor_id, operation, key)
+        return self.repository.read(lambda state: state.idempotency.get(receipt_key))
 
     def _run_command(self, context, operation: str, key: str, request: dict[str, Any], correlation_id: str, mutate: Callable[[StoreState], _Outcome]) -> ServiceResponse:
         if not _KEY_RE.fullmatch(key):
@@ -920,8 +968,25 @@ class ContractsEntitlementsService:
             return starts_at + timedelta(days=30)
         return starts_at + timedelta(days=1)
 
+    def _gates_satisfied(self, tenant_id: str, application_id: str, now: datetime) -> bool:
+        """Re-read KYC/suitability/AML live; a cached event projection is never trusted here."""
+        kyc = self.kyc.current(tenant_id, application_id)
+        if kyc is None or kyc.decision != "approved":
+            return False
+        suitability = self.suitability.current(tenant_id, application_id)
+        if suitability is None or suitability.state not in {"suitable", "conditional"}:
+            return False
+        clearance = self.clearance.current(tenant_id, application_id)
+        if clearance is None or clearance.decision != "approved":
+            return False
+        if clearance.expires_at and clearance.expires_at <= now:
+            return False
+        return True
+
     @staticmethod
-    def _compute_target(entitlement: Entitlement, service: ContractService, now: datetime, contract_status: str, payment_ref: str | None) -> str:
+    def _compute_target(
+        entitlement: Entitlement, service: ContractService, now: datetime, contract_status: str, payment_ref: str | None, gates_ok: bool,
+    ) -> str:
         if entitlement.status == "revoked":
             return "revoked"
         if entitlement.status == "suspended":
@@ -930,6 +995,8 @@ class ContractsEntitlementsService:
             return "revoked"
         if now >= service.ends_at:
             return "expired"
+        if not gates_ok:
+            return "suspended"
         if now < service.starts_at:
             return "eligible" if contract_status in {"accepted", "effective"} else "locked"
         if contract_status not in {"accepted", "effective"}:
@@ -1012,6 +1079,11 @@ class ContractsEntitlementsService:
     def _package_actions(self, package: PackageVersion, context) -> list[str]:
         if package.state == "draft" and context.principal_type == "staff" and "compliance_reviewer" in context.roles and context.actor_id != package.proposed_by:
             return ["approve_contract_package"]
+        if package.state == "approved" and (
+            context.principal_type == "customer"
+            or (context.principal_type == "staff" and "contract_operator" in context.roles)
+        ):
+            return ["create_customer_signature"]
         return []
 
     def _contract_actions(self, contract: Contract, context) -> list[str]:
