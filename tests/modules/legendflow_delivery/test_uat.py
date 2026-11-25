@@ -15,6 +15,7 @@ from conftest import (
     TENANT,
     CHANNEL_PROOF_FORGED,
     CHANNEL_PROOF_LINE_OK,
+    WEBHOOK_KEY_ID,
     dispatch,
     seed_publication,
     send_receipt,
@@ -364,6 +365,45 @@ def test_uat_m09_012_webhook_requires_valid_signature_and_dedupes_legitimate_rep
     replay = send_receipt(env, body, idempotency_key="receipt-good-0002", nonce="x" * 16)
     assert replay.data["status"] == "duplicate"
     assert replay.data["receipt_id"] == accepted.data["receipt_id"]
+
+
+def test_uat_m09_012_webhook_nonce_replay_rejected_even_with_matching_idempotency_key(m09):
+    """F10 regression: moving the nonce check into ``mutate`` let it run
+    *after* ``_run_command``'s idempotency short-circuit, so replaying the
+    exact same signed request (same nonce AND same Idempotency-Key) returned
+    the cached 202 instead of 401 webhook_nonce_replayed. A legitimate retry
+    with a *fresh* nonce must still durably burn that fresh nonce even though
+    the operation itself ends up replaying the cached response."""
+    env = m09
+    set_entitlement(env, state="active")
+    seed_publication(env)
+    dispatch(env)
+    job = env["repository"].read(lambda state: next(j for (t, _), j in state.jobs.items() if t == TENANT))
+    env["service"].lease_jobs("worker-1", TENANT, limit=10)
+    env["service"].process_job("worker-1", TENANT, job.id)
+    message = _only_message(env)
+
+    body = {
+        "event_id": "e4000000-0000-0000-0000-000000000099", "provider_message_ref": message.provider_message_ref or "ref",
+        "delivery_id": message.id, "provider_status": "delivered", "provider_occurred_at": "2026-11-23T01:02:04.000000Z",
+        "provider_receipt_asset_id": "90000000-0000-0000-0000-000000000099",
+    }
+    first = send_receipt(env, body, idempotency_key="receipt-replay-key-0001", nonce="r" * 16)
+    assert first.data["status"] == "accepted"
+
+    # Exact replay: same nonce AND same Idempotency-Key must be rejected as a
+    # reused nonce, never short-circuited into a cached 202 idempotent reply.
+    with pytest.raises(UnauthorizedError) as excinfo:
+        send_receipt(env, body, idempotency_key="receipt-replay-key-0001", nonce="r" * 16)
+    assert excinfo.value.code == "webhook_nonce_replayed"
+
+    # Legitimate retry: same Idempotency-Key, fresh nonce. The operation
+    # itself replays the cached response, but the fresh nonce must still be
+    # durably recorded so it can never be reused on a later call.
+    retried = send_receipt(env, body, idempotency_key="receipt-replay-key-0001", nonce="s" * 16)
+    assert retried.idempotency_replayed is True
+    nonce_recorded = env["repository"].read(lambda state: (WEBHOOK_KEY_ID, "s" * 16) in state.webhook_nonces)
+    assert nonce_recorded is True
 
 
 def test_uat_m09_002_denied_report_access_is_still_audited(m09, member_a):

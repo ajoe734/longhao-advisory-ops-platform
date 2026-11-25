@@ -27,7 +27,7 @@
 告警（`m09_dispatch_job_oldest_age_seconds`）取得 `dead_letter_id` 後直接呼叫
 `redrive_delivery_event`。
 
-`apps/admin/src/features/legendflow_delivery/service.py` 的 `_delivery_actions`
+`apps/api/src/modules/legendflow_delivery/service.py` 的 `_delivery_actions`
 已預留：若 `delivery_supervisor` 之後透過已核准的契約變更取得某種查詢入口，
 對應 `DispatchJob.status == "dead_letter"` 的項目會回報
 `redrive_delivery_event` 於 `allowed_actions`，`RedriveReconciliation.tsx`

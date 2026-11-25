@@ -88,8 +88,16 @@ export function DeliveryMonitor({
                   <td>{delivery.last_error_code ?? "—"}</td>
                   <td>
                     <button
-                      disabled={!isAllowed(delivery.allowed_actions, "reconcile_delivery")}
-                      title={!isAllowed(delivery.allowed_actions, "reconcile_delivery") ? "目前狀態或角色不允許對帳" : undefined}
+                      disabled={
+                        !isAllowed(delivery.allowed_actions, "reconcile_delivery") &&
+                        !isAllowed(delivery.allowed_actions, "redrive_delivery_event")
+                      }
+                      title={
+                        !isAllowed(delivery.allowed_actions, "reconcile_delivery") &&
+                        !isAllowed(delivery.allowed_actions, "redrive_delivery_event")
+                          ? "目前狀態或角色不允許對帳或重驅"
+                          : undefined
+                      }
                       onClick={() => onSelect(delivery)}
                     >
                       查看對帳/重驅

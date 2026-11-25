@@ -213,14 +213,14 @@ class M09EventConsumer:
             projection.state = "withdrawn"
             projection.withdrawal_record_id = payload["withdrawal_record_id"]
             projection.updated_at = utc_now()
-            cancelled = 0
-            if payload["notify_recipients"]:
-                # Defense in depth: process_job independently re-checks
-                # publication.state == "withdrawn" before every send, so
-                # content is never dispatched stale even without this; this
-                # also cancels the still-queued/retrying jobs immediately
-                # instead of waiting for their next lease.
-                cancelled = self.service.cancel_queued_deliveries(state, tenant_id, payload["publication_id"], "publication_withdrawn")
+            # Defense in depth: process_job independently re-checks
+            # publication.state == "withdrawn" before every send, so content
+            # is never dispatched stale even without this; this also cancels
+            # the still-queued/retrying jobs immediately (regardless of
+            # notify_recipients, which only controls recipient notification)
+            # instead of leaving them visible as pending/queued until the
+            # worker next leases them.
+            cancelled = self.service.cancel_queued_deliveries(state, tenant_id, payload["publication_id"], "publication_withdrawn")
             return f"publication_marked_withdrawn:cancelled={cancelled}"
 
         if event_type == "publication.corrected":

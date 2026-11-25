@@ -82,6 +82,71 @@ def test_bind_member_channel_idempotency_conflict_on_different_body(m09, member_
     assert excinfo.value.code == "idempotency_conflict"
 
 
+def test_bind_member_channel_conflicting_body_returns_409_even_after_proof_consumed(m09, member_a):
+    """F9 regression: a conflicting-body retry with an already-consumed
+    proof_ref called channel_proof.verify() before _run_command's idempotency
+    conflict check could run, returning 401 channel_proof_invalid instead of
+    409 idempotency_conflict."""
+    env = m09
+    body = {"channel": "line", "verified_channel_proof_ref": CHANNEL_PROOF_LINE_OK, "service_delivery_enabled": True}
+    env["service"].bind_member_channel(member_a, body, idempotency_key="bind-conflict-after-use-0001")
+
+    # Simulate the proof being single-use at the real provider: a second
+    # verify() call for the same proof_ref now fails.
+    env["channel_proof"].fail(CHANNEL_PROOF_LINE_OK, "forged")
+
+    conflicting_body = {**body, "service_delivery_enabled": False}
+    with pytest.raises(ConflictError) as excinfo:
+        env["service"].bind_member_channel(member_a, conflicting_body, idempotency_key="bind-conflict-after-use-0001")
+    assert excinfo.value.code == "idempotency_conflict"
+
+
+def test_reconcile_delivery_idempotent_replay_succeeds_without_stale_version_error(m09, operator):
+    """F9 regression: the pre-CAS read/self._cas() and channel_send.lookup()
+    ran before _run_command checked state.idempotency, so replaying a
+    succeeded reconcile_delivery with the same Idempotency-Key and If-Match
+    raised 412 StaleVersionError instead of returning the cached 202 reply."""
+    env = m09
+    set_entitlement(env, state="active")
+    seed_publication(env)
+    dispatch(env)
+    job = env["repository"].read(lambda state: next(j for (t, _), j in state.jobs.items() if t == TENANT))
+    env["service"].lease_jobs("worker-1", TENANT, limit=10)
+    env["service"].process_job("worker-1", TENANT, job.id)
+    message = env["repository"].read(lambda state: next(m for (t, _), m in state.deliveries.items() if t == TENANT))
+
+    first = env["service"].reconcile_delivery(
+        operator, message.id, {"reason_code": "r"}, expected_version=message.version, idempotency_key="reconcile-replay-0001",
+    )
+    replay = env["service"].reconcile_delivery(
+        operator, message.id, {"reason_code": "r"}, expected_version=message.version, idempotency_key="reconcile-replay-0001",
+    )
+    assert replay.idempotency_replayed is True
+    assert replay.data == first.data
+
+
+def test_reconcile_delivery_conflicting_body_returns_409_without_stale_version_error(m09, operator):
+    """F9 regression companion: a conflicting-body retry must raise 409
+    idempotency_conflict, not run the stale pre-CAS/lookup path first."""
+    env = m09
+    set_entitlement(env, state="active")
+    seed_publication(env)
+    dispatch(env)
+    job = env["repository"].read(lambda state: next(j for (t, _), j in state.jobs.items() if t == TENANT))
+    env["service"].lease_jobs("worker-1", TENANT, limit=10)
+    env["service"].process_job("worker-1", TENANT, job.id)
+    message = env["repository"].read(lambda state: next(m for (t, _), m in state.deliveries.items() if t == TENANT))
+
+    env["service"].reconcile_delivery(
+        operator, message.id, {"reason_code": "r"}, expected_version=message.version, idempotency_key="reconcile-conflict-0001",
+    )
+    with pytest.raises(ConflictError) as excinfo:
+        env["service"].reconcile_delivery(
+            operator, message.id, {"reason_code": "different"}, expected_version=message.version, idempotency_key="reconcile-conflict-0001",
+        )
+    assert excinfo.value.code == "idempotency_conflict"
+
+
 def test_reconcile_delivery_requires_if_match_and_rejects_stale_version(m09, operator):
     env = m09
     set_entitlement(env, state="active")

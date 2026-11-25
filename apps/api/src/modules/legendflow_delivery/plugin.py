@@ -54,11 +54,18 @@ def register(runtime: Any) -> None:
         principal: Principal = runtime.authenticator.authenticate(
             PlatformRequest(request.method, request.url.path, dict(request.headers))
         )
+        if principal.actor_type == "service":
+            principal_type = "service"
+        elif principal.actor_type == "customer":
+            principal_type = "customer"
+        else:
+            principal_type = "staff"
         return ActorContext(
             tenant_id=str(principal.tenant_id),
             actor_id=str(principal.actor_id),
             roles=principal.roles,
-            principal_type="service" if principal.actor_type == "service" else "staff",
+            principal_type=principal_type,
+            customer_id=str(principal.actor_id) if principal_type == "customer" else None,
         )
 
     router = create_fastapi_router(service, context_resolver)

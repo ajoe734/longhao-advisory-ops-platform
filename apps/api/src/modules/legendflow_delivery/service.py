@@ -269,10 +269,11 @@ class LegendflowDeliveryService:
         proof_ref = require_uuid(body["verified_channel_proof_ref"], "verified_channel_proof_ref")
         request = {"customer_id": context.customer_id, **body}
         # A verified channel proof is typically single-use at the real provider:
-        # calling verify() again on an idempotent replay would fail even though
-        # the original request already succeeded. Only re-verify when this is
-        # genuinely a new (or conflicting) request, not a same-body replay.
-        if self._is_idempotent_replay(context, "bind_member_channel", idempotency_key, request):
+        # calling verify() again on a replay (or on a conflicting-body retry
+        # that _run_command will reject as 409) would fail even though the
+        # proof was already consumed. Only re-verify when no receipt exists
+        # yet for this key, i.e. this is genuinely a brand-new request.
+        if self._has_idempotency_receipt(context, "bind_member_channel", idempotency_key):
             proof = None
         else:
             try:
@@ -467,15 +468,22 @@ class LegendflowDeliveryService:
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
 
-        def mutate(state: StoreState) -> _Outcome:
-            # The nonce is only durably recorded if this whole transaction
-            # commits; a request that fails validation below never wastes a
-            # single-use nonce (see ``_verify_webhook_signature``).
+        def check_and_burn_nonce(state: StoreState) -> None:
+            # Runs before _run_command's idempotency-replay short-circuit (see
+            # ``before_idempotency_check``), so a reused nonce is always
+            # rejected -- even when it rides along with an otherwise-valid
+            # replay of the same Idempotency-Key -- and a legitimate retry
+            # with a fresh nonce still burns that nonce even though the
+            # operation itself just replays the cached response. The nonce is
+            # only durably recorded if this whole transaction commits; a
+            # request that fails validation above never wastes a single-use
+            # nonce (see ``_verify_webhook_signature``).
             nonce_key = (key_id, nonce)
             if nonce_key in state.webhook_nonces:
                 raise UnauthorizedError("webhook nonce was already used", code="webhook_nonce_replayed")
             state.webhook_nonces[nonce_key] = WebhookNonceReceipt(key_id=key_id, nonce=nonce, received_at=now)
 
+        def mutate(state: StoreState) -> _Outcome:
             duplicate_id = state.receipt_index.get((context.tenant_id, key.provider, event_id))
             if duplicate_id:
                 existing = state.receipts[(context.tenant_id, duplicate_id)]
@@ -516,7 +524,10 @@ class LegendflowDeliveryService:
                 202, "delivery", delivery_id, message.version,
             )
 
-        return self._run_command(context, "receive_message_receipt", idempotency_key, {"raw": body, "key_id": key_id}, correlation_id, mutate, default_status=202)
+        return self._run_command(
+            context, "receive_message_receipt", idempotency_key, {"raw": body, "key_id": key_id}, correlation_id, mutate,
+            default_status=202, before_idempotency_check=check_and_burn_nonce,
+        )
 
     def reconcile_delivery(
         self,
@@ -537,20 +548,30 @@ class LegendflowDeliveryService:
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
 
-        def fetch(state: StoreState) -> Delivery:
-            message = state.deliveries.get((context.tenant_id, delivery_id))
-            if message is None:
-                raise NotFoundError("delivery was not found")
-            return message
+        request = {"delivery_id": delivery_id, **body}
+        # Skip the pre-CAS read and the provider network lookup whenever a
+        # receipt already exists for this key: an exact-body replay just
+        # needs _run_command to return the cached 202, and a conflicting
+        # body needs _run_command to raise 409 -- neither path should run
+        # (or re-run) the external side effect or a stale-version check.
+        if self._has_idempotency_receipt(context, "reconcile_delivery", idempotency_key):
+            outcome = None
+        else:
+            def fetch(state: StoreState) -> Delivery:
+                message = state.deliveries.get((context.tenant_id, delivery_id))
+                if message is None:
+                    raise NotFoundError("delivery was not found")
+                return message
 
-        snapshot = self.repository.read(fetch)
-        self._cas(snapshot.version, expected_version)
-        # The provider lookup is a network call; it must never run while holding
-        # the in-process transaction lock (or, against a real repository, an
-        # open DB transaction) the way the commit callback below does.
-        outcome = self.channel_send.lookup(snapshot.channel, snapshot.provider_idempotency_key)
+            snapshot = self.repository.read(fetch)
+            self._cas(snapshot.version, expected_version)
+            # The provider lookup is a network call; it must never run while holding
+            # the in-process transaction lock (or, against a real repository, an
+            # open DB transaction) the way the commit callback below does.
+            outcome = self.channel_send.lookup(snapshot.channel, snapshot.provider_idempotency_key)
 
         def mutate(state: StoreState) -> _Outcome:
+            assert outcome is not None  # only reached when no idempotency receipt existed above
             message = state.deliveries.get((context.tenant_id, delivery_id))
             if message is None:
                 raise NotFoundError("delivery was not found")
@@ -588,7 +609,7 @@ class LegendflowDeliveryService:
                 )
             return _Outcome(message.to_api(self._delivery_actions(state, message, context)), 202, "delivery", message.id, message.version)
 
-        return self._run_command(context, "reconcile_delivery", idempotency_key, {"delivery_id": delivery_id, **body}, correlation_id, mutate, default_status=202)
+        return self._run_command(context, "reconcile_delivery", idempotency_key, request, correlation_id, mutate, default_status=202)
 
     def redrive_delivery_event(
         self,
@@ -926,20 +947,20 @@ class LegendflowDeliveryService:
 
     # ---- command transaction helpers -------------------------------------
 
-    def _is_idempotent_replay(self, context: ActorContext, operation: str, key: str, request: dict[str, Any]) -> bool:
-        """True when ``key``/``request`` already has a committed receipt with a matching body.
+    def _has_idempotency_receipt(self, context: ActorContext, operation: str, key: str) -> bool:
+        """True when ``key`` already has a committed receipt for ``operation``, regardless of body.
 
-        Lets a caller skip re-running a single-use external side effect (e.g.
-        verifying a one-time channel proof) before handing off to
-        :meth:`_run_command`, which would otherwise replay the cached response
-        without ever calling ``mutate`` again.
+        Lets a caller skip re-running a single-use or network external side
+        effect (e.g. verifying a one-time channel proof, looking up provider
+        status) before handing off to :meth:`_run_command`. ``_run_command``
+        alone decides what happens next -- an exact-body replay returns the
+        cached response, a conflicting body raises ``409 idempotency_conflict``
+        -- and neither path needs, or should re-trigger, the external call.
         """
         if not _KEY_RE.fullmatch(key):
             return False
         receipt_key = (context.tenant_id, context.actor_id, operation, key)
-        fingerprint = canonical_hash(request)
-        receipt = self.repository.read(lambda state: state.idempotency.get(receipt_key))
-        return receipt is not None and receipt.request_sha256 == fingerprint
+        return self.repository.read(lambda state: receipt_key in state.idempotency)
 
     def _run_command(
         self,
@@ -951,6 +972,7 @@ class LegendflowDeliveryService:
         mutate: Callable[[StoreState], _Outcome],
         *,
         default_status: int = 200,
+        before_idempotency_check: Callable[[StoreState], None] | None = None,
     ) -> ServiceResponse:
         if not _KEY_RE.fullmatch(key):
             raise ValidationError("Idempotency-Key must match the published contract", field_name="Idempotency-Key")
@@ -958,6 +980,12 @@ class LegendflowDeliveryService:
         receipt_key = (context.tenant_id, context.actor_id, operation, key)
 
         def transaction(state: StoreState) -> tuple[_Outcome, bool]:
+            if before_idempotency_check is not None:
+                # Runs unconditionally, inside the same atomic transaction,
+                # before the idempotency replay short-circuit below -- e.g.
+                # webhook nonce replay detection must reject a reused nonce
+                # even when the rest of the request is an idempotent replay.
+                before_idempotency_check(state)
             receipt = state.idempotency.get(receipt_key)
             if receipt:
                 if receipt.request_sha256 != fingerprint:
