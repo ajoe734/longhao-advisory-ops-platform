@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Protocol
 
-from modules.publication.domain import ActorContext, ConflictError, NotFoundError, new_id, utc_now
+from modules.publication.domain import ActorContext, ConflictError, ForbiddenError, NotFoundError, new_id, utc_now
 from modules.publication.repository import InMemoryRepository, StoreState
 from modules.publication.service import PublicationService, PublishOutcome
 
@@ -217,6 +217,11 @@ class PublicationWorker:
         # Reuses the same role gate as withdraw_publication: redrive overrides
         # an automated dead-letter decision and must stay compliance-ops-only.
         self.service._authorize(actor, {"compliance_supervisor"}, operation="redrive_publish_job")
+        if actor.tenant_id != tenant_id:
+            # Role check alone is not tenant isolation: a compliance_supervisor
+            # from another tenant must not redrive or audit-touch this tenant's job.
+            self.service._audit_failure(actor, "redrive_publish_job", None, "forbidden")
+            raise ForbiddenError("actor cannot redrive jobs for another tenant")
         worker_id = f"redrive:{actor.actor_id}"
         now = self.clock()
         audit_correlation_id = new_id()

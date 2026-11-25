@@ -5,6 +5,7 @@ from datetime import timedelta
 import pytest
 
 from modules.publication.domain import (
+    ActorContext,
     ConflictError,
     ForbiddenError,
     StaleVersionError,
@@ -340,3 +341,49 @@ def test_f5_audience_snapshot_records_rule_version_and_excluded_reason_summary(m
     assert stored_snapshot.rule_version == "entitlement_audience_resolution:v1"
     assert stored_snapshot.rule_version != REPORT_A
     assert stored_snapshot.reason_summary == {"entitlement_expired": 2}
+
+
+# ---- F8: redrive must enforce tenant isolation, not just role -------------
+
+
+OTHER_TENANT = "10000000-0000-0000-0000-000000000099"
+
+
+def test_f8_redrive_rejects_compliance_supervisor_from_another_tenant(m08, analyst):
+    other_tenant_supervisor = ActorContext(
+        OTHER_TENANT, "20000000-0000-0000-0000-000000000099", frozenset({"compliance_supervisor"}),
+    )
+    series = create_series(m08["service"], analyst, "f8-series").data
+    version = m08["service"].create_recommendation_version(
+        analyst, series["id"], version_body(REPORT_A), expected_version=1, idempotency_key="f8-version",
+    ).data
+    register_bundle_for(m08, version["id"], REPORT_A)
+    set_audience_for_series(m08, series["id"], default_candidates(1))
+    M08EventConsumer(m08["service"]).consume(signature_event(REPORT_A, SIGNATURE_A, bundle_manifest_sha256="e" * 64))
+    result = PublicationWorker(m08["service"]).run_once("worker-f8")
+    assert result.dead_lettered == 1
+    job = next(row for (tenant, _), row in m08["repository"].snapshot().jobs.items() if tenant == TENANT)
+    assert job.status == "dead_letter"
+
+    worker = PublicationWorker(m08["service"])
+    with pytest.raises(ForbiddenError):
+        worker.redrive(TENANT, job.id, other_tenant_supervisor, "cross_tenant_probe")
+
+    snapshot = m08["repository"].snapshot()
+    job_after = snapshot.jobs[(TENANT, job.id)]
+    assert job_after.status == "dead_letter"
+    assert job_after.redrive_reason is None
+    assert (TENANT, version["id"]) not in snapshot.publications_by_version
+
+    rejected_audits = [
+        row for row in snapshot.audit_events
+        if row.action == "m08.redrive_publish_job" and row.result == "rejected"
+        and row.actor_id == other_tenant_supervisor.actor_id
+    ]
+    assert rejected_audits
+    assert all(row.tenant_id == OTHER_TENANT for row in rejected_audits)
+    assert not [
+        row for row in snapshot.audit_events
+        if row.action == "m08.redrive_publish_job" and row.actor_id == other_tenant_supervisor.actor_id
+        and row.tenant_id == TENANT
+    ]
