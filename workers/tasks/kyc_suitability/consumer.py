@@ -144,11 +144,11 @@ class M03EventConsumer:
                 updated_at=now,
             )
             state.refresh_cases[(tenant_id, case.id)] = case
-            for (tenant, _), assessment in state.assessments.items():
-                if tenant == tenant_id and assessment.application_id == submission.application_id and assessment.status in {"suitable", "conditional"}:
-                    assessment.status = "reassessment_due"
-                    assessment.version += 1
-                    assessment.updated_at = now
+            assessment = self._latest_assessment_for_application(state, tenant_id, submission.application_id)
+            if assessment and assessment.status in {"suitable", "conditional"}:
+                assessment.status = "reassessment_due"
+                assessment.version += 1
+                assessment.updated_at = now
             self._emit_refresh_required(state, tenant_id, submission.id, submission.version, customer_id, case.id, case.due_at, envelope["correlation_id"], now)
             return "risk_change_refresh_created"
         raise ValidationError("event type is not consumed by M03", code="unsupported_event_type")
@@ -160,6 +160,14 @@ class M03EventConsumer:
             if tenant == tenant_id and row.customer_id == customer_id and row.status == "approved"
         ]
         return max(rows, key=lambda row: row.created_at) if rows else None
+
+    @staticmethod
+    def _latest_assessment_for_application(state: StoreState, tenant_id: str, application_id: str):
+        rows = [
+            row for (tenant, _), row in state.assessments.items()
+            if tenant == tenant_id and row.application_id == application_id
+        ]
+        return max(rows, key=lambda row: row.version) if rows else None
 
     @staticmethod
     def _emit_refresh_required(

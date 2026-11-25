@@ -4,9 +4,12 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Protocol
 
-from modules.kyc_suitability.domain import ConflictError, ValidationError, utc_now
+from modules.kyc_suitability.domain import AuditEvent, ConflictError, OutboxEvent, ValidationError, new_id, utc_now, wire_time
 from modules.kyc_suitability.ports import DocumentScannerPort, ExternalVerificationPort
 from modules.kyc_suitability.repository import InMemoryRepository, StoreState
+
+
+_SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-000000000001"
 
 
 class RetryableTaskError(Exception):
@@ -297,24 +300,90 @@ class DueDiligenceWorker:
     def _complete(self, tenant_id: str, case_id: str, worker_id: str) -> None:
         def complete(state: StoreState) -> None:
             case = state.refresh_cases[(tenant_id, case_id)]
-            if case.lease_owner != worker_id:
+            if case.status != "pending" or case.lease_owner != worker_id:
                 raise ConflictError("refresh case lease was lost", code="worker_lease_lost")
+            now = utc_now()
             case.status = "completed"
             case.lease_owner = None
             case.lease_until = None
-            case.updated_at = utc_now()
+            case.updated_at = now
             submission = state.submissions.get((tenant_id, case.submission_id))
-            if submission is not None and submission.status == "refresh_required":
+            # A resubmission created while the case was pending (or the
+            # decision on it) supersedes `submission`; flipping a superseded
+            # row back to approved would resurrect a stale decision (F9).
+            if (
+                submission is not None
+                and submission.status == "refresh_required"
+                and self._is_latest_submission(state, tenant_id, submission)
+            ):
                 submission.status = "approved"
                 submission.version += 1
-                submission.updated_at = case.updated_at
+                submission.updated_at = now
+                state.audit_events.append(
+                    AuditEvent(
+                        id=new_id(),
+                        tenant_id=tenant_id,
+                        actor_id=_SYSTEM_ACTOR_ID,
+                        purpose="due_diligence_worker",
+                        action="m03.due_diligence_refresh_completed",
+                        aggregate_type="kyc_submission",
+                        aggregate_id=submission.id,
+                        aggregate_version=submission.version,
+                        correlation_id=case.id,
+                        result="succeeded",
+                        reason_code=None,
+                        recorded_at=now,
+                    )
+                )
+                self._emit_decision_recorded(state, tenant_id, submission, case.id, now)
 
         self.repository.atomic(complete)
+
+    @staticmethod
+    def _is_latest_submission(state: StoreState, tenant_id: str, submission) -> bool:
+        candidates = [
+            row for (tenant, _), row in state.submissions.items()
+            if tenant == tenant_id and row.application_id == submission.application_id
+        ]
+        latest = max(candidates, key=lambda row: row.submission_version)
+        return latest.id == submission.id
+
+    @staticmethod
+    def _emit_decision_recorded(state: StoreState, tenant_id: str, submission, correlation_id: str, now) -> None:
+        sequence = 1 + max(
+            (
+                event.sequence_no for (tenant, _), event in state.outbox.items()
+                if tenant == tenant_id and event.aggregate_type == "kyc_submission" and event.aggregate_id == submission.id
+            ),
+            default=0,
+        )
+        event = OutboxEvent(
+            event_id=new_id(),
+            event_type="kyc.decision_recorded",
+            tenant_id=tenant_id,
+            aggregate_type="kyc_submission",
+            aggregate_id=submission.id,
+            aggregate_version=submission.version,
+            sequence_no=sequence,
+            correlation_id=correlation_id,
+            causation_id=None,
+            idempotency_key=f"due-diligence-refresh-complete:{correlation_id}",
+            classification="customer_confidential",
+            payload={
+                "submission_id": submission.id,
+                "application_id": submission.application_id,
+                "decision": "approved",
+                "next_review_due_at": wire_time(submission.next_review_due_at) if submission.next_review_due_at else None,
+            },
+            occurred_at=now,
+            emitted_at=now,
+        )
+        state.outbox[(tenant_id, event.event_id)] = event
 
     def _require_manual(self, tenant_id: str, case_id: str, worker_id: str, code: str) -> None:
         def require(state: StoreState) -> None:
             case = state.refresh_cases[(tenant_id, case_id)]
-            if case.lease_owner != worker_id:
+            if case.status != "pending" or case.lease_owner != worker_id:
                 raise ConflictError("refresh case lease was lost", code="worker_lease_lost")
             case.status = "manual_required"
             case.last_error_code = code
@@ -330,7 +399,7 @@ class DueDiligenceWorker:
 
         def fail(state: StoreState) -> bool:
             case = state.refresh_cases[(tenant_id, case_id)]
-            if case.lease_owner != worker_id:
+            if case.status != "pending" or case.lease_owner != worker_id:
                 raise ConflictError("refresh case lease was lost", code="worker_lease_lost")
             case.attempt_count += 1
             case.last_error_code = code

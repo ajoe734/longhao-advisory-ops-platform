@@ -80,6 +80,52 @@ def test_uat_m03_002_missing_required_fields_blocks_approval(m03, kyc_reviewer):
     assert snapshot.submissions[(TENANT, submitted.data["id"])].status != "approved"
 
 
+def test_uat_m03_002b_customer_cannot_self_trigger_due_diligence_refresh(m03, kyc_reviewer):
+    # F2 regression: the OpenAPI security requirement restricts
+    # request_due_diligence_refresh to staffBearer + kyc_reviewer; a customer
+    # must never be able to self-service trigger their own re-screening.
+    service = m03["service"]
+    approve_full_cycle(service, kyc_reviewer, APPLICATION_A, SIGNATURE_A, "uat002b")
+    customer = customer_context(CUSTOMER_A)
+    with pytest.raises(ForbiddenError):
+        service.request_due_diligence_refresh(
+            customer, CUSTOMER_A,
+            {"trigger": "scheduled", "reason_code": "self_requested", "due_at": "2027-01-01T00:00:00.000000Z", "form_version": "m03-kyc-form-v1"},
+            expected_version=1, idempotency_key="uat002b-refresh-denied",
+        )
+    snapshot = service.repository.snapshot()
+    assert len(snapshot.refresh_cases) == 0  # no refresh case was created by the denied attempt
+
+
+def test_uat_m03_002c_decide_kyc_denies_the_same_staff_who_submitted_on_the_customers_behalf(m03, kyc_reviewer):
+    # F3 regression: decide_kyc's maker-checker gate must trigger even when
+    # the submitter is staff (self_or_authorized_staff submit_kyc), not only
+    # when assess_suitability's override path is exercised.
+    service = m03["service"]
+    created = create_submission(service, kyc_reviewer, APPLICATION_A, "uat002c-create")
+    uploaded = upload_document(service, kyc_reviewer, created.data["id"], _version(created), "uat002c-upload")
+    mark_document_clean(service, uploaded.data["asset_id"])
+    submitted = service.submit_kyc(
+        kyc_reviewer, created.data["id"],
+        {"form_version": "m03-kyc-form-v1", "answers": complete_answers(), "document_ids": [uploaded.data["asset_id"]], "declaration_consent_id": SIGNATURE_A},
+        expected_version=_version(uploaded), idempotency_key="uat002c-submit",
+    )
+    assert submitted.data["state"] == "submitted"
+
+    with pytest.raises(ForbiddenError) as exc:
+        service.decide_kyc(
+            kyc_reviewer, submitted.data["id"],
+            {
+                "decision": "approve", "identity_verification_method": "manual_document_review",
+                "verification_evidence_ids": [uploaded.data["asset_id"]], "reason_code": "self_approval_attempt",
+                "next_review_due_at": "2027-11-23T00:00:00.000000Z",
+            },
+            expected_version=_version(submitted), idempotency_key="uat002c-decide",
+        )
+    assert exc.value.code == "maker_checker_violation"
+    assert service.repository.snapshot().submissions[(TENANT, submitted.data["id"])].status == "submitted"
+
+
 def test_uat_m03_003_ocr_assist_does_not_overwrite_customer_answer(m03, kyc_reviewer):
     service = m03["service"]
     customer = customer_context(CUSTOMER_A)
@@ -484,6 +530,62 @@ def test_uat_m03_010_general_staff_without_role_cannot_assess_suitability(m03, k
     assert service.repository.snapshot().assessments[(TENANT, first.data["id"])].status == "not_suitable"
 
 
+def test_uat_m03_010b_weakening_conditional_conditions_is_still_an_override(m03, kyc_reviewer):
+    # F8 regression: computed_decision and resulting_decision can both be
+    # "conditional" when an authorizer drops a required condition. The SQL
+    # CHECK on kyc.suitability_override must accept this row (it previously
+    # only allowed computed_decision <> resulting_decision), and the override
+    # evidence must capture both condition sets.
+    service = m03["service"]
+    decided = approve_full_cycle(service, kyc_reviewer, APPLICATION_A, SIGNATURE_A, "uat010b-override")
+    reviewer_only = ActorContext(TENANT, "20000000-0000-0000-0000-000000000021", frozenset({"suitability_reviewer"}), principal_type="staff")
+    base_request = {
+        "kyc_submission_id": decided.data["id"], "questionnaire_version": "m03-suitability-questionnaire-v1",
+        "rule_version": "m03-suitability-rule-v1", "answers": suitability_answers("medium", "1"),
+        "service_codes": ["leveraged_fx"], "next_review_due_at": "2027-05-23T00:00:00.000000Z",
+    }
+    conditional = service.assess_suitability(
+        reviewer_only, APPLICATION_A,
+        {**base_request, "decision": "conditional", "conditions": ["enhanced_disclosure_required"], "reason_code": "rule_pass"},
+        expected_version=1, idempotency_key="uat010b-conditional",
+    )
+    assert conditional.data["state"] == "conditional"
+
+    # Same decision label ("conditional"), but the required condition is
+    # swapped for a lighter one -- still an override requiring
+    # suitability_authorizer, not just suitability_reviewer. (A fully empty
+    # conditions list is rejected independently of the override check, so the
+    # weakened set must stay non-empty here.)
+    with pytest.raises(ForbiddenError):
+        service.assess_suitability(
+            reviewer_only, APPLICATION_A,
+            {**base_request, "decision": "conditional", "conditions": ["basic_disclosure_required"], "reason_code": "attempted_weaken"},
+            expected_version=1, idempotency_key="uat010b-weaken-denied",
+        )
+
+    different_authorizer = ActorContext(
+        TENANT, "20000000-0000-0000-0000-000000000022", frozenset({"suitability_reviewer", "suitability_authorizer"}), principal_type="staff"
+    )
+    weakened = service.assess_suitability(
+        different_authorizer, APPLICATION_A,
+        {**base_request, "decision": "conditional", "conditions": ["basic_disclosure_required"], "reason_code": "authorized_weaken"},
+        expected_version=1, idempotency_key="uat010b-weaken-authorized",
+    )
+    assert weakened.data["state"] == "conditional"
+    assert weakened.data["conditions"] == ["basic_disclosure_required"]
+
+    override_rows = [
+        row for row in service.repository.snapshot().suitability_overrides.values()
+        if row["assessment_id"] == weakened.data["id"]
+    ]
+    assert len(override_rows) == 1
+    override = override_rows[0]
+    assert override["computed_decision"] == "conditional"
+    assert override["resulting_decision"] == "conditional"
+    assert override["computed_conditions"] == ["enhanced_disclosure_required"]
+    assert override["resulting_conditions"] == ["basic_disclosure_required"]
+
+
 def test_uat_m03_011_due_diligence_timeout_goes_to_manual_queue_never_passes(m03, kyc_reviewer):
     service = m03["service"]
     decided = approve_full_cycle(service, kyc_reviewer, APPLICATION_A, SIGNATURE_A, "uat011")
@@ -560,6 +662,106 @@ def test_uat_m03_011c_due_diligence_worker_rejects_stolen_lease(m03, kyc_reviewe
     with pytest.raises(ConflictError) as exc:
         worker._complete(TENANT, case_id, "uat011c-worker-b")
     assert exc.value.code == "worker_lease_lost"
+
+
+def test_uat_m03_011d_stale_resubmission_rejection_closes_the_refresh_case_without_resurrecting_s1(m03, kyc_reviewer):
+    # F9 regression: s1 goes approved -> refresh_required, the customer
+    # resubmits (creating s2), and the reviewer rejects s2. decide_kyc must
+    # close s1's still-open refresh case on reject (not only on approve), so
+    # a later worker scan never flips the superseded s1 back to approved.
+    service = m03["service"]
+    decided = approve_full_cycle(service, kyc_reviewer, APPLICATION_A, SIGNATURE_A, "uat011d")
+    s1_id = decided.data["id"]
+    asset_id = decided.data["document_ids"][0]
+
+    refreshed = service.request_due_diligence_refresh(
+        kyc_reviewer, CUSTOMER_A,
+        {"trigger": "scheduled", "reason_code": "periodic_refresh", "due_at": "2027-01-01T00:00:00.000000Z", "form_version": "m03-kyc-form-v1"},
+        expected_version=1, idempotency_key="uat011d-refresh",
+    )
+    assert refreshed.data["id"] == s1_id
+    assert refreshed.data["state"] == "refresh_required"
+
+    customer = customer_context(CUSTOMER_A)
+    resubmitted = service.submit_kyc(
+        customer, s1_id,
+        {"form_version": "m03-kyc-form-v1", "answers": complete_answers(), "document_ids": [asset_id], "declaration_consent_id": SIGNATURE_A},
+        expected_version=_version(refreshed), idempotency_key="uat011d-resubmit",
+    )
+    s2_id = resubmitted.data["id"]
+    assert s2_id != s1_id
+    assert resubmitted.data["state"] == "submitted"
+
+    rejected = service.decide_kyc(
+        kyc_reviewer, s2_id,
+        {
+            "decision": "reject", "identity_verification_method": "manual_document_review",
+            "verification_evidence_ids": [asset_id], "reason_code": "evidence_insufficient",
+        },
+        expected_version=_version(resubmitted), idempotency_key="uat011d-decide2",
+    )
+    assert rejected.data["state"] == "rejected"
+
+    snapshot = service.repository.snapshot()
+    case = next(iter(snapshot.refresh_cases.values()))
+    assert case.status == "completed"  # closed on reject too, not only on approve
+    assert case.lease_owner is None
+
+    worker = DueDiligenceWorker(service.repository, m03["verifier"])
+    result = worker.run_once("uat011d-drill")
+    assert result.processed == 0  # nothing left pending for the worker to touch
+
+    snapshot = service.repository.snapshot()
+    assert snapshot.submissions[(TENANT, s1_id)].status == "refresh_required"  # never resurrected to approved
+    assert snapshot.submissions[(TENANT, s2_id)].status == "rejected"
+
+
+def test_uat_m03_011e_worker_holding_a_stale_lease_cannot_resurrect_a_superseded_submission(m03, kyc_reviewer):
+    # Reproduces the exact F9 race: a worker leases the refresh case while it
+    # is still pending, then decide_kyc resolves a newer resubmission before
+    # the worker's own completion call lands. The worker's completion must
+    # lose the lease race instead of flipping the superseded s1 to approved.
+    service = m03["service"]
+    decided = approve_full_cycle(service, kyc_reviewer, APPLICATION_A, SIGNATURE_A, "uat011e")
+    s1_id = decided.data["id"]
+    asset_id = decided.data["document_ids"][0]
+
+    refreshed = service.request_due_diligence_refresh(
+        kyc_reviewer, CUSTOMER_A,
+        {"trigger": "scheduled", "reason_code": "periodic_refresh", "due_at": "2027-01-01T00:00:00.000000Z", "form_version": "m03-kyc-form-v1"},
+        expected_version=1, idempotency_key="uat011e-refresh",
+    )
+    case_id = next(iter(service.repository.snapshot().refresh_cases.values())).id
+
+    customer = customer_context(CUSTOMER_A)
+    resubmitted = service.submit_kyc(
+        customer, s1_id,
+        {"form_version": "m03-kyc-form-v1", "answers": complete_answers(), "document_ids": [asset_id], "declaration_consent_id": SIGNATURE_A},
+        expected_version=_version(refreshed), idempotency_key="uat011e-resubmit",
+    )
+    s2_id = resubmitted.data["id"]
+
+    worker = DueDiligenceWorker(service.repository, m03["verifier"])
+    worker._lease("uat011e-worker", 50)  # worker is mid-flight, holding the case lease
+
+    approved_s2 = service.decide_kyc(
+        kyc_reviewer, s2_id,
+        {
+            "decision": "approve", "identity_verification_method": "manual_document_review",
+            "verification_evidence_ids": [asset_id], "reason_code": "evidence_confirmed",
+            "next_review_due_at": "2027-11-23T00:00:00.000000Z",
+        },
+        expected_version=_version(resubmitted), idempotency_key="uat011e-decide2",
+    )
+    assert approved_s2.data["state"] == "approved"
+
+    with pytest.raises(ConflictError) as exc:
+        worker._complete(TENANT, case_id, "uat011e-worker")
+    assert exc.value.code == "worker_lease_lost"
+
+    snapshot = service.repository.snapshot()
+    assert snapshot.submissions[(TENANT, s1_id)].status == "refresh_required"  # the worker never got to touch it
+    assert snapshot.submissions[(TENANT, s2_id)].status == "approved"
 
 
 def test_uat_m03_012_replayed_submit_does_not_duplicate_the_submission(m03, kyc_reviewer):

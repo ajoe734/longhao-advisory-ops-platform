@@ -6,7 +6,7 @@
 
 1. **隔離區掃描與人工審核分離**：baseline `kyc.submission_document.verification_state` 只有人工審核結果；新增 `scan_status`／`scan_rejection_code`／`scanned_at`／`classification` 表達防毒/MIME掃描結果，並以 CHECK `m03_submission_document_review_requires_clean_ck` 保證未掃描完成或遭拒文件無法進入人工審核（UAT-M03-004）。
 2. **OCR 未信任草稿**：`kyc.document_extraction`／`kyc.document_extraction_review` 保存欄位抽取建議、信心度、是否與客戶原答衝突，以及完整 model/prompt/ruleset 版本與人工採用/拒絕紀錄；不可變；沒有合併/命令權（UAT-M03-003）。
-3. **適合度 maker-checker**：`kyc.suitability_override` 記錄規則計算值與人工核定覆核後的結果、核定人與理由；不可變，`computed_decision <> resulting_decision` 保證只有真正的例外才落此表（UAT-M03-010）。
+3. **適合度 maker-checker**：`kyc.suitability_override` 記錄規則計算值與人工核定覆核後的結果、核定人與理由，另含 `computed_conditions`／`resulting_conditions` 保存兩邊的條件集合；不可變，CHECK 保證只有真正的例外才落此表——`computed_decision <> resulting_decision`，或兩邊都是 `conditional` 但條件集合被削弱（`computed_conditions <> resulting_conditions`）（UAT-M03-010）。
 4. **持續 KYC 到期/風險變更排程**：`kyc.refresh_case` 是 `approved -> refresh_required` 轉換背後的排程與 exception queue，含 lease/attempt/next_attempt_at，worker 連續失敗只能轉 `manual_required`，不會產生「通過」事實（UAT-M03-009、UAT-M03-011）；自動複核成功或 `decide_kyc` 核准同客戶的續送件，都會把尚未結案的 `refresh_case` 轉為 `completed`，避免流程卡在 `refresh_required`。
 5. **掃描 lease／重試與 maker-checker**：`kyc.submission_document` 新增 `attempt_count`／`lease_owner`／`lease_until`／`next_attempt_at`／`last_error_code`，對應 `DocumentScanWorker` 真實 lease 與有界重試（掃描結果仍只能是 pending 或 worker 回報的結果，失敗不會被誤判為 clean）；`kyc.submission` 新增 `submitted_by`，記錄代客戶送件的 staff actor，`decide_kyc` 用它拒絕同一人既送件又核准（maker-checker，UAT-M03-004b）。
 

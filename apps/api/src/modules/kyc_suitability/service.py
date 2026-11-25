@@ -392,6 +392,11 @@ class KycSuitabilityService:
             elif body["decision"] == "reject":
                 submission.status = "rejected"
                 submission.next_review_due_at = None
+                # A superseding submission (e.g. resubmitted while an earlier
+                # version was refresh_required) being rejected must still
+                # close any open due-diligence case; otherwise the worker can
+                # later resurrect the stale superseded submission (F9).
+                self._close_open_refresh_cases(state, context.tenant_id, submission.customer_id, now)
             else:
                 if submission.missing_field_codes:
                     raise ConflictError("submission still has missing fields", code="submission_incomplete")
@@ -406,10 +411,7 @@ class KycSuitabilityService:
                     )
                 submission.status = "approved"
                 submission.next_review_due_at = next_review_due_at
-                open_case = self._open_refresh_case_for_customer(state, context.tenant_id, submission.customer_id)
-                if open_case:
-                    open_case.status = "completed"
-                    open_case.updated_at = now
+                self._close_open_refresh_cases(state, context.tenant_id, submission.customer_id, now)
             submission.decision_reason_code = reason_code
             submission.identity_verification_method = body["identity_verification_method"]
             submission.verification_evidence_ids = verification_evidence_ids
@@ -531,6 +533,8 @@ class KycSuitabilityService:
                     "authorizer_id": context.actor_id,
                     "computed_decision": computed_decision,
                     "resulting_decision": requested_decision,
+                    "computed_conditions": list(computed_conditions),
+                    "resulting_conditions": list(conditions),
                     "reason_code": reason_code,
                     "decided_at": now,
                 }
@@ -939,12 +943,24 @@ class KycSuitabilityService:
         return max(rows, key=lambda row: row.version) if rows else None
 
     @staticmethod
-    def _open_refresh_case_for_customer(state: StoreState, tenant_id: str, customer_id: str) -> RefreshCase | None:
-        rows = [
-            row for (tenant, _), row in state.refresh_cases.items()
-            if tenant == tenant_id and row.customer_id == customer_id and row.status in {"pending", "manual_required"}
-        ]
-        return max(rows, key=lambda row: row.created_at) if rows else None
+    def _close_open_refresh_cases(state: StoreState, tenant_id: str, customer_id: str, now: datetime) -> None:
+        """Closes every still-open due-diligence case for this customer.
+
+        decide_kyc is the only place that resolves a kyc_submission that a
+        RefreshCase points at, so any open (pending/manual_required) case for
+        the same customer must be closed here on both approve and reject --
+        otherwise a DueDiligenceWorker holding a lease on a now-stale case
+        could later flip a superseded submission back to approved (F9).
+        Clearing lease_owner/lease_until also makes an in-flight worker's own
+        completion attempt lose the lease check and fail loudly instead of
+        overwriting this decision.
+        """
+        for (tenant, _), case in state.refresh_cases.items():
+            if tenant == tenant_id and case.customer_id == customer_id and case.status in {"pending", "manual_required"}:
+                case.status = "completed"
+                case.lease_owner = None
+                case.lease_until = None
+                case.updated_at = now
 
     def _submission_actions(self, submission: KycSubmission, context: ActorContext) -> list[str]:
         actions: list[str] = []

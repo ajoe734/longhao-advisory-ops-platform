@@ -108,6 +108,8 @@ CREATE TABLE IF NOT EXISTS kyc.suitability_override (
   authorizer_id uuid NOT NULL,
   computed_decision text NOT NULL,
   resulting_decision text NOT NULL,
+  computed_conditions jsonb NOT NULL DEFAULT '[]'::jsonb,
+  resulting_conditions jsonb NOT NULL DEFAULT '[]'::jsonb,
   reason_code text NOT NULL,
   decided_at timestamptz NOT NULL,
   PRIMARY KEY (tenant_id, id),
@@ -117,7 +119,14 @@ CREATE TABLE IF NOT EXISTS kyc.suitability_override (
   CHECK (version > 0),
   CHECK (computed_decision IN ('suitable', 'conditional', 'not_suitable')),
   CHECK (resulting_decision IN ('suitable', 'conditional', 'not_suitable')),
-  CHECK (computed_decision <> resulting_decision),
+  -- An authorizer who weakens the required conditions of an existing
+  -- `conditional` decision (e.g. drops `enhanced_disclosure_required`) stays
+  -- an override even though computed_decision = resulting_decision = 'conditional';
+  -- the condition sets, not just the decision label, must then differ.
+  CHECK (
+    computed_decision <> resulting_decision
+    OR (computed_decision = 'conditional' AND resulting_decision = 'conditional' AND computed_conditions <> resulting_conditions)
+  ),
   CHECK (length(reason_code) BETWEEN 1 AND 80)
 );
 

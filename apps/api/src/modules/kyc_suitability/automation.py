@@ -116,7 +116,12 @@ class OcrAutomationService:
             if not submission:
                 raise NotFoundError("kyc submission was not found")
             document = state.documents.get((context.tenant_id, document_id))
-            if not document or document.submission_id != submission_id:
+            owning_submission = state.submissions.get((context.tenant_id, document.submission_id)) if document else None
+            if (
+                not document or not owning_submission
+                or owning_submission.application_id != submission.application_id
+                or document.customer_id != submission.customer_id
+            ):
                 raise ValidationError("document does not belong to this submission", field_name="document_id")
             if document.scan_status != "clean":
                 raise ConflictError("document has not passed the quarantine scan", code="document_not_clean")
