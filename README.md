@@ -48,9 +48,14 @@
 
 ```bash
 python -m pip install -r requirements-dev.txt
+python -m pip install -e apps/api
 python scripts/validate_docs.py
 python scripts/validate_contracts.py
 python scripts/validate_sql.py
+python -m pytest -q mocks/test_server.py qa/test_platform_runtime.py qa/test_cross_module_runtime.py qa/test_ui_registry.py
+python -m longhao_platform.main --check
+npm install --prefix apps/admin --ignore-scripts --no-audit --no-fund
+npm run build --prefix apps/admin
 python scripts/prepare_worktrees.py --base main
 ```
 
