@@ -1,0 +1,43 @@
+{
+  "project": "longhao-advisory-ops-platform",
+  "execution_mode": "supervisor_managed_execution",
+  "sprint": "2026-11-full-scope-14-modules",
+  "objective": "Deliver all fourteen modules (M01–M14) of the 龍好 advisory operations platform against the accepted specification baseline, with owner/reviewer lanes on different LLMs and full acceptance evidence.",
+  "seed_design_files": [
+    "CANONICAL_DOCUMENT_MAP.md",
+    "SUPERVISOR_OPERATING_MODEL.md",
+    "agents/PARALLEL_DEVELOPMENT.md",
+    "project/module-manifest.json"
+  ],
+  "discussion_workspace": "docs/consensus",
+  "canonical_document_layers": {
+    "L0 Collaboration": [
+      "AI_COLLABORATION_GUIDE.md",
+      "ai-status.json",
+      "AGENTS.md"
+    ],
+    "L1 Product Truth": [
+      "docs/00-document-index.md",
+      "docs/01-product-scope.md",
+      "docs/02-SA.md",
+      "docs/03-SD.md",
+      "docs/modules/README.md",
+      "docs/18-decision-register.md"
+    ],
+    "L1.5 Contracts": [
+      "api/openapi.yaml",
+      "docs/09-api-events.md",
+      "events/registry.json",
+      "docs/08-data-model.md",
+      "database/README.md",
+      "docs/11-security-rbac.md"
+    ],
+    "L2 Execution Rules": [
+      "agents/PARALLEL_DEVELOPMENT.md",
+      "agents/task-packets/README.md",
+      "project/module-manifest.json",
+      "docs/16-test-strategy.md",
+      "qa/uat.md"
+    ]
+  }
+}
