@@ -22,6 +22,45 @@ ALTER TABLE customer.application
       OR (status <> 'withdrawn' AND withdrawn_at IS NULL AND withdrawal_reason_code IS NULL)
     ) NOT VALID;
 
+-- OpenAPI's Application response bundles M02 signing/acceptance facts plus
+-- M03/M04/M14 status codes into the one M01-owned row. customer_signed_at,
+-- company_accepted_at and contract_id are kept current by the already
+-- consumed application.customer_signed/application.company_decided events
+-- (see workers/tasks/customer_identity_application/consumer.py). kyc_status,
+-- suitability_status and business_clearance stay at their published defaults
+-- because no M03/M04 event is registered for M01 to consume yet; payment_status
+-- stays at its default because no M14 event is registered either (see
+-- database/proposals/M01/contract-changes.md item 4). Defaults match the
+-- OpenAPI Application schema defaults so existing rows remain contract-valid.
+ALTER TABLE customer.application
+  ADD COLUMN IF NOT EXISTS customer_signed_at timestamptz,
+  ADD COLUMN IF NOT EXISTS company_accepted_at timestamptz,
+  ADD COLUMN IF NOT EXISTS contract_id uuid,
+  ADD COLUMN IF NOT EXISTS kyc_status text NOT NULL DEFAULT 'not_started',
+  ADD COLUMN IF NOT EXISTS suitability_status text NOT NULL DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS business_clearance text NOT NULL DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS payment_status text NOT NULL DEFAULT 'not_required',
+  ADD CONSTRAINT m01_application_kyc_status_ck
+    CHECK (kyc_status IN ('not_started', 'pending', 'approved', 'rejected', 'refresh_required')) NOT VALID,
+  ADD CONSTRAINT m01_application_suitability_status_ck
+    CHECK (suitability_status IN ('pending', 'suitable', 'conditional', 'not_suitable')) NOT VALID,
+  ADD CONSTRAINT m01_application_business_clearance_ck
+    CHECK (business_clearance IN ('pending', 'approved', 'denied', 'expired')) NOT VALID,
+  ADD CONSTRAINT m01_application_payment_status_ck
+    CHECK (payment_status IN ('not_required', 'pending', 'authorized', 'paid', 'refunded', 'disputed')) NOT VALID,
+  ADD CONSTRAINT m01_application_contract_id_fk
+    FOREIGN KEY (tenant_id, contract_id) REFERENCES contract.contract (tenant_id, id) NOT VALID;
+
+-- The OpenAPI Customer response exposes maintenance_owner_id and
+-- original_marketing_attribution_id; both were previously derivable only from
+-- application code, with nowhere to persist them.
+ALTER TABLE customer.customer
+  ADD COLUMN IF NOT EXISTS maintenance_owner_id uuid,
+  ADD COLUMN IF NOT EXISTS original_marketing_attribution_id uuid,
+  ADD COLUMN IF NOT EXISTS original_marketing_source_ref text,
+  ADD CONSTRAINT m01_customer_maintenance_owner_fk
+    FOREIGN KEY (tenant_id, maintenance_owner_id) REFERENCES core.actor (tenant_id, id) NOT VALID;
+
 -- OpenAPI Consent requires the exact displayed document digest. This starts
 -- nullable for a steward-controlled backfill of existing synthetic rows; new
 -- M01 writes require it in application code.
