@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import UUID
 
 from modules.aml_cft.domain import (
     AmlCaseAction,
@@ -25,18 +26,29 @@ _RISK_RELEVANT_FIELDS = {"identity_evidence", "beneficial_owner", "residency"}
 _CASE_RESOLVED = {"cleared", "rejected", "closed"}
 _REFRESH_VALIDITY = timedelta(days=7)
 
-_CONTRACTS: dict[str, tuple[str, str, set[str]]] = {
+_CONTRACTS: dict[str, tuple[str, str, set[str], str]] = {
     "application.customer_signed": (
         "M02", "application",
         {"application_id", "customer_signature_id", "package_version_id", "document_sha256", "customer_signed_at"},
+        "customer_confidential",
     ),
     "kyc.decision_recorded": (
         "M03", "kyc_submission",
         {"submission_id", "application_id", "decision", "next_review_due_at"},
+        "customer_confidential",
     ),
     "customer.profile_updated": (
         "M01", "customer",
         {"customer_id", "changed_field_codes", "profile_evidence_ref"},
+        "customer_confidential",
+    ),
+    # M04 is both producer and consumer of its own restricted case event
+    # (task packet §6): a downstream AML-only replica/projection re-applies
+    # it idempotently without ever treating receipt as a new authorization.
+    "aml.case_changed": (
+        "M04", "aml_case",
+        {"case_id", "screening_id", "restricted_record_version"},
+        "aml_restricted",
     ),
 }
 
@@ -174,6 +186,12 @@ class AmlEventConsumer:
                 )
                 refreshed += 1
             return f"clearances_flagged_for_refresh:{refreshed}" if refreshed else "no_refresh_needed"
+        if event_type == "aml.case_changed":
+            # Self-produced restricted projection: a receiving M04 replica
+            # never re-derives case state from the event (the authoritative
+            # case row is only ever written by this module's own commands),
+            # so this is purely an idempotent acknowledgment.
+            return "case_change_acknowledged"
         raise ValidationError("event type is not consumed by M04", code="unsupported_event_type")
 
     @staticmethod
@@ -209,8 +227,13 @@ class AmlEventConsumer:
         contract = _CONTRACTS.get(envelope["event_type"])
         if not contract:
             raise ValidationError("event type is not consumed by M04", code="unsupported_event_type")
-        producer, aggregate_type, payload_fields = contract
-        if envelope["schema_version"] != "1.0.0" or envelope["producer"] != producer or envelope["aggregate_type"] != aggregate_type:
+        producer, aggregate_type, payload_fields, classification = contract
+        if (
+            envelope["schema_version"] != "1.0.0"
+            or envelope["producer"] != producer
+            or envelope["aggregate_type"] != aggregate_type
+            or envelope["classification"] != classification
+        ):
             raise ValidationError("event contract metadata is invalid", code="event_schema_invalid")
         if set(envelope["payload"]) != payload_fields:
             raise ValidationError("event payload fields do not match schema", code="event_schema_invalid")
@@ -218,6 +241,20 @@ class AmlEventConsumer:
             raise ConflictError("event payload hash is invalid", code="event_payload_hash_invalid")
         if not isinstance(envelope["sequence_no"], int) or envelope["sequence_no"] < 1:
             raise ValidationError("sequence_no must be positive", field_name="sequence_no")
+        if not isinstance(envelope["aggregate_version"], int) or envelope["aggregate_version"] < 1:
+            raise ValidationError("aggregate_version must be positive", field_name="aggregate_version")
+        for uuid_field in ("event_id", "tenant_id", "aggregate_id", "correlation_id"):
+            try:
+                UUID(str(envelope[uuid_field]))
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise ValidationError(f"{uuid_field} must be a UUID", code="event_schema_invalid", field_name=uuid_field) from exc
+        if envelope["causation_id"] is not None:
+            try:
+                UUID(str(envelope["causation_id"]))
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise ValidationError("causation_id must be a UUID", code="event_schema_invalid", field_name="causation_id") from exc
+        AmlEventConsumer._time(envelope["occurred_at"])
+        AmlEventConsumer._time(envelope["emitted_at"])
 
     @staticmethod
     def _receipt(envelope: dict[str, Any], status: str, code: str, applied_at: datetime | None) -> InboxReceipt:
@@ -229,7 +266,10 @@ class AmlEventConsumer:
 
     @staticmethod
     def _time(value: str) -> datetime:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (ValueError, AttributeError) as exc:
+            raise ValidationError("event time must be an RFC3339 timestamp", code="event_schema_invalid") from exc
         if parsed.tzinfo is None:
             raise ValidationError("event time must include timezone", code="event_schema_invalid")
         return parsed.astimezone(timezone.utc)

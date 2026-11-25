@@ -52,6 +52,26 @@ def test_customer_cannot_submit_declaration_for_someone_elses_application(m04):
     assert len(snapshot.declarations) == 0
 
 
+def test_submit_declaration_gives_sales_the_same_forbidden_for_existing_and_missing_application(m04, sales):
+    # R1 regression (2nd-round repeat of F1): an unauthorized staff role must
+    # not be able to tell "application exists" from "application missing" by
+    # whether submit_aml_declaration answers 403 or 404 (an existence oracle).
+    service = m04["service"]
+    missing_application_id = "30000000-0000-0000-0000-000000000099"
+    body = {
+        "form_version": "v1", "declaration_consent_id": EVIDENCE_1, "restricted_answer_asset_id": EVIDENCE_1,
+        "restricted_document_ids": [], "customer_signature_id": EVIDENCE_1,
+    }
+
+    with pytest.raises(ForbiddenError) as existing_denial:
+        service.submit_aml_declaration(sales, APPLICATION_A, body, expected_version=None, idempotency_key="sales-decl-existing-001")
+    with pytest.raises(ForbiddenError) as missing_denial:
+        service.submit_aml_declaration(sales, missing_application_id, body, expected_version=None, idempotency_key="sales-decl-missing-001")
+    assert existing_denial.value.code == missing_denial.value.code == "forbidden"
+    snapshot = m04["repository"].snapshot()
+    assert len(snapshot.declarations) == 0
+
+
 def test_webhook_adapter_role_is_required_for_screening_callback(m04, officer, sales):
     service = m04["service"]
     screening = service.start_aml_screening(officer, screening_request(), idempotency_key="adapter-screen-001").data
@@ -173,10 +193,25 @@ def test_clear_screening_rejects_empty_list_version_and_expiry_tracks_screened_a
 
     stale_callback = screening_callback(screening["id"], "clear", event_id="80000000-0000-0000-0000-000000000702")
     stale_callback["screened_at"] = "2020-01-01T00:00:00.000000Z"
+    before_event_ids = {event.event_id for event in m04["repository"].snapshot().outbox.values()}
     service.receive_aml_screening(adapter, stale_callback, idempotency_key="stale-callback-002", **webhook_headers())
 
     clearance = service.get_business_clearance(company_acceptor, APPLICATION_A).data
     assert clearance["decision"] == "expired"  # 180 days after a 2020 screening is already behind NOW
+
+    # R2 regression (2nd-round repeat of F2): the stored clearance and the
+    # emitted business_clearance.changed outbox payload must never say
+    # "approved" for a screening whose validity window is already in the
+    # past - this must not depend on the read-time now-vs-valid_until
+    # projection, since a downstream event consumer only ever sees the
+    # event payload at publish time, not a later as-of read.
+    snapshot = m04["repository"].snapshot()
+    latest_clearance_id = snapshot.clearance_by_application[(TENANT, APPLICATION_A)][-1]
+    stored_clearance = snapshot.clearances[(TENANT, latest_clearance_id)]
+    assert stored_clearance.decision != "approved"
+    new_events = [event for event in snapshot.outbox.values() if event.event_id not in before_event_ids]
+    clearance_events = [event for event in new_events if event.event_type == "business_clearance.changed"]
+    assert clearance_events and all(event.payload["decision"] != "approved" for event in clearance_events)
 
 
 def test_add_case_action_rejects_evidence_that_does_not_exist(m04, officer):

@@ -350,6 +350,7 @@ class OutboxEvent:
     lease_until: datetime | None = None
     next_attempt_at: datetime | None = None
     last_error_code: str | None = None
+    redrive_reason: str | None = None
 
     @property
     def payload_sha256(self) -> str:

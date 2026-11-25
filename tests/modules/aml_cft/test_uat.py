@@ -257,6 +257,33 @@ def test_uat_m04_010_auditor_needs_scoped_time_boxed_grant(m04, officer, supervi
     assert service.list_aml_cases(auditor).data["items"] == []  # expired grant: scoped listing empties again
 
 
+def test_internal_auditor_renewed_grant_is_not_shadowed_by_an_earlier_expired_one(m04, officer, supervisor):
+    # R5 regression (§0.7 bundled minor item): an older expired grant for the
+    # same (tenant, case, auditor) must not shadow a renewed active grant -
+    # the expiry check must be filtered inside the lookup itself, matching
+    # how list_aml_cases already scopes by (auditor, expires_at > now).
+    service = m04["service"]
+    screening = service.start_aml_screening(officer, screening_request(), idempotency_key="shadow-screen-001").data
+    adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000701"), idempotency_key="shadow-callback-001", **webhook_headers())
+    case_id = service.list_aml_cases(officer).data["items"][0]["id"]
+    auditor = ActorContext(TENANT, AUDITOR, frozenset({"internal_auditor"}), principal_type="staff")
+
+    service.grant_case_read(
+        supervisor, case_id, auditor.actor_id, reason_code="first_window",
+        expires_at=m04["clock"].value + timedelta(hours=1),
+    )
+    m04["clock"].advance(hours=2)  # the first grant is now expired but stays in state.read_grants
+
+    service.grant_case_read(
+        supervisor, case_id, auditor.actor_id, reason_code="renewed_window",
+        expires_at=m04["clock"].value + timedelta(hours=1),
+    )
+    read = service.get_aml_case(auditor, case_id)
+    assert read.data["id"] == case_id
+    assert [item["id"] for item in service.list_aml_cases(auditor).data["items"]] == [case_id]
+
+
 def test_uat_m04_011_open_case_under_legal_hold_is_never_cleaned_up(m04, officer, supervisor):
     from workers.tasks.aml_cft.tasks import RetentionSweeper
 

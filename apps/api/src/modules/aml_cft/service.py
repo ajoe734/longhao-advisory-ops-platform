@@ -141,10 +141,17 @@ class AmlCftService:
         if not isinstance(document_ids, list) or len(document_ids) > 30:
             raise ValidationError("restricted_document_ids must contain 0 to 30 items", field_name="restricted_document_ids")
         document_ids = [require_uuid(value, "restricted_document_ids") for value in document_ids]
-        # Ownership/authorization must be resolved before any evidence-existence
-        # lookup: otherwise an actor who does not own (or whose application does
-        # not exist) could still learn whether an arbitrary evidence UUID exists
-        # in the tenant from the error returned, independent of their access.
+        # Role eligibility must be resolved before any application-existence
+        # lookup: otherwise an unauthorized staff/service actor could still
+        # learn whether an arbitrary application_id exists from the 403 vs 404
+        # outcome, independent of their access to it (an existence oracle).
+        if context.principal_type != "customer" and not self._staff(context, {"aml_officer"}):
+            self._audit_failure(context, "submit_aml_declaration", correlation_id, "forbidden")
+            raise ForbiddenError("actor cannot submit this AML declaration")
+        # Ownership must be resolved before any evidence-existence lookup:
+        # otherwise an actor who does not own the application could still
+        # learn whether an arbitrary evidence UUID exists in the tenant from
+        # the error returned, independent of their access.
         customer_id = self.application_access.customer_for(context.tenant_id, application_id)
         if customer_id is None:
             raise NotFoundError("application was not found")
@@ -331,6 +338,18 @@ class AmlCftService:
                         state, context.tenant_id, screening.application_id, screening.customer_id,
                         decision="pending", policy_version=screening.policy_version, decided_by=_SYSTEM_ACTOR_ID,
                         decided_at=now, valid_until=now + _PENDING_VALIDITY, safe_reason_code="case_pending_review", case_id=blocking_case.id,
+                    )
+                elif screened_at + _CLEAR_VALIDITY <= now:
+                    # A "clear" result whose validity window (screened_at + validity)
+                    # is already behind wall-clock now (e.g. a late/backfilled
+                    # screened_at) must never be stored or published as an
+                    # approval; it requires manual review, not a retroactive grant.
+                    screening.expires_at = screened_at + _CLEAR_VALIDITY
+                    screening.manual_required = True
+                    clearance = self._append_clearance(
+                        state, context.tenant_id, screening.application_id, screening.customer_id,
+                        decision="expired", policy_version=screening.policy_version, decided_by=_SYSTEM_ACTOR_ID,
+                        decided_at=now, valid_until=screening.expires_at, safe_reason_code="screening_result_expired", case_id=None,
                     )
                 else:
                     screening.expires_at = screened_at + _CLEAR_VALIDITY
@@ -841,15 +860,11 @@ class AmlCftService:
     # ---- authorization and validation --------------------------------------
 
     def _authorize_declaration(self, context: ActorContext, customer_id: str, *, action: str, correlation_id: str | None) -> None:
-        if context.principal_type == "customer":
-            if context.customer_id == customer_id:
-                return
+        # Caller already rejected any principal that is neither a customer nor
+        # aml_officer staff; only the customer-ownership check remains here.
+        if context.principal_type == "customer" and context.customer_id != customer_id:
             self._audit_failure(context, action, correlation_id, "resource_not_found")
             raise NotFoundError("application was not found")
-        if self._staff(context, {"aml_officer"}):
-            return
-        self._audit_failure(context, action, correlation_id, "forbidden")
-        raise ForbiddenError("actor cannot submit this AML declaration")
 
     def _authorize_staff(self, context: ActorContext, roles: set[str], *, action: str | None = None, correlation_id: str | None = None) -> None:
         if self._staff(context, roles):
@@ -869,14 +884,16 @@ class AmlCftService:
         if self._staff(context, {"aml_officer", "aml_supervisor"}):
             return
         if self._staff(context, {"internal_auditor"}):
+            now = self._clock()
             grant = next(
                 (
                     row for (tenant, _), row in state.read_grants.items()
-                    if tenant == context.tenant_id and row.case_id == case_id and row.auditor_actor_id == context.actor_id
+                    if tenant == context.tenant_id and row.case_id == case_id
+                    and row.auditor_actor_id == context.actor_id and row.expires_at > now
                 ),
                 None,
             )
-            if grant and grant.expires_at > self._clock():
+            if grant:
                 return
         raise ForbiddenError("actor cannot read this AML case")
 

@@ -9,6 +9,7 @@ from modules.aml_cft.domain import (
     BusinessClearance,
     ConflictError,
     DependencyUnavailableError,
+    Job,
     OutboxEvent,
     SYSTEM_ACTOR_ID,
     new_id,
@@ -172,6 +173,40 @@ class OutboxPublisher:
 
         return self.repository.atomic(fail)
 
+    def dead_letters(self, tenant_id: str) -> list[OutboxEvent]:
+        """Operator-facing query: outbox rows that exhausted retries and need a decision."""
+        return self.repository.read(
+            lambda state: sorted(
+                (event for (tenant, _), event in state.outbox.items() if tenant == tenant_id and event.status == "dead_letter"),
+                key=lambda event: (event.emitted_at, event.sequence_no),
+            )
+        )
+
+    def redrive(self, tenant_id: str, event_id: str, *, operator_id: str, reason_code: str) -> None:
+        """Safe operator redrive: only ever moves a row that is actually ``dead_letter``.
+
+        An unknown/ambiguous external publish outcome must stay dead-lettered
+        for manual reconciliation rather than being blindly re-sent.
+        """
+        now = utc_now()
+
+        def apply(state: StoreState) -> None:
+            event = state.outbox[(tenant_id, event_id)]
+            if event.status != "dead_letter":
+                raise ConflictError("outbox row is not dead-lettered", code="not_dead_letter")
+            event.status = "retry"
+            event.attempt_count = 0
+            event.next_attempt_at = now
+            event.redrive_reason = reason_code
+            state.audit_events.append(AuditEvent(
+                id=new_id(), tenant_id=tenant_id, actor_id=operator_id, purpose="operator_redrive",
+                action="m04.outbox_redrive", aggregate_type=event.aggregate_type, aggregate_id=event.aggregate_id,
+                aggregate_version=event.aggregate_version, correlation_id=new_id(), result="redriven",
+                reason_code=reason_code, recorded_at=now,
+            ))
+
+        self.repository.atomic(apply)
+
 
 @dataclass(frozen=True)
 class DispatchResult:
@@ -256,17 +291,23 @@ class ScreeningDispatchWorker:
         now = utc_now()
 
         def apply(state: StoreState) -> None:
-            screening = state.screenings[(tenant_id, screening_id)]
-            screening.state = "error"
-            screening.manual_required = True
-            screening.version += 1
-            screening.updated_at = now
             job = state.jobs[(tenant_id, job_id)]
             if job.lease_owner != worker_id:
                 raise ConflictError("dispatch job lease was lost", code="worker_lease_lost")
             job.status = "dead_letter"
             job.last_error_code = "screening_provider_timeout"
             job.updated_at = now
+            screening = state.screenings[(tenant_id, screening_id)]
+            if screening.state != "pending":
+                # Already resolved by another path (e.g. a duplicate dispatch
+                # race or a manual override): timeout handling must never
+                # regress a screening that has moved past "pending", nor
+                # publish a second manual-required clearance for it.
+                return
+            screening.state = "error"
+            screening.manual_required = True
+            screening.version += 1
+            screening.updated_at = now
 
             # A provider timeout must never leave a stale earlier "approved"
             # clearance looking current: force a fresh pending/manual-required
@@ -308,6 +349,41 @@ class ScreeningDispatchWorker:
                 action="m04.screening_provider_timeout", aggregate_type="aml_screening", aggregate_id=screening.id,
                 aggregate_version=screening.version, correlation_id=correlation_id, result="manual_required",
                 reason_code="screening_provider_timeout", recorded_at=now,
+            ))
+
+        self.repository.atomic(apply)
+
+    def dead_letters(self, tenant_id: str) -> list[Job]:
+        """Operator-facing query: dispatch jobs that exhausted retries and need a decision."""
+        return self.repository.read(
+            lambda state: sorted(
+                (job for (tenant, _), job in state.jobs.items() if tenant == tenant_id and job.status == "dead_letter"),
+                key=lambda job: job.updated_at,
+            )
+        )
+
+    def redrive(self, tenant_id: str, job_id: str, *, operator_id: str, reason_code: str) -> None:
+        """Safe operator redrive: only ever moves a job that is actually ``dead_letter``.
+
+        An unknown/ambiguous provider outcome must stay dead-lettered for
+        manual reconciliation rather than being blindly re-dispatched.
+        """
+        now = utc_now()
+
+        def apply(state: StoreState) -> None:
+            job = state.jobs[(tenant_id, job_id)]
+            if job.status != "dead_letter":
+                raise ConflictError("dispatch job is not dead-lettered", code="not_dead_letter")
+            job.status = "pending"
+            job.attempt_count = 0
+            job.next_attempt_at = now
+            job.redrive_reason = reason_code
+            job.updated_at = now
+            state.audit_events.append(AuditEvent(
+                id=new_id(), tenant_id=tenant_id, actor_id=operator_id, purpose="operator_redrive",
+                action="m04.dispatch_job_redrive", aggregate_type="aml_screening",
+                aggregate_id=job.payload.get("screening_id"), aggregate_version=None, correlation_id=new_id(),
+                result="redriven", reason_code=reason_code, recorded_at=now,
             ))
 
         self.repository.atomic(apply)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -138,13 +139,16 @@ def test_wire_responses_validate_against_openapi_1_0(m04, officer, supervisor, c
     validate("Problem", problem.body)
 
 
-def incoming(event_type: str, producer: str, aggregate_type: str, aggregate_id: str, sequence: int, payload: dict):
+def incoming(
+    event_type: str, producer: str, aggregate_type: str, aggregate_id: str, sequence: int, payload: dict,
+    *, classification: str = "customer_confidential",
+):
     return {
         "event_id": str(uuid4()), "event_type": event_type, "schema_version": "1.0.0", "tenant_id": TENANT,
         "producer": producer, "aggregate_type": aggregate_type, "aggregate_id": aggregate_id,
         "aggregate_version": sequence, "sequence_no": sequence, "occurred_at": wire_time(NOW), "emitted_at": wire_time(NOW),
         "correlation_id": str(uuid4()), "causation_id": None, "idempotency_key": f"incoming-{sequence:08d}",
-        "classification": "customer_confidential", "payload_sha256": canonical_hash(payload), "payload": payload,
+        "classification": classification, "payload_sha256": canonical_hash(payload), "payload": payload,
     }
 
 
@@ -186,6 +190,35 @@ def test_consumer_rejects_wrong_schema_and_isolates_tenant(m04):
     result = consumer.consume(wrong_tenant)
     assert result.status == "applied"
     assert m04["repository"].snapshot().inbox.get((TENANT, "M04", "M01", wrong_tenant["event_id"])) is None
+
+
+def test_consumer_accepts_m04s_own_aml_case_changed_event(m04):
+    # R3 regression (2nd-round repeat of F4): task packet §6 lists M04 as
+    # both producer and consumer of aml.case_changed; the shared example
+    # fixture must be acceptable, not rejected as "unsupported_event_type".
+    consumer = AmlEventConsumer(m04["repository"])
+    example = json.loads((ROOT / "events" / "examples" / "aml.case_changed.v1.json").read_text(encoding="utf-8"))
+    assert consumer.consume(example).status == "applied"
+
+
+def test_consumer_rejects_malformed_classification_uuid_and_timestamp(m04):
+    # R3 regression: _validate_envelope must enforce the exact per-event
+    # classification and UUID/timestamp format, not silently accept a
+    # structurally-invalid envelope as "applied" (the old _time() helper
+    # was dead code and classification was never checked against the
+    # event's own contract). Uses an event type that was already registered
+    # before this fix (customer.profile_updated) so the malformed fields -
+    # not a missing contract entry - are what the old code failed to reject.
+    consumer = AmlEventConsumer(m04["repository"])
+    payload = {"customer_id": CUSTOMER_A, "changed_field_codes": ["identity_evidence"], "profile_evidence_ref": str(uuid4())}
+    malformed = incoming("customer.profile_updated", "M01", "customer", CUSTOMER_A, 1, payload)
+    malformed.update({
+        "event_id": "not-a-uuid", "tenant_id": "not-a-uuid", "aggregate_id": "not-a-uuid",
+        "correlation_id": "not-a-uuid", "occurred_at": "not-a-time", "emitted_at": "not-a-time",
+        "classification": "public_leaked",
+    })
+    with pytest.raises(ValidationError):
+        consumer.consume(malformed)
 
 
 def test_consumer_flags_approved_clearance_for_refresh_on_identity_change(m04, officer, supervisor):
@@ -230,6 +263,84 @@ def test_outbox_worker_uses_lease_bounded_retry_and_no_duplicate_publish(m04, of
     assert len(bus.envelopes) == 2
     third = publisher.run_once("worker-c")
     assert third.processed == 0 and len(bus.envelopes) == 2
+
+
+def test_outbox_dead_letter_query_and_safe_operator_redrive(m04, officer):
+    # R4 regression (task packet §4): operators need an explicit query for
+    # dead-lettered outbox rows and a redrive that only ever moves a row that
+    # is actually dead_letter - not a blind re-dispatch on unknown state.
+    service = m04["service"]
+    screening = service.start_aml_screening(officer, screening_request(), idempotency_key="outbox-dl-screen-001").data
+    adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id=str(uuid4())), idempotency_key="outbox-dl-callback-001", **webhook_headers())
+    bus = LocalEventBus()
+    bus.failure_mode = "timeout"
+    publisher = OutboxPublisher(m04["repository"], bus, max_attempts=1)
+    result = publisher.run_once("worker-outbox-dl")
+    assert result.dead_lettered == 2
+
+    dead = publisher.dead_letters(TENANT)
+    assert len(dead) == 2 and all(event.status == "dead_letter" for event in dead)
+
+    publisher.redrive(TENANT, dead[0].event_id, operator_id="20000000-0000-0000-0000-000000000099", reason_code="confirmed_safe_to_resend")
+    snapshot = m04["repository"].snapshot()
+    redriven = snapshot.outbox[(TENANT, dead[0].event_id)]
+    assert redriven.status == "retry" and redriven.redrive_reason == "confirmed_safe_to_resend"
+    assert any(event.action == "m04.outbox_redrive" and event.result == "redriven" for event in snapshot.audit_events)
+
+    with pytest.raises(ConflictError):  # already moved off dead_letter: no blind re-redrive
+        publisher.redrive(TENANT, dead[0].event_id, operator_id="op", reason_code="duplicate_attempt")
+
+
+def test_dispatch_job_dead_letter_query_and_safe_operator_redrive(m04, officer):
+    # R4 regression (task packet §4): same explicit query/safe-redrive
+    # contract for dispatch jobs that dead-lettered after a provider timeout.
+    service = m04["service"]
+    m04["provider"].failure_mode = "timeout"
+    service.start_aml_screening(officer, screening_request(), idempotency_key="dispatch-dl-screen-001")
+    worker = ScreeningDispatchWorker(m04["repository"], m04["provider"])
+    result = worker.run_once("worker-dispatch-dl")
+    assert result.manual_required == 1
+
+    dead = worker.dead_letters(TENANT)
+    assert len(dead) == 1 and dead[0].status == "dead_letter"
+
+    worker.redrive(TENANT, dead[0].id, operator_id="20000000-0000-0000-0000-000000000099", reason_code="provider_recovered")
+    snapshot = m04["repository"].snapshot()
+    redriven = snapshot.jobs[(TENANT, dead[0].id)]
+    assert redriven.status == "pending" and redriven.redrive_reason == "provider_recovered"
+    assert any(event.action == "m04.dispatch_job_redrive" and event.result == "redriven" for event in snapshot.audit_events)
+
+    with pytest.raises(ConflictError):  # already moved off dead_letter: no blind re-redrive
+        worker.redrive(TENANT, dead[0].id, operator_id="op", reason_code="duplicate_attempt")
+
+
+def test_dispatch_timeout_never_regresses_a_screening_resolved_by_another_path(m04, officer):
+    # R4 regression (§0.7 bundled minor item): _mark_manual_required must
+    # guard against overwriting a screening whose state has already moved
+    # past "pending" (e.g. a duplicate dispatch race), and must not publish
+    # a second manual-required clearance for it.
+    service = m04["service"]
+    m04["provider"].failure_mode = "timeout"
+    screening = service.start_aml_screening(officer, screening_request(), idempotency_key="race-screen-001").data
+    worker = ScreeningDispatchWorker(m04["repository"], m04["provider"])
+    leased = worker._lease("worker-race", limit=50)
+    assert len(leased) == 1
+    tenant_id, job_id = leased[0]
+
+    def resolve_elsewhere(state):
+        row = state.screenings[(TENANT, screening["id"])]
+        row.state = "clear"
+        row.version += 1
+    m04["repository"].atomic(resolve_elsewhere)
+    before_clearance_count = len(m04["repository"].snapshot().clearances)
+
+    worker._mark_manual_required(tenant_id, screening["id"], job_id, "worker-race")
+
+    snapshot = m04["repository"].snapshot()
+    assert snapshot.screenings[(TENANT, screening["id"])].state == "clear"  # not regressed to "error"
+    assert len(snapshot.clearances) == before_clearance_count  # no duplicate manual-required clearance
+    assert next(iter(snapshot.jobs.values())).status == "dead_letter"  # the job still terminates
 
 
 def test_outbox_worker_reclaims_a_lease_abandoned_by_a_dead_worker(m04, officer):
