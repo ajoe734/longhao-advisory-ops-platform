@@ -249,6 +249,7 @@ class AudienceSnapshot:
     created_at: datetime
     updated_at: datetime
     version: int = 1
+    reason_summary: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -282,6 +283,23 @@ class EntitlementRecord:
     version: int
     valid_until: datetime
     updated_at: datetime
+
+
+@dataclass
+class RevokedSignature:
+    """Tombstone recorded the moment ``report.signature_revoked`` arrives.
+
+    Kept independently of :class:`VerifiedReport` so a revocation that
+    arrives before its matching ``report.signature_verified`` (out-of-order
+    delivery across the ``signature``/``report_version`` aggregates) still
+    blocks that signature once it is later verified.
+    """
+
+    tenant_id: str
+    signature_id: str
+    report_version_id: str
+    revocation_id: str
+    effective_at: datetime
 
 
 @dataclass
@@ -407,3 +425,4 @@ class IdempotencyReceipt:
     response_value: Any
     error: DomainError | None
     completed_at: datetime
+    response_etag: str | None = None

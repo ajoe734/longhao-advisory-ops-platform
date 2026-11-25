@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import re
@@ -13,6 +14,7 @@ from .domain import (
     DependencyUnavailableError,
     DomainError,
     EntitlementRecord,
+    ExcludedCandidate,
     ForbiddenError,
     IdempotencyReceipt,
     Job,
@@ -23,6 +25,7 @@ from .domain import (
     RecommendationSeries,
     RecommendationVersion,
     Recipient,
+    RevokedSignature,
     StaleVersionError,
     ValidationError,
     VerifiedReport,
@@ -46,6 +49,10 @@ _EXTERNAL_SYSTEMS = {
 }
 _PUBLICATION_ACTIVE = {"queued", "publishing", "published", "partially_failed"}
 _MAX_PUBLISH_ATTEMPTS = 5
+# Version of M08's own audience-evaluation logic (which fields of
+# EntitlementAudiencePort.resolve() it reads and how eligibility is derived),
+# independent of the signed report_version_id that triggered the publish.
+_AUDIENCE_RULE_VERSION = "entitlement_audience_resolution:v1"
 
 
 @dataclass(frozen=True)
@@ -114,11 +121,11 @@ class PublicationService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize(context, {"analyst"})
+        self._authorize(context, {"analyst"}, operation="create_recommendation_series", correlation_id=correlation_id)
         self._body(body, {"instrument_ref", "strategy_scope_ref", "research_origin_ref"}, {"instrument_ref", "strategy_scope_ref", "research_origin_ref"})
         instrument_ref = self._validate_instrument_ref(body["instrument_ref"])
-        strategy_scope_ref = str(body["strategy_scope_ref"])
-        if not strategy_scope_ref or len(strategy_scope_ref) > 160:
+        strategy_scope_ref = body["strategy_scope_ref"]
+        if not isinstance(strategy_scope_ref, str) or not 1 <= len(strategy_scope_ref) <= 160:
             raise ValidationError("strategy_scope_ref must contain 1 to 160 characters", field_name="strategy_scope_ref")
         research_origin_ref = self._validate_external_ref(body["research_origin_ref"])
         series_code = self._series_code(instrument_ref, strategy_scope_ref)
@@ -157,7 +164,7 @@ class PublicationService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize(context, {"analyst"})
+        self._authorize(context, {"analyst"}, operation="create_recommendation_version", correlation_id=correlation_id)
         series_id = require_uuid(series_id, "series_id")
         self._body(
             body,
@@ -196,7 +203,6 @@ class PublicationService:
             raise ValidationError("an entry version cannot supersede a prior version", field_name="supersedes_version_id")
         if body["action"] != "entry" and supersedes_version_id is None:
             raise ValidationError("update, exit, hold and correction versions must reference the version they continue", field_name="supersedes_version_id")
-        stored_asset = self.content_assets.store(context.tenant_id, rationale)
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
 
@@ -207,6 +213,11 @@ class PublicationService:
                 prior = state.versions.get((context.tenant_id, supersedes_version_id))
                 if not prior or prior.series_id != series_id:
                     raise ValidationError("supersedes_version_id must reference a version in the same series", field_name="supersedes_version_id")
+            # Only written once the series/CAS checks above have passed and this
+            # is confirmed to be new work (idempotency replay short-circuits
+            # before ``mutate`` runs); avoids orphaning a content asset on a
+            # stale-version or missing-series rejection.
+            stored_asset = self.content_assets.store(context.tenant_id, rationale)
             version_number = 1 + sum(
                 1 for (tenant, _), item in state.versions.items() if tenant == context.tenant_id and item.series_id == series_id
             )
@@ -245,19 +256,19 @@ class PublicationService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize(context, {"analyst_reviewer", "compliance_supervisor"})
+        self._authorize(context, {"analyst_reviewer", "compliance_supervisor"}, operation="withdraw_publication", correlation_id=correlation_id)
         publication_id = require_uuid(publication_id, "publication_id")
         self._body(body, {"reason_code", "evidence_asset_id", "notify_recipients", "notice_template_version"}, {"reason_code", "evidence_asset_id", "notify_recipients", "notice_template_version"})
-        reason_code = str(body["reason_code"])
-        if not 1 <= len(reason_code) <= 80:
+        reason_code = body["reason_code"]
+        if not isinstance(reason_code, str) or not 1 <= len(reason_code) <= 80:
             raise ValidationError("reason_code must contain 1 to 80 characters", field_name="reason_code")
         evidence_asset_id = require_uuid(body["evidence_asset_id"], "evidence_asset_id")
         if not self.evidence.exists(context.tenant_id, evidence_asset_id):
             raise ValidationError("withdrawal evidence does not exist", code="evidence_not_found", field_name="evidence_asset_id")
         if not isinstance(body["notify_recipients"], bool):
             raise ValidationError("notify_recipients must be boolean", field_name="notify_recipients")
-        notice_template_version = str(body["notice_template_version"])
-        if not 1 <= len(notice_template_version) <= 80:
+        notice_template_version = body["notice_template_version"]
+        if not isinstance(notice_template_version, str) or not 1 <= len(notice_template_version) <= 80:
             raise ValidationError("notice_template_version must contain 1 to 80 characters", field_name="notice_template_version")
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
@@ -303,15 +314,15 @@ class PublicationService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize(context, {"analyst_reviewer"})
+        self._authorize(context, {"analyst_reviewer"}, operation="link_publication_correction", correlation_id=correlation_id)
         publication_id = require_uuid(publication_id, "publication_id")
         self._body(body, {"replacement_publication_id", "replacement_report_version_id", "reason_code"}, {"replacement_publication_id", "replacement_report_version_id", "reason_code"})
         replacement_publication_id = require_uuid(body["replacement_publication_id"], "replacement_publication_id")
         replacement_report_version_id = require_uuid(body["replacement_report_version_id"], "replacement_report_version_id")
         if replacement_publication_id == publication_id:
             raise ValidationError("a publication cannot correct itself", field_name="replacement_publication_id")
-        reason_code = str(body["reason_code"])
-        if not 1 <= len(reason_code) <= 80:
+        reason_code = body["reason_code"]
+        if not isinstance(reason_code, str) or not 1 <= len(reason_code) <= 80:
             raise ValidationError("reason_code must contain 1 to 80 characters", field_name="reason_code")
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
@@ -361,7 +372,7 @@ class PublicationService:
     # ---- queries -------------------------------------------------------
 
     def get_publication(self, context: ActorContext, publication_id: str, *, correlation_id: str | None = None) -> ServiceResponse:
-        self._authorize(context, {"analyst", "service_agent", "compliance_reviewer"})
+        self._authorize(context, {"analyst", "service_agent", "compliance_reviewer"}, operation="get_publication", correlation_id=correlation_id)
         publication_id = require_uuid(publication_id, "publication_id")
         correlation_id = self._correlation(correlation_id)
 
@@ -382,7 +393,7 @@ class PublicationService:
         as_of: datetime | None = None,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize(context, {"analyst", "service_agent", "compliance_reviewer"})
+        self._authorize(context, {"analyst", "service_agent", "compliance_reviewer"}, operation="list_publications", correlation_id=correlation_id)
         if not 1 <= limit <= 200:
             raise ValidationError("limit must be between 1 and 200", field_name="limit")
         if state_filter and state_filter not in {"queued", "publishing", "published", "partially_failed", "expired", "corrected", "withdrawn"}:
@@ -416,7 +427,15 @@ class PublicationService:
 
     # ---- event projections ---------------------------------------------
 
-    def apply_report_signature_verified(self, state: StoreState, tenant_id: str, payload: dict[str, Any]) -> str:
+    def apply_report_signature_verified(
+        self,
+        state: StoreState,
+        tenant_id: str,
+        payload: dict[str, Any],
+        *,
+        event_id: str,
+        correlation_id: str,
+    ) -> str:
         """Records the verified signature and enqueues a publish job per match.
 
         Returns a human-readable result code; never raises for a legitimate
@@ -425,16 +444,25 @@ class PublicationService:
         event must still be processed).
         """
         report_version_id = payload["report_version_id"]
+        signature_id = payload["signature_id"]
         existing = state.verified_reports.get((tenant_id, report_version_id))
+        # A revocation that arrived before this verification (out-of-order
+        # delivery across the signature/report_version aggregates) tombstones
+        # the signature_id; honour it immediately so the signature never has
+        # a window where it looks live.
+        revocation = state.revoked_signatures.get((tenant_id, signature_id))
+        revoked = bool(revocation) or (existing.revoked if existing and existing.signature_id == signature_id else False)
+        revocation_id = revocation.revocation_id if revocation else (existing.revocation_id if existing and existing.signature_id == signature_id else None)
         verified = VerifiedReport(
             tenant_id=tenant_id,
             report_version_id=report_version_id,
-            signature_id=payload["signature_id"],
+            signature_id=signature_id,
             report_content_sha256=payload["report_content_sha256"],
             bundle_manifest_sha256=payload["bundle_manifest_sha256"],
             verified_at=parse_time(payload["verified_at"], "verified_at"),
             valid_until=parse_time(payload["valid_until"], "valid_until"),
-            revoked=existing.revoked if existing else False,
+            revoked=revoked,
+            revocation_id=revocation_id,
         )
         state.verified_reports[(tenant_id, report_version_id)] = verified
         matched = 0
@@ -457,15 +485,28 @@ class PublicationService:
                 id=new_id(),
                 tenant_id=tenant_id,
                 kind="publish_recommendation_version",
-                payload={"recommendation_version_id": version.id, "triggering_report_version_id": report_version_id},
+                payload={
+                    "recommendation_version_id": version.id,
+                    "triggering_report_version_id": report_version_id,
+                    "triggering_signature_event_id": event_id,
+                    "correlation_id": correlation_id,
+                },
             )
             state.jobs[(tenant_id, job.id)] = job
         return f"signature_verified_recorded:{matched}"
 
     def apply_report_signature_revoked(self, state: StoreState, tenant_id: str, payload: dict[str, Any]) -> str:
         report_version_id = payload["report_version_id"]
+        signature_id = payload["signature_id"]
+        state.revoked_signatures[(tenant_id, signature_id)] = RevokedSignature(
+            tenant_id=tenant_id,
+            signature_id=signature_id,
+            report_version_id=report_version_id,
+            revocation_id=payload["revocation_id"],
+            effective_at=parse_time(payload["effective_at"], "effective_at"),
+        )
         existing = state.verified_reports.get((tenant_id, report_version_id))
-        if existing:
+        if existing and existing.signature_id == signature_id:
             existing.revoked = True
             existing.revocation_id = payload["revocation_id"]
         cancelled = 0
@@ -476,17 +517,21 @@ class PublicationService:
             if version and report_version_id in version.supporting_report_version_ids:
                 job.status = "dead_letter"
                 job.last_error_code = "supporting_report_signature_revoked"
+                job.lease_owner = None
+                job.lease_until = None
                 cancelled += 1
         return f"signature_revoked_recorded:{cancelled}"
 
-    def apply_entitlement_changed(self, state: StoreState, tenant_id: str, payload: dict[str, Any]) -> str:
+    def apply_entitlement_changed(
+        self, state: StoreState, tenant_id: str, payload: dict[str, Any], *, aggregate_version: int,
+    ) -> str:
         record = EntitlementRecord(
             tenant_id=tenant_id,
             customer_id=payload["customer_id"],
             entitlement_id=payload["entitlement_id"],
             contract_id=payload["contract_id"],
             state=payload["state"],
-            version=payload.get("aggregate_version", 1),
+            version=aggregate_version,
             valid_until=parse_time(payload["valid_until"], "valid_until"),
             updated_at=self._clock(),
         )
@@ -506,85 +551,98 @@ class PublicationService:
             job = state.jobs.get((tenant_id, job_id))
             if job is None:
                 raise NotFoundError("publish job was not found")
+            if job.lease_owner is not None and job.lease_owner != worker_id:
+                raise ConflictError("publish job lease was lost", code="worker_lease_lost")
+            correlation_id = job.payload.get("correlation_id") or new_id()
+            triggering_event_id = job.payload.get("triggering_signature_event_id") or ""
+            now = self._clock()
+
+            def reject(status: str, result_code: str, *, dead_letter: bool, audit: bool = True) -> PublishOutcome:
+                self._finish_job(job, now, "dead_letter" if dead_letter else "complete", result_code)
+                if audit:
+                    self._audit_as(
+                        state, tenant_id, self._WORKER_ACTOR_ID, "publish_worker", "publish_recommendation_version",
+                        "recommendation_version", version.id if version else None, version.version if version else None,
+                        correlation_id, "rejected", result_code,
+                    )
+                return PublishOutcome(status, result_code)
+
             version = state.versions.get((tenant_id, job.payload["recommendation_version_id"]))
             if version is None:
-                job.status = "dead_letter"
-                job.result_code = "recommendation_version_missing"
-                return PublishOutcome("dead_letter", "recommendation_version_missing")
+                return reject("dead_letter", "recommendation_version_missing", dead_letter=True)
             if (tenant_id, version.id) in state.publications_by_version:
-                job.status = "complete"
-                job.result_code = "already_published"
+                self._finish_job(job, now, "complete", "already_published")
                 return PublishOutcome("complete", "already_published")
 
-            now = self._clock()
             if version.valid_until <= now:
-                job.status = "complete"
-                job.result_code = "expired_blocked"
-                return PublishOutcome("blocked", "expired_blocked")
+                return reject("blocked", "expired_blocked", dead_letter=False)
 
             verified_rows: list[VerifiedReport] = []
             for report_version_id in version.supporting_report_version_ids:
                 row = state.verified_reports.get((tenant_id, report_version_id))
-                if row is None or row.revoked or row.valid_until <= now:
-                    job.status = "complete"
-                    job.result_code = "signature_not_ready"
-                    return PublishOutcome("pending", "signature_not_ready")
+                if row is None:
+                    return reject("pending", "signature_not_ready", dead_letter=False, audit=False)
+                if row.revoked:
+                    return reject("dead_letter", "supporting_report_signature_revoked", dead_letter=True)
+                if row.valid_until <= now:
+                    return reject("blocked", "expired_blocked", dead_letter=False)
                 verified_rows.append(row)
 
-            bundle_manifest_sha256 = None
-            report_content_sha256 = None
+            bundles_by_report: dict[str, Any] = {}
             for row in verified_rows:
-                bundle = self.report_bundles.verify(tenant_id, row.report_version_id, version.id, version.content_sha256)
-                if not bundle.consistent:
-                    job.status = "dead_letter"
-                    job.result_code = "bundle_hash_mismatch"
-                    self._audit_as(
-                        state, tenant_id, self._WORKER_ACTOR_ID, "publish_worker", "publish_recommendation_version",
-                        "recommendation_version", version.id, version.version,
-                        job.payload.get("triggering_report_version_id", ""), "rejected", "bundle_hash_mismatch",
-                    )
-                    return PublishOutcome("dead_letter", "bundle_hash_mismatch")
-                bundle_manifest_sha256 = bundle.bundle_manifest_sha256
-                report_content_sha256 = bundle.report_content_sha256
+                try:
+                    bundle = self.report_bundles.verify(tenant_id, row.report_version_id, version.id, version.content_sha256)
+                except DependencyUnavailableError as exc:
+                    return self._schedule_retry(job, now, exc)
+                except NotFoundError:
+                    return reject("dead_letter", "bundle_not_registered", dead_letter=True)
+                if (
+                    not bundle.consistent
+                    or bundle.bundle_manifest_sha256 != row.bundle_manifest_sha256
+                    or bundle.report_content_sha256 != row.report_content_sha256
+                ):
+                    return reject("dead_letter", "bundle_hash_mismatch", dead_letter=True)
+                bundles_by_report[row.report_version_id] = bundle
 
             try:
                 candidates = self.entitlements.resolve(tenant_id, self._instrument_ref_for(state, tenant_id, version), now)
             except DependencyUnavailableError as exc:
-                job.attempt_count += 1
-                job.last_error_code = exc.code
-                if job.attempt_count >= _MAX_PUBLISH_ATTEMPTS:
-                    job.status = "dead_letter"
-                    return PublishOutcome("dead_letter", exc.code)
-                job.status = "retry"
-                job.next_attempt_at = now + timedelta(seconds=min(300, 2 ** job.attempt_count))
-                return PublishOutcome("retry", exc.code)
+                return self._schedule_retry(job, now, exc)
 
+            primary = verified_rows[0]
+            primary_bundle = bundles_by_report[primary.report_version_id]
+            publication_valid_until = min([version.valid_until, *(row.valid_until for row in verified_rows)])
             publication = Publication(
                 id=new_id(),
                 tenant_id=tenant_id,
                 recommendation_version_id=version.id,
-                report_version_id=verified_rows[0].report_version_id,
-                signature_id=verified_rows[0].signature_id,
+                report_version_id=primary.report_version_id,
+                signature_id=primary.signature_id,
                 recommendation_version_ids=[version.id],
-                bundle_manifest_sha256=bundle_manifest_sha256 or "",
-                created_from_signature_event_id=job.payload.get("triggering_report_version_id", ""),
+                bundle_manifest_sha256=primary_bundle.bundle_manifest_sha256,
+                created_from_signature_event_id=triggering_event_id,
                 audience_snapshot_id="",
-                valid_until=version.valid_until,
+                valid_until=publication_valid_until,
                 created_at=now,
                 updated_at=now,
                 state="publishing",
             )
             eligible = [candidate for candidate in candidates if candidate.eligible]
+            excluded = [
+                ExcludedCandidate(customer_id=candidate.customer_id, reason_code=candidate.reason_code)
+                for candidate in candidates if not candidate.eligible
+            ]
             snapshot = AudienceSnapshot(
                 id=new_id(),
                 tenant_id=tenant_id,
                 publication_id=publication.id,
-                rule_version=version.supporting_report_version_ids[0],
+                rule_version=_AUDIENCE_RULE_VERSION,
                 evaluated_at=now,
                 snapshot_sha256=canonical_hash([candidate.customer_id for candidate in eligible]),
                 recipient_count=len(eligible),
                 created_at=now,
                 updated_at=now,
+                reason_summary=dict(Counter(item.reason_code for item in excluded)),
             )
             publication.audience_snapshot_id = snapshot.id
             publication.recipient_count = len(eligible)
@@ -613,7 +671,8 @@ class PublicationService:
                 tenant_id=tenant_id,
                 aggregate_id=publication.id,
                 aggregate_version=1,
-                correlation_id=new_id(),
+                correlation_id=correlation_id,
+                causation_id=triggering_event_id or None,
                 idempotency_key=f"publish:{job.id}",
                 payload={
                     "publication_id": publication.id,
@@ -627,13 +686,33 @@ class PublicationService:
             )
             self._audit_as(
                 state, tenant_id, self._WORKER_ACTOR_ID, "publish_worker", "publish_recommendation_version",
-                "publication", publication.id, 1, job.payload.get("triggering_report_version_id", ""), "succeeded", None,
+                "publication", publication.id, 1, correlation_id, "succeeded", None,
             )
-            job.status = "complete"
-            job.result_code = "published"
+            self._finish_job(job, now, "complete", "published")
             return PublishOutcome("published", "published", publication.id)
 
         return self.repository.atomic(transaction)
+
+    @staticmethod
+    def _finish_job(job: Job, now: datetime, status: str, result_code: str | None) -> None:
+        job.status = status
+        job.result_code = result_code
+        job.lease_owner = None
+        job.lease_until = None
+        job.updated_at = now
+
+    def _schedule_retry(self, job: Job, now: datetime, exc: DependencyUnavailableError) -> PublishOutcome:
+        job.attempt_count += 1
+        job.last_error_code = exc.code
+        if job.attempt_count >= _MAX_PUBLISH_ATTEMPTS:
+            self._finish_job(job, now, "dead_letter", exc.code)
+            return PublishOutcome("dead_letter", exc.code)
+        job.status = "retry"
+        job.lease_owner = None
+        job.lease_until = None
+        job.next_attempt_at = now + timedelta(seconds=min(300, 2 ** job.attempt_count))
+        job.updated_at = now
+        return PublishOutcome("retry", exc.code)
 
     # ---- shared helpers --------------------------------------------------
 
@@ -651,32 +730,32 @@ class PublicationService:
         fingerprint = canonical_hash(request)
         receipt_key = (context.tenant_id, context.actor_id, operation, key)
 
-        def transaction(state: StoreState) -> tuple[_Outcome, bool]:
+        def transaction(state: StoreState) -> tuple[_Outcome, bool, str | None]:
             receipt = state.idempotency.get(receipt_key)
             if receipt:
                 if receipt.request_sha256 != fingerprint:
                     raise ConflictError("Idempotency-Key was already used with a different payload", code="idempotency_conflict")
-                return _Outcome(receipt.response_value, receipt.response_status, "replay", None, None, receipt.error), True
+                return _Outcome(receipt.response_value, receipt.response_status, "replay", None, None, receipt.error), True, receipt.response_etag
             outcome = mutate(state)
             self._audit(
                 state, context, operation, outcome.aggregate_type, outcome.aggregate_id, outcome.aggregate_version,
                 correlation_id, outcome.error.code if outcome.error else "succeeded", outcome.error.code if outcome.error else None,
             )
+            etag = self._etag(outcome.aggregate_version) if outcome.aggregate_version else None
             state.idempotency[receipt_key] = IdempotencyReceipt(
                 tenant_id=context.tenant_id, actor_id=context.actor_id, operation=operation, key=key,
                 request_sha256=fingerprint, response_status=outcome.status, response_value=outcome.value,
-                error=outcome.error, completed_at=self._clock(),
+                error=outcome.error, completed_at=self._clock(), response_etag=etag,
             )
-            return outcome, False
+            return outcome, False, etag
 
         try:
-            outcome, replayed = self.repository.atomic(transaction)
+            outcome, replayed, etag = self.repository.atomic(transaction)
         except DomainError as exc:
             self._audit_failure(context, operation, correlation_id, exc.code)
             raise
         if outcome.error:
             raise outcome.error
-        etag = self._etag(outcome.aggregate_version) if outcome.aggregate_version else None
         return ServiceResponse(outcome.value, outcome.status, etag, replayed)
 
     def _emit(
@@ -705,9 +784,17 @@ class PublicationService:
         )
         state.outbox[(tenant_id, event.event_id)] = event
 
-    def _authorize(self, context: ActorContext, roles: set[str]) -> None:
+    def _authorize(
+        self, context: ActorContext, roles: set[str], *, operation: str, correlation_id: str | None = None,
+    ) -> None:
         if context.has_any(roles):
             return
+        try:
+            self._audit_failure(context, operation, correlation_id, "forbidden")
+        except ValidationError:
+            # An unparsable caller-supplied X-Correlation-Id must not mask the
+            # 403; fall back to a fresh correlation id for the audit record.
+            self._audit_failure(context, operation, None, "forbidden")
         raise ForbiddenError("actor cannot perform this M08 operation")
 
     @staticmethod
@@ -739,18 +826,20 @@ class PublicationService:
     def _validate_external_ref(value: Any) -> dict[str, Any]:
         if not isinstance(value, dict) or set(value) - {"system", "external_id", "kind", "version", "checksum_sha256"}:
             raise ValidationError("research_origin_ref has unsupported fields", field_name="research_origin_ref")
-        if {"system", "external_id"} - set(value):
+        if {"system", "external_id", "kind"} - set(value):
             raise ValidationError("research_origin_ref is missing required fields", field_name="research_origin_ref")
         if value["system"] not in _EXTERNAL_SYSTEMS:
             raise ValidationError("research_origin_ref.system is not supported", field_name="research_origin_ref.system")
         if not isinstance(value["external_id"], str) or not 1 <= len(value["external_id"]) <= 256:
             raise ValidationError("research_origin_ref.external_id must contain 1 to 256 characters", field_name="research_origin_ref.external_id")
-        if "kind" in value and (not isinstance(value["kind"], str) or len(value["kind"]) > 80):
-            raise ValidationError("research_origin_ref.kind exceeds 80 characters", field_name="research_origin_ref.kind")
+        if not isinstance(value["kind"], str) or not 1 <= len(value["kind"]) <= 80:
+            raise ValidationError("research_origin_ref.kind must contain 1 to 80 characters", field_name="research_origin_ref.kind")
         if "version" in value and (not isinstance(value["version"], str) or len(value["version"]) > 128):
             raise ValidationError("research_origin_ref.version exceeds 128 characters", field_name="research_origin_ref.version")
-        if "checksum_sha256" in value and not re.fullmatch(r"[a-f0-9]{64}", str(value["checksum_sha256"])):
-            raise ValidationError("research_origin_ref.checksum_sha256 must be lowercase SHA-256", field_name="research_origin_ref.checksum_sha256")
+        if "checksum_sha256" in value:
+            checksum = value["checksum_sha256"]
+            if not isinstance(checksum, str) or not re.fullmatch(r"[a-f0-9]{64}", checksum):
+                raise ValidationError("research_origin_ref.checksum_sha256 must be lowercase SHA-256", field_name="research_origin_ref.checksum_sha256")
         return dict(value)
 
     @staticmethod

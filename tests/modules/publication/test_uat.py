@@ -253,7 +253,7 @@ def test_uat_m08_010_correction_links_original_and_replacement(m08, analyst, ana
     assert replacement_after.state == "published"
 
 
-def test_uat_m08_011_expired_redrive_is_blocked_not_resent(m08, analyst):
+def test_uat_m08_011_expired_redrive_is_blocked_not_resent(m08, analyst, compliance_supervisor):
     series = create_series(m08["service"], analyst, "series-011").data
     body = version_body(REPORT_A)
     body["valid_until"] = (NOW + timedelta(seconds=5)).isoformat().replace("+00:00", "Z")
@@ -275,11 +275,23 @@ def test_uat_m08_011_expired_redrive_is_blocked_not_resent(m08, analyst):
     assert job.status == "dead_letter"
 
     m08["clock"].advance(60)
+    with pytest.raises(ForbiddenError):
+        worker.redrive(TENANT, job.id, analyst, "on_call_requested_resend_after_incident_1234")
     with pytest.raises(ValueError):
-        worker.redrive(TENANT, job.id, "   ")
-    outcome = worker.redrive(TENANT, job.id, "on_call_requested_resend_after_incident_1234")
+        worker.redrive(TENANT, job.id, compliance_supervisor, "   ")
+    outcome = worker.redrive(TENANT, job.id, compliance_supervisor, "on_call_requested_resend_after_incident_1234")
     assert outcome.status == "blocked" and outcome.result_code == "expired_blocked"
     assert (TENANT, version["id"]) not in m08["repository"].snapshot().publications_by_version
+    redrive_audits = [
+        row for row in m08["repository"].snapshot().audit_events
+        if row.action == "m08.redrive_publish_job" and row.actor_id == compliance_supervisor.actor_id
+    ]
+    assert redrive_audits and redrive_audits[-1].reason_code == "on_call_requested_resend_after_incident_1234"
+    denied_audits = [
+        row for row in m08["repository"].snapshot().audit_events
+        if row.action == "m08.redrive_publish_job" and row.result == "rejected"
+    ]
+    assert denied_audits
 
 
 def test_uat_m08_012_publication_timing_is_separate_from_source_candidate_timing(m08, analyst):

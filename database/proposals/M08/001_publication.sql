@@ -74,17 +74,42 @@ COMMENT ON TABLE publication.recommendation_version_support IS 'Additional suppo
 -- needs its own audience_snapshot and the producing M07 event recorded so a
 -- duplicate signature event can be proven to have published exactly once
 -- (REQ-M08-008), and a denormalized recipient_count for cheap list reads.
+--
+-- publication.publication and publication.audience_snapshot reference each
+-- other (publication.audience_snapshot_id -> audience_snapshot.id,
+-- audience_snapshot.publication_id -> publication.id, already DEFERRABLE
+-- INITIALLY IMMEDIATE on the baseline row). The new FK below is DEFERRABLE
+-- INITIALLY DEFERRED so both rows can be inserted in either order within
+-- the single publish transaction (SET CONSTRAINTS can defer the baseline
+-- side too); the implementation must compute audience_snapshot_id and
+-- recipient_count before the single publication INSERT and never UPDATE
+-- them afterwards, so neither needs to be added to the immutable_publication
+-- guard below.
 ALTER TABLE publication.publication
   ADD COLUMN IF NOT EXISTS audience_snapshot_id uuid,
   ADD COLUMN IF NOT EXISTS created_from_signature_event_id uuid,
   ADD COLUMN IF NOT EXISTS recipient_count integer NOT NULL DEFAULT 0,
   ADD CONSTRAINT m08_publication_audience_snapshot_fk
-    FOREIGN KEY (tenant_id, audience_snapshot_id) REFERENCES publication.audience_snapshot(tenant_id, id) NOT VALID,
+    FOREIGN KEY (tenant_id, audience_snapshot_id) REFERENCES publication.audience_snapshot(tenant_id, id)
+    DEFERRABLE INITIALLY DEFERRED NOT VALID,
   ADD CONSTRAINT m08_publication_recipient_count_ck
     CHECK (recipient_count >= 0);
 COMMENT ON COLUMN publication.publication.audience_snapshot_id IS 'Set once the snapshot is sealed in the same publish transaction; never recomputed afterwards.';
 COMMENT ON COLUMN publication.publication.created_from_signature_event_id IS 'M07 report.signature_verified event_id that produced this publication; proves single-publish-per-event.';
 COMMENT ON COLUMN publication.publication.recipient_count IS 'Denormalized copy of audience_snapshot.recipient_count for list reads; the snapshot row remains the source of truth.';
+
+-- link_publication_correction (REQ-M08-010) necessarily happens well after
+-- both the original and the replacement publication rows already exist, so
+-- it is the one M08 write that is structurally a post-insert UPDATE. The
+-- baseline immutable_publication trigger (database/migrations/0003_business_
+-- guards.sql:27-28) does not allow updating correction_of_id, so it is
+-- replaced here with an equivalent trigger that additionally allows it;
+-- status/published_at/withdrawal_reason_code stay exactly as the baseline
+-- guard already allowed. See contract-changes.md section 2 for which side of
+-- the correction link stores this column.
+DROP TRIGGER IF EXISTS immutable_publication ON publication.publication;
+CREATE TRIGGER immutable_publication BEFORE UPDATE ON publication.publication FOR EACH ROW
+EXECUTE FUNCTION core.guard_fixed_record('{status,published_at,withdrawal_reason_code,correction_of_id}');
 
 DO $m08_rls$
 BEGIN

@@ -83,13 +83,25 @@ class ReportBundlePort(Protocol):
     ) -> SignedBundle: ...
 
 
+def report_bundle_manifest_sha256(tenant_id: str, report_version_id: str, report_content_sha256: str) -> str:
+    """Hash of the per-report signed manifest (REQ-M08-004: one signed report
+
+    can cover many recommendation versions, so this value is a function of
+    the report alone, never of which recommendation version is being
+    checked). Exposed so the ``report.signature_verified`` event fixtures can
+    assert the exact value the registry will independently compute.
+    """
+    return canonical_hash({"tenant_id": tenant_id, "report_version_id": report_version_id, "report_content_sha256": report_content_sha256})
+
+
 class FakeReportBundleRegistry:
     """Local stand-in for the M07 adapter; NOT_CONNECTED to a real signer."""
 
     is_fake = True
 
     def __init__(self) -> None:
-        self._bundles: dict[tuple[str, str, str], dict[str, str]] = {}
+        self._manifests: dict[tuple[str, str], dict[str, str]] = {}
+        self._covered_content: dict[tuple[str, str, str], str] = {}
         self._failures: dict[tuple[str, str, str], str] = {}
 
     def register(
@@ -101,21 +113,16 @@ class FakeReportBundleRegistry:
         content_sha256: str,
         report_content_sha256: str,
     ) -> str:
-        bundle_manifest_sha256 = canonical_hash(
-            {
-                "report_version_id": report_version_id,
-                "recommendation_version_id": recommendation_version_id,
-                "content_sha256": content_sha256,
+        manifest_key = (tenant_id, report_version_id)
+        manifest = self._manifests.get(manifest_key)
+        if manifest is None or manifest["report_content_sha256"] != report_content_sha256:
+            manifest = {
                 "report_content_sha256": report_content_sha256,
+                "bundle_manifest_sha256": report_bundle_manifest_sha256(tenant_id, report_version_id, report_content_sha256),
             }
-        )
-        key = (tenant_id, report_version_id, recommendation_version_id)
-        self._bundles[key] = {
-            "content_sha256": content_sha256,
-            "report_content_sha256": report_content_sha256,
-            "bundle_manifest_sha256": bundle_manifest_sha256,
-        }
-        return bundle_manifest_sha256
+            self._manifests[manifest_key] = manifest
+        self._covered_content[(tenant_id, report_version_id, recommendation_version_id)] = content_sha256
+        return manifest["bundle_manifest_sha256"]
 
     def fail(self, tenant_id: str, report_version_id: str, recommendation_version_id: str, mode: str) -> None:
         self._failures[(tenant_id, report_version_id, recommendation_version_id)] = mode
@@ -131,13 +138,14 @@ class FakeReportBundleRegistry:
         failure = self._failures.get(key)
         if failure == "timeout":
             raise DependencyUnavailableError("report bundle registry timed out", code="report_bundle_timeout")
-        bundle = self._bundles.get(key)
-        if bundle is None:
+        manifest = self._manifests.get((tenant_id, report_version_id))
+        covered_content = self._covered_content.get(key)
+        if manifest is None or covered_content is None:
             raise NotFoundError("signed bundle was not registered for this recommendation version")
         return SignedBundle(
-            consistent=bundle["content_sha256"] == expected_content_sha256,
-            bundle_manifest_sha256=bundle["bundle_manifest_sha256"],
-            report_content_sha256=bundle["report_content_sha256"],
+            consistent=covered_content == expected_content_sha256,
+            bundle_manifest_sha256=manifest["bundle_manifest_sha256"],
+            report_content_sha256=manifest["report_content_sha256"],
         )
 
 

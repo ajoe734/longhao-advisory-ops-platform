@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from modules.publication.domain import AuditEvent, ConflictError, InboxReceipt, ValidationError, canonical_hash, new_id, utc_now
+from modules.publication.domain import AuditEvent, ConflictError, InboxReceipt, ValidationError, canonical_hash, new_id
 from modules.publication.repository import StoreState
 from modules.publication.service import PublicationService
 
@@ -43,6 +43,7 @@ class M08EventConsumer:
     def __init__(self, service: PublicationService) -> None:
         self.service = service
         self.repository = service.repository
+        self.clock = service._clock
 
     def consume(self, envelope: dict[str, Any]) -> ConsumeResult:
         self._validate_envelope(envelope)
@@ -72,11 +73,11 @@ class M08EventConsumer:
                 state.inbox[key] = self._receipt(envelope, "retry", "sequence_gap", None)
                 return ConsumeResult("retry", "sequence_gap")
             if envelope["sequence_no"] <= last_sequence:
-                state.inbox[key] = self._receipt(envelope, "applied", "stale_sequence_ignored", utc_now())
+                state.inbox[key] = self._receipt(envelope, "applied", "stale_sequence_ignored", self.clock())
                 return ConsumeResult("applied", "stale_sequence_ignored")
 
             result_code = self._apply(state, envelope)
-            applied_at = utc_now()
+            applied_at = self.clock()
             state.inbox[key] = self._receipt(envelope, "applied", result_code, applied_at)
             state.audit_events.append(
                 AuditEvent(
@@ -103,11 +104,13 @@ class M08EventConsumer:
         payload = envelope["payload"]
         tenant_id = envelope["tenant_id"]
         if event_type == "report.signature_verified":
-            return self.service.apply_report_signature_verified(state, tenant_id, payload)
+            return self.service.apply_report_signature_verified(
+                state, tenant_id, payload, event_id=envelope["event_id"], correlation_id=envelope["correlation_id"],
+            )
         if event_type == "report.signature_revoked":
             return self.service.apply_report_signature_revoked(state, tenant_id, payload)
         if event_type == "entitlement.changed":
-            return self.service.apply_entitlement_changed(state, tenant_id, payload)
+            return self.service.apply_entitlement_changed(state, tenant_id, payload, aggregate_version=envelope["aggregate_version"])
         if event_type == "delivery.status_changed":
             return self.service.apply_delivery_status_changed(state, tenant_id, payload)
         raise ValidationError("event type is not consumed by M08", code="unsupported_event_type")

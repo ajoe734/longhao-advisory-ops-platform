@@ -18,6 +18,7 @@ from modules.publication.ports import (
     FakeEntitlementAudienceRegistry,
     FakeEvidenceStore,
     FakeReportBundleRegistry,
+    report_bundle_manifest_sha256,
 )
 from modules.publication.repository import InMemoryRepository
 from modules.publication.service import PublicationService
@@ -33,7 +34,7 @@ EVIDENCE_WITHDRAW = "30000000-0000-0000-0000-000000000001"
 NOW = datetime(2026, 11, 23, 6, 30, 0, tzinfo=timezone.utc)
 
 INSTRUMENT_REF = {"market": "TWSE", "instrument_code": "2330", "instrument_type": "equity"}
-RESEARCH_ORIGIN_REF = {"system": "pantheon", "external_id": "candidate-0001"}
+RESEARCH_ORIGIN_REF = {"system": "pantheon", "external_id": "candidate-0001", "kind": "research_candidate"}
 
 
 class FixedClock:
@@ -123,11 +124,18 @@ def signature_event(
     tenant: str = TENANT,
     sequence: int = 1,
     report_content_sha256: str = "a" * 64,
-    bundle_manifest_sha256: str = "b" * 64,
+    bundle_manifest_sha256: str | None = None,
     verified_at: datetime = NOW,
     valid_until: datetime | None = None,
 ):
     valid_until = valid_until or (NOW + timedelta(hours=6))
+    if bundle_manifest_sha256 is None:
+        # Matches what FakeReportBundleRegistry.register() independently
+        # computes for the same (tenant, report_version_id,
+        # report_content_sha256) by default, so the service's cross-check
+        # between the signed event and the bundle registry passes on the
+        # happy path; pass an explicit value to exercise a mismatch.
+        bundle_manifest_sha256 = report_bundle_manifest_sha256(tenant, report_version_id, report_content_sha256)
     payload = {
         "report_version_id": report_version_id,
         "signature_id": signature_id,
@@ -154,6 +162,44 @@ def signature_event(
         "correlation_id": new_id(),
         "causation_id": None,
         "idempotency_key": f"m07-sig-{sequence:08d}",
+        "classification": "research_confidential",
+        "payload_sha256": canonical_hash(payload),
+        "payload": payload,
+    }
+
+
+def revocation_event(
+    report_version_id: str,
+    signature_id: str,
+    *,
+    tenant: str = TENANT,
+    sequence: int = 1,
+    effective_at: datetime = NOW,
+):
+    from modules.publication.domain import canonical_hash, new_id
+
+    payload = {
+        "signature_id": signature_id,
+        "report_version_id": report_version_id,
+        "revocation_id": new_id(),
+        "effective_at": effective_at.isoformat().replace("+00:00", "Z"),
+    }
+
+    return {
+        "event_id": new_id(),
+        "event_type": "report.signature_revoked",
+        "schema_version": "1.0.0",
+        "tenant_id": tenant,
+        "producer": "M07",
+        "aggregate_type": "signature",
+        "aggregate_id": signature_id,
+        "aggregate_version": sequence,
+        "sequence_no": sequence,
+        "occurred_at": effective_at.isoformat().replace("+00:00", "Z"),
+        "emitted_at": effective_at.isoformat().replace("+00:00", "Z"),
+        "correlation_id": new_id(),
+        "causation_id": None,
+        "idempotency_key": f"m07-rev-{sequence:08d}",
         "classification": "research_confidential",
         "payload_sha256": canonical_hash(payload),
         "payload": payload,

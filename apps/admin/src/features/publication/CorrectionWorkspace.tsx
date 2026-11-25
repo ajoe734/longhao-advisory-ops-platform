@@ -5,10 +5,12 @@ import { isAllowed } from "./viewState";
 export function CorrectionWorkspace({
   original,
   replacement,
+  onReload,
   onSubmit,
 }: {
   original: ViewState<Publication>;
   replacement: ViewState<Publication> | null;
+  onReload: () => void;
   onSubmit: (replacementPublicationId: string, replacementReportVersionId: string, reasonCode: string) => void;
 }) {
   const [replacementPublicationId, setReplacementPublicationId] = useState("");
@@ -24,9 +26,17 @@ export function CorrectionWorkspace({
   const canCorrect = isAllowed(originalPublication.allowed_actions, "link_publication_correction");
   const replacementPublication =
     replacement && (replacement.kind === "ready" || replacement.kind === "stale" || replacement.kind === "conflict") ? replacement.value : null;
+  // The replacement actually looked up must still be the one visible in the
+  // input; editing the id after a lookup must not let a stale lookup result
+  // (a different, already-validated publication) get submitted alongside it.
+  const replacementMatchesInput = replacementPublication !== null && replacementPublicationId.trim() === replacementPublication.id;
 
   return (
     <main className="m08-stack">
+      {original.kind === "conflict" && (
+        <aside role="alert"><strong>版本衝突</strong><p>{original.message} 伺服器版本：{original.currentVersion}</p><button onClick={onReload}>重載並比較</button></aside>
+      )}
+      {original.kind === "stale" && <aside role="status"><strong>部分資料已過期</strong><p>{original.message}</p><button onClick={onReload}>重新載入</button></aside>}
       <header className="m08-panel">
         <p className="m08-eyebrow">更正工作頁</p>
         <h1>原發布 {originalPublication.id}</h1>
@@ -46,6 +56,9 @@ export function CorrectionWorkspace({
             <>
               <p>狀態：{replacementPublication.state}</p>
               <p>報告版本：{replacementPublication.report_version_id}</p>
+              {!replacementMatchesInput && (
+                <p role="status">輸入的 ID 已變更，請重新查詢後再送出。</p>
+              )}
             </>
           ) : (
             <p>請先輸入已簽署且已發布的替代發布 ID。</p>
@@ -57,8 +70,8 @@ export function CorrectionWorkspace({
         aria-label="建立更正關聯"
         onSubmit={(event) => {
           event.preventDefault();
-          if (replacementPublication) {
-            onSubmit(replacementPublicationId, replacementPublication.report_version_id, reasonCode);
+          if (replacementPublication && replacementMatchesInput && reasonCode.trim()) {
+            onSubmit(replacementPublication.id, replacementPublication.report_version_id, reasonCode.trim());
           }
         }}
       >
@@ -71,7 +84,7 @@ export function CorrectionWorkspace({
         />
         <label htmlFor="correction-reason">更正理由</label>
         <input id="correction-reason" value={reasonCode} onChange={(event) => setReasonCode(event.target.value)} disabled={!canCorrect} maxLength={80} />
-        <button type="submit" disabled={!canCorrect || !replacementPublication || !reasonCode}>
+        <button type="submit" disabled={!canCorrect || !replacementMatchesInput || !reasonCode.trim()}>
           建立更正連結
         </button>
         {!canCorrect && <p role="status">目前狀態或角色不允許建立更正；只有已發布或部分失敗的訊息可被更正。</p>}

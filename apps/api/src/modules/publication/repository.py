@@ -17,6 +17,7 @@ from .domain import (
     RecommendationSeries,
     RecommendationVersion,
     Recipient,
+    RevokedSignature,
     VerifiedReport,
 )
 
@@ -31,6 +32,7 @@ class StoreState:
     snapshots: dict[tuple[str, str], AudienceSnapshot] = field(default_factory=dict)
     recipients: dict[tuple[str, str], Recipient] = field(default_factory=dict)
     verified_reports: dict[tuple[str, str], VerifiedReport] = field(default_factory=dict)
+    revoked_signatures: dict[tuple[str, str], RevokedSignature] = field(default_factory=dict)
     entitlements: dict[tuple[str, str], EntitlementRecord] = field(default_factory=dict)
     jobs: dict[tuple[str, str], Job] = field(default_factory=dict)
     audit_events: list[AuditEvent] = field(default_factory=list)

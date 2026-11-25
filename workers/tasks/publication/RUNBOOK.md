@@ -22,8 +22,9 @@
    `PublicationWorker.run_once("m08-drill")`；確認 job 為 `retry`，`publication.publication` 未建立。
 3. 重複呼叫 `PublicationService.process_publish_job` 到 `attempt_count` 達上限，確認 job 轉
    `dead_letter`，且沒有半成品 publication／recipient 留下。
-4. 清空 failure mode 後用 `PublicationWorker.redrive(tenant_id, job_id, reason)` 重驅；若
-   `valid_until` 已過，確認結果是 `expired_blocked` 而非重新發送。
+4. 清空 failure mode 後用 `PublicationWorker.redrive(tenant_id, job_id, actor, reason)` 重驅（`actor` 須帶
+   `compliance_supervisor` 角色，否則 403；重驅與拒絕皆記 audit）；若 `valid_until` 已過，確認結果是
+   `expired_blocked` 而非重新發送。
 5. 對帳 recommendation_version／publication／audience_snapshot／recipient 數量、audit correlation、
    outbox payload hash；將演練結果標示為 `FAKE_PROVIDER`。
 
