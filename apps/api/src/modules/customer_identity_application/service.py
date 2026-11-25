@@ -119,6 +119,13 @@ class CustomerIdentityApplicationService:
             raise ValidationError("external_system is not supported", field_name="external_system")
         if body["external_system"] == "manual" and not self._staff(context, {"cms_operator"}):
             raise ForbiddenError("manual customer creation requires cms_operator", code="manual_creation_forbidden")
+        marketing_source_ref = body.get("marketing_source_ref")
+        if marketing_source_ref is not None and (
+            not isinstance(marketing_source_ref, str) or len(marketing_source_ref) > 160
+        ):
+            raise ValidationError(
+                "marketing_source_ref must be a string of at most 160 characters", field_name="marketing_source_ref"
+            )
         proof_ref = require_uuid(body["verified_identity_proof_ref"], "verified_identity_proof_ref")
         identity = self._verify_identity(context, proof_ref, correlation_id)
         if identity.provider not in _PROVIDERS:

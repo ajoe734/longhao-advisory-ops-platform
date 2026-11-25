@@ -3,12 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 import inspect
+import re
 from time import perf_counter
 from typing import Any, Callable
 
 from .domain import ActorContext, DomainError, ValidationError, new_id
 from .service import CustomerIdentityApplicationService, ServiceResponse
 from .telemetry import M01Telemetry
+
+
+_IF_MATCH_RE = re.compile(r'^"[1-9][0-9]*"$')
 
 
 @dataclass(frozen=True)
@@ -144,7 +148,7 @@ class M01Controller:
     def _if_match(value: str | None) -> int | None:
         if value is None:
             return None
-        if len(value) < 3 or not value.startswith('"') or not value.endswith('"') or not value[1:-1].isdigit() or int(value[1:-1]) < 1:
+        if not _IF_MATCH_RE.fullmatch(value):
             raise ValidationError("If-Match must be a strong integer ETag", field_name="If-Match")
         return int(value[1:-1])
 
@@ -188,11 +192,16 @@ ROUTES: tuple[tuple[str, str, str], ...] = (
 def create_fastapi_router(
     service: CustomerIdentityApplicationService,
     context_resolver: Callable[[Any], ActorContext],
+    *,
+    prefix: str = "",
 ) -> Any:
     """Build the integration router without forcing FastAPI into this module's lockfile.
 
     The build steward owns shared dependencies. Importing this module and running
-    domain tests therefore remains possible before FastAPI is installed.
+    domain tests therefore remains possible before FastAPI is installed. `prefix`
+    defaults to empty because `longhao_platform/http.py` mounts module routers with
+    `app.include_router(router, prefix="/api/v1")`; a non-empty default here would
+    double the `/api/v1` segment once wired into `plugin.py`.
     """
 
     try:
@@ -202,7 +211,7 @@ def create_fastapi_router(
         raise RuntimeError("FastAPI must be supplied by the shared application build") from exc
 
     controller = M01Controller(service)
-    router = APIRouter(prefix="/api/v1", tags=["M01"])
+    router = APIRouter(prefix=prefix, tags=["M01"])
 
     def endpoint_for(operation_id: str, method: str) -> Callable[..., Any]:
         async def endpoint(request: Request) -> JSONResponse:
