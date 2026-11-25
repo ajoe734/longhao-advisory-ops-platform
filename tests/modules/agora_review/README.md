@@ -10,7 +10,9 @@ python3 -m pytest tests/modules/agora_review -q
 producer（`review.revision_requested`/`review.revision_received`）與 consumer（`research.candidate_validated`/
 `research.candidate_superseded`）的 schema/hash/duplicate/sequence-gap/tenant isolation、outbox lease/retry 與
 production fake gate；`test_security_automation.py` 驗 tenant isolation、LLM/automation 無簽章發布金流能力、webhook
-HMAC 簽章驗證；`test_ui_contract.py` 驗四個畫面入口與八種狀態、degraded 連線與 stale 版本不被默默覆核的文案。
+HMAC 簽章驗證；`test_ui_contract.py` 驗四個畫面入口與八種狀態、degraded 連線與 stale 版本不被默默覆核的文案；
+`test_round2_review_regressions.py` 針對 Round-1 review（`7cfb35522b9f`/PR #22）五項 blocking finding 的逐項
+負向探測回歸，對應關係見 `traceability.md`「Round-2 退修證據」表。
 
 全部 fixture 為 `.invalid`／固定 UUID／local fake（`FakeServant`、`FakeArtifactDiff`、`LocalEventBus`），不會呼叫
 真實 Agora、Pantheon 或任何外部網路。

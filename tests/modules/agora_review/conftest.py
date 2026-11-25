@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 import sys
 from uuid import uuid4
@@ -13,11 +14,15 @@ sys.path.insert(0, str(ROOT / "apps" / "api" / "src"))
 sys.path.insert(0, str(ROOT))
 
 from modules.agora_review.domain import ActorContext, canonical_hash, wire_time
-from modules.agora_review.ports import FakeArtifactDiff, FakeServant
+from modules.agora_review.ports import FakeArtifactDiff, FakeServant, StaticWebhookSecretStore, WebhookRequest, servant_webhook_signature
 from modules.agora_review.repository import InMemoryRepository
 from modules.agora_review.service import AgoraReviewService
 from workers.tasks.agora_review.consumer import M06EventConsumer
 
+
+WEBHOOK_KEY_ID = "servant-webhook-integration-key-01"
+WEBHOOK_SECRET = b"m06-synthetic-webhook-secret-32-bytes-minimum!!"
+WEBHOOK_PATH = "/api/v1/webhooks/servant-revisions"
 
 TENANT = "10000000-0000-0000-0000-000000000001"
 OTHER_TENANT = "10000000-0000-0000-0000-000000000099"
@@ -52,8 +57,9 @@ def m06():
     repository = InMemoryRepository()
     servant = FakeServant()
     diff = FakeArtifactDiff()
+    webhook_secrets = StaticWebhookSecretStore({WEBHOOK_KEY_ID: WEBHOOK_SECRET})
     clock = FixedClock()
-    service = AgoraReviewService(repository, servant, diff, clock=clock)
+    service = AgoraReviewService(repository, servant, diff, webhook_secrets, clock=clock)
     consumer = M06EventConsumer(repository, clock=clock)
     return {"service": service, "repository": repository, "servant": servant, "diff": diff, "clock": clock, "consumer": consumer}
 
@@ -202,4 +208,31 @@ def request_revision(
     }
     return m06["service"].request_servant_revision(
         analyst, case_id, body, expected_version=version_of(m06["service"], analyst, case_id), idempotency_key=key,
+    )
+
+
+def webhook_request(
+    body: dict,
+    *,
+    nonce: str | None = None,
+    key_id: str = WEBHOOK_KEY_ID,
+    secret: bytes = WEBHOOK_SECRET,
+    now: datetime = NOW,
+    method: str = "POST",
+    path: str = WEBHOOK_PATH,
+) -> WebhookRequest:
+    """Builds a validly-signed ``WebhookRequest`` for the given callback body.
+
+    ``raw_body`` is the exact bytes the signature covers; tests must pass that
+    same ``body`` dict through so the HMAC the test computes matches what the
+    service re-derives.
+    """
+
+    raw_body = json.dumps(body, sort_keys=True).encode("utf-8")
+    timestamp = str(int(now.timestamp()))
+    nonce = nonce or uuid4().hex
+    signature = servant_webhook_signature(secret, timestamp=timestamp, nonce=nonce, method=method, path=path, raw_body=raw_body)
+    return WebhookRequest(
+        signature=signature, timestamp=timestamp, nonce=nonce, integration_key_id=key_id,
+        raw_body=raw_body, method=method, path=path,
     )

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Protocol
 
-from modules.agora_review.domain import ConflictError, DependencyUnavailableError, utc_now
+from modules.agora_review.domain import ConflictError, DependencyUnavailableError, ForbiddenError, utc_now
 from modules.agora_review.ports import ServantPort
 from modules.agora_review.repository import InMemoryRepository, StoreState
 
@@ -75,35 +75,57 @@ class ServantDispatchPublisher:
 
         def read_revision(state: StoreState):
             revision = state.revisions[(tenant_id, revision_id)]
-            return revision.external_job_ref, revision.status
+            conversation = state.conversations.get((tenant_id, revision.conversation_id))
+            return revision, conversation
 
-        job_ref, status = self.repository.read(read_revision)
-        if status not in {"requested", "accepted"}:
+        revision, conversation = self.repository.read(read_revision)
+        if revision.status not in {"requested", "accepted"}:
             return "accepted"  # already progressed by a prior tick; nothing to resubmit
 
-        probe = self.servant.get_revision_status(job_ref)
+        try:
+            probe = self.servant.get_revision_status(revision.external_job_ref)
+        except DependencyUnavailableError as exc:
+            raise RetryableTaskError(exc.code) from exc
+
         if probe.status == "unknown":
+            submit_payload = {
+                "revision_id": revision.id,
+                "conversation_id": revision.conversation_id,
+                "external_conversation_id": conversation.external_conversation_id if conversation else None,
+                "base_artifact_ref": revision.base_artifact_ref,
+                "base_content_sha256": revision.base_content_sha256,
+                "instructions": revision.instructions,
+                "required_evidence_refs": revision.required_evidence_refs,
+                "requested_output": revision.requested_output,
+            }
             try:
-                self.servant.submit_revision(
-                    job_ref,
-                    {
-                        "revision_id": revision_id,
-                        "conversation_id": payload["conversation_id"],
-                        "base_content_sha256": payload["base_content_sha256"],
-                    },
-                )
+                self.servant.submit_revision(revision.external_job_ref, submit_payload)
             except DependencyUnavailableError as exc:
                 raise RetryableTaskError(exc.code) from exc
+            except ForbiddenError as exc:
+                self._mark_failed(tenant_id, revision_id, exc.code)
+                return "accepted"
 
         def mark_running(state: StoreState) -> None:
-            revision = state.revisions[(tenant_id, revision_id)]
-            if revision.status in {"requested", "accepted"}:
-                revision.status = "running"
-                revision.version += 1
-                revision.updated_at = utc_now()
+            row = state.revisions[(tenant_id, revision_id)]
+            if row.status in {"requested", "accepted"}:
+                row.status = "running"
+                row.version += 1
+                row.updated_at = utc_now()
 
         self.repository.atomic(mark_running)
         return "accepted"
+
+    def _mark_failed(self, tenant_id: str, revision_id: str, error_code: str) -> None:
+        def mark(state: StoreState) -> None:
+            row = state.revisions[(tenant_id, revision_id)]
+            if row.status in {"requested", "accepted", "running"}:
+                row.status = "failed"
+                row.last_error_code = error_code
+                row.version += 1
+                row.updated_at = utc_now()
+
+        self.repository.atomic(mark)
 
 
 @dataclass(frozen=True)
@@ -148,10 +170,13 @@ class OutboxPublisher:
         now = utc_now()
 
         def lease(state: StoreState) -> list[tuple[str, str]]:
+            # "leased" rows are included so a worker that died mid-lease doesn't strand
+            # the row forever; the lease_until <= now guard below still excludes rows
+            # another worker currently holds a live lease on.
             candidates = sorted(
                 (
                     (key, event) for key, event in state.outbox.items()
-                    if event.status in {"pending", "retry"}
+                    if event.status in {"pending", "retry", "leased"}
                     and (event.next_attempt_at is None or event.next_attempt_at <= now)
                     and (event.lease_until is None or event.lease_until <= now)
                 ),

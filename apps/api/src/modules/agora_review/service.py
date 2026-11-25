@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from .domain import (
@@ -23,22 +23,26 @@ from .domain import (
     ValidationError,
     canonical_hash,
     case_db_status_for_state,
+    external_ref_matches,
     new_id,
     require_external_ref,
     require_uuid,
     utc_now,
     wire_time,
 )
-from .ports import ArtifactDiffPort, ServantPort
+from .ports import ArtifactDiffPort, ServantPort, WebhookRequest, WebhookSecretPort, verify_servant_webhook
 from .repository import InMemoryRepository, StoreState
 
 
 _KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _SHA_RE = re.compile(r"^[a-f0-9]{64}$")
+_WEBHOOK_TIMESTAMP_RE = re.compile(r"^[0-9]{10}$")
 _PURPOSES = {"review", "revision", "counter_analysis", "evidence_request"}
 _REQUESTED_OUTPUTS = {"revised_report", "additional_evidence", "counter_analysis", "message_draft"}
 _PENDING_REVISION_STATUSES = {"requested", "accepted", "running", "failed"}
 _TERMINAL_REVISION_STATUSES = {"completed", "failed", "cancelled", "stale"}
+_TERMINAL_CASE_STATUSES = {"rejected", "closed", "ready_to_sign"}
+_WEBHOOK_NONCE_TTL_SECONDS = 600
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,8 @@ class _Outcome:
     aggregate_id: str | None
     aggregate_version: int | None
     error: DomainError | None = None
+    audit_result: str | None = None
+    audit_reason_code: str | None = None
 
 
 class AgoraReviewService:
@@ -74,15 +80,19 @@ class AgoraReviewService:
         repository: InMemoryRepository,
         servant: ServantPort,
         diff_port: ArtifactDiffPort,
+        webhook_secrets: WebhookSecretPort,
         *,
         clock: Callable[[], datetime] = utc_now,
         environment: str = "test",
     ) -> None:
-        if environment == "production" and any(getattr(adapter, "is_fake", False) for adapter in (repository, servant, diff_port)):
+        if environment == "production" and any(
+            getattr(adapter, "is_fake", False) for adapter in (repository, servant, diff_port, webhook_secrets)
+        ):
             raise RuntimeError("fake M06 adapters are forbidden in production")
         self.repository = repository
         self.servant = servant
         self.diff_port = diff_port
+        self.webhook_secrets = webhook_secrets
         self._clock = clock
 
     # ---- commands ---------------------------------------------------------
@@ -133,6 +143,7 @@ class AgoraReviewService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
+        self._authorize_analyst_role(context)
         case_id = require_uuid(case_id, "review_case_id")
         self._body(body, {"candidate_id", "artifact_ref", "existing_conversation_ref", "allowed_evidence_refs", "purpose"},
                    {"candidate_id", "artifact_ref", "existing_conversation_ref", "allowed_evidence_refs", "purpose"})
@@ -149,32 +160,76 @@ class AgoraReviewService:
             raise ValidationError("purpose is not supported", field_name="purpose")
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
+        request_snapshot = {"review_case_id": case_id, **body}
 
-        def mutate(state: StoreState) -> _Outcome:
+        def check_preconditions(state: StoreState) -> ReviewCase:
             case = self._stored_case(state, context.tenant_id, case_id)
-            self._authorize_assigned_analyst(context, case)
+            self._require_assignee(context, case)
             self._cas(case.version, expected_version)
+            self._require_open_case(case)
             if case.stale:
                 raise ConflictError("review case source version is stale", code="case_source_stale")
             if candidate_id != case.candidate_id:
                 raise ConflictError("candidate_id does not match the review case", code="candidate_mismatch")
             if not case.matches_artifact_ref(artifact_ref):
                 raise ConflictError("artifact_ref no longer matches the current candidate version", code="artifact_ref_mismatch")
+            return case
 
-            if existing_ref is not None:
+        if existing_ref is not None:
+            def mutate(state: StoreState) -> _Outcome:
+                case = check_preconditions(state)
                 conversation = self._find_conversation_by_ref(state, context.tenant_id, case_id, existing_ref)
                 if conversation is None:
                     raise NotFoundError("existing conversation reference was not found")
+                if conversation.status != "active":
+                    raise ConflictError("conversation is not active", code="conversation_not_active")
                 conversation.last_synced_at = now
-                return self._conversation_outcome(conversation, 201)
+                return self._conversation_outcome(state, conversation, context, 201)
 
-            minimized_payload = {
-                "artifact_ref": artifact_ref,
-                "purpose": body["purpose"],
-                "evidence_refs": evidence_refs,
-                "service_tone": "research_professional",
-            }
+            return self._run_command(context, "open_servant_conversation", idempotency_key, request_snapshot, correlation_id, mutate)
+
+        # A new Servant conversation requires a real network call. That call must not
+        # run while holding the repository's transaction lock (SA §5), so precondition
+        # validation, the external call and the persist step are three separate steps;
+        # the persist step re-validates CAS/terminal/stale state in case it changed
+        # while the network call was in flight.
+        if not _KEY_RE.fullmatch(idempotency_key):
+            raise ValidationError("Idempotency-Key must match the published contract", field_name="Idempotency-Key")
+        receipt_key = (context.tenant_id, context.actor_id, "open_servant_conversation", idempotency_key)
+        fingerprint = canonical_hash(request_snapshot)
+
+        def load_replay(state: StoreState) -> IdempotencyReceipt | None:
+            receipt = state.idempotency.get(receipt_key)
+            if receipt is None:
+                check_preconditions(state)
+                return None
+            if receipt.request_sha256 != fingerprint:
+                raise ConflictError("Idempotency-Key was already used with a different payload", code="idempotency_conflict")
+            return receipt
+
+        receipt = self.repository.atomic(load_replay)
+        if receipt is not None:
+            etag = self._etag(receipt.aggregate_version) if receipt.aggregate_version else None
+            return ServiceResponse(receipt.response_value, receipt.response_status, etag, True)
+
+        minimized_payload = {
+            "artifact_ref": artifact_ref,
+            "purpose": body["purpose"],
+            "evidence_refs": evidence_refs,
+            "service_tone": "research_professional",
+        }
+        try:
             ack = self.servant.open_conversation(idempotency_key, minimized_payload)
+        except DomainError as exc:
+            self._audit_failure(context, "open_servant_conversation", correlation_id, exc.code)
+            raise
+
+        def commit(state: StoreState) -> ServiceResponse:
+            receipt = state.idempotency.get(receipt_key)
+            if receipt is not None:
+                etag = self._etag(receipt.aggregate_version) if receipt.aggregate_version else None
+                return ServiceResponse(receipt.response_value, receipt.response_status, etag, True)
+            case = check_preconditions(state)
             conversation = Conversation(
                 id=new_id(),
                 tenant_id=context.tenant_id,
@@ -196,11 +251,24 @@ class AgoraReviewService:
                 case.status = "reviewing"
                 case.version += 1
                 case.updated_at = now
-            return self._conversation_outcome(conversation, 201)
+            outcome = self._conversation_outcome(state, conversation, context, 201)
+            self._audit(
+                state, context, "open_servant_conversation", outcome.aggregate_type, outcome.aggregate_id,
+                outcome.aggregate_version, correlation_id, "succeeded",
+            )
+            state.idempotency[receipt_key] = IdempotencyReceipt(
+                tenant_id=context.tenant_id, actor_id=context.actor_id, operation="open_servant_conversation",
+                key=idempotency_key, request_sha256=fingerprint, response_status=outcome.status,
+                response_value=outcome.value, error=None, completed_at=self._clock(),
+                aggregate_version=outcome.aggregate_version,
+            )
+            return ServiceResponse(outcome.value, outcome.status, self._etag(outcome.aggregate_version), False)
 
-        return self._run_command(
-            context, "open_servant_conversation", idempotency_key, {"review_case_id": case_id, **body}, correlation_id, mutate
-        )
+        try:
+            return self.repository.atomic(commit)
+        except DomainError as exc:
+            self._audit_failure(context, "open_servant_conversation", correlation_id, exc.code)
+            raise
 
     def request_servant_revision(
         self,
@@ -212,6 +280,7 @@ class AgoraReviewService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
+        self._authorize_analyst_role(context)
         case_id = require_uuid(case_id, "review_case_id")
         self._body(
             body,
@@ -237,8 +306,9 @@ class AgoraReviewService:
 
         def mutate(state: StoreState) -> _Outcome:
             case = self._stored_case(state, context.tenant_id, case_id)
-            self._authorize_assigned_analyst(context, case)
+            self._require_assignee(context, case)
             self._cas(case.version, expected_version)
+            self._require_open_case(case)
             if case.stale:
                 raise ConflictError("review case source version is stale", code="case_source_stale")
             conversation = state.conversations.get((context.tenant_id, conversation_id))
@@ -249,14 +319,20 @@ class AgoraReviewService:
             if not case.matches_artifact_ref(base_artifact_ref) or base_sha != case.content_sha256:
                 raise ConflictError("base version no longer matches the current candidate version", code="base_version_mismatch")
 
-            retry_of = next(
+            already_claimed = {
+                revision.retry_of_revision_id for (tenant, _), revision in state.revisions.items()
+                if tenant == context.tenant_id and revision.retry_of_revision_id
+            }
+            unclaimed_failures = sorted(
                 (
-                    revision.id for (tenant, _), revision in state.revisions.items()
+                    revision for (tenant, _), revision in state.revisions.items()
                     if tenant == context.tenant_id and revision.review_case_id == case_id
                     and revision.conversation_id == conversation_id and revision.status == "failed"
+                    and revision.id not in already_claimed
                 ),
-                None,
+                key=lambda revision: revision.created_at,
             )
+            retry_of = unclaimed_failures[-1].id if unclaimed_failures else None
             revision = Revision(
                 id=new_id(),
                 tenant_id=context.tenant_id,
@@ -308,8 +384,10 @@ class AgoraReviewService:
         *,
         idempotency_key: str,
         correlation_id: str | None = None,
+        webhook: WebhookRequest,
     ) -> ServiceResponse:
-        self._authorize_staff(context, {"servant_adapter"})
+        self._authorize_service(context, {"servant_adapter"})
+        self._verify_webhook(context, webhook)
         self._body(
             body,
             {"event_id", "revision_id", "conversation_ref", "base_artifact_ref", "result_artifact_ref",
@@ -338,27 +416,32 @@ class AgoraReviewService:
         def mutate(state: StoreState) -> _Outcome:
             revision = state.revisions.get((context.tenant_id, revision_id))
             if revision is None:
-                self._audit(state, context, "receive_servant_revision", "revision", revision_id, None, correlation_id, "rejected", "revision_not_found")
-                return self._receipt_outcome(event_id, "quarantined", now, correlation_id)
+                return self._receipt_outcome(
+                    event_id, "quarantined", now, correlation_id, aggregate_id=revision_id,
+                    audit_result="rejected", audit_reason_code="revision_not_found",
+                )
             conversation = state.conversations.get((context.tenant_id, revision.conversation_id))
             scope_ok = (
                 conversation is not None
-                and conversation.external_conversation_ref() == conversation_ref
-                and revision.base_artifact_ref == base_artifact_ref
+                and external_ref_matches(conversation.external_conversation_ref(), conversation_ref)
+                and external_ref_matches(revision.base_artifact_ref, base_artifact_ref)
             )
             if not scope_ok:
-                self._audit(
-                    state, context, "receive_servant_revision", "revision", revision.id, revision.version,
-                    correlation_id, "rejected", "revision_scope_violation",
+                return self._receipt_outcome(
+                    event_id, "quarantined", now, correlation_id, aggregate_id=revision.id, aggregate_version=revision.version,
+                    audit_result="rejected", audit_reason_code="revision_scope_violation",
                 )
-                return self._receipt_outcome(event_id, "quarantined", now, correlation_id)
             if revision.status in _TERMINAL_REVISION_STATUSES:
-                return self._receipt_outcome(event_id, "duplicate", now, correlation_id)
+                return self._receipt_outcome(
+                    event_id, "duplicate", now, correlation_id, aggregate_id=revision.id, aggregate_version=revision.version,
+                    audit_result="duplicate",
+                )
 
             case = self._stored_case(state, context.tenant_id, revision.review_case_id)
             revision.attempt_count += 1
             revision.completed_at = completed_at
             revision.updated_at = now
+            revision.version += 1
             if body["status"] == "failed":
                 revision.status = "failed"
                 revision.last_error_code = "servant_revision_failed"
@@ -404,8 +487,9 @@ class AgoraReviewService:
                     },
                     now=now,
                 )
-            self._audit(state, context, "receive_servant_revision", "revision", revision.id, revision.version, correlation_id, "succeeded")
-            return self._receipt_outcome(event_id, "accepted", now, correlation_id)
+            return self._receipt_outcome(
+                event_id, "accepted", now, correlation_id, aggregate_id=revision.id, aggregate_version=revision.version,
+            )
 
         return self._run_command(context, "receive_servant_revision", idempotency_key, body, correlation_id, mutate)
 
@@ -548,16 +632,18 @@ class AgoraReviewService:
             if receipt:
                 if receipt.request_sha256 != fingerprint:
                     raise ConflictError("Idempotency-Key was already used with a different payload", code="idempotency_conflict")
-                return _Outcome(receipt.response_value, receipt.response_status, "replay", None, None, receipt.error), True
+                return _Outcome(receipt.response_value, receipt.response_status, "replay", None, receipt.aggregate_version, receipt.error), True
             outcome = mutate(state)
+            result = outcome.error.code if outcome.error else (outcome.audit_result or "succeeded")
+            reason = outcome.error.code if outcome.error else outcome.audit_reason_code
             self._audit(
                 state, context, operation, outcome.aggregate_type, outcome.aggregate_id, outcome.aggregate_version,
-                correlation_id, outcome.error.code if outcome.error else "succeeded", outcome.error.code if outcome.error else None,
+                correlation_id, result, reason,
             )
             state.idempotency[receipt_key] = IdempotencyReceipt(
                 tenant_id=context.tenant_id, actor_id=context.actor_id, operation=operation, key=key,
                 request_sha256=fingerprint, response_status=outcome.status, response_value=outcome.value,
-                error=outcome.error, completed_at=self._clock(),
+                error=outcome.error, completed_at=self._clock(), aggregate_version=outcome.aggregate_version,
             )
             return outcome, False
 
@@ -603,17 +689,56 @@ class AgoraReviewService:
 
     # ---- authorization, mapping and validation -----------------------------
 
-    def _authorize_staff(self, context: ActorContext, roles: set[str]) -> None:
-        if context.principal_type == "staff" and context.roles & roles:
-            return
-        if context.principal_type == "service" and context.roles & roles:
-            return
-        raise ForbiddenError("actor cannot perform this operation")
+    @staticmethod
+    def _authorize_staff(context: ActorContext, roles: set[str]) -> None:
+        if context.principal_type != "staff" or not (context.roles & roles):
+            raise ForbiddenError("actor cannot perform this operation")
 
-    def _authorize_assigned_analyst(self, context: ActorContext, case: ReviewCase) -> None:
+    @staticmethod
+    def _authorize_service(context: ActorContext, roles: set[str]) -> None:
+        if context.principal_type != "service" or not (context.roles & roles):
+            raise ForbiddenError("actor cannot perform this operation")
+
+    def _authorize_analyst_role(self, context: ActorContext) -> None:
         self._authorize_staff(context, {"analyst"})
+
+    @staticmethod
+    def _require_assignee(context: ActorContext, case: ReviewCase) -> None:
         if case.assignee_id != context.actor_id:
             raise ForbiddenError("actor is not the assigned analyst for this review case", code="not_assigned_reviewer")
+
+    @staticmethod
+    def _require_open_case(case: ReviewCase) -> None:
+        if case.status in _TERMINAL_CASE_STATUSES:
+            raise ConflictError("review case is not open for Servant collaboration", code="case_terminal")
+
+    def _verify_webhook(self, context: ActorContext, webhook: WebhookRequest) -> None:
+        if not _WEBHOOK_TIMESTAMP_RE.fullmatch(webhook.timestamp):
+            raise ValidationError("X-Webhook-Timestamp must be a 10-digit Unix timestamp", field_name="X-Webhook-Timestamp")
+        if not 16 <= len(webhook.nonce) <= 128:
+            raise ValidationError("X-Webhook-Nonce must contain 16 to 128 characters", field_name="X-Webhook-Nonce")
+        if not 8 <= len(webhook.integration_key_id) <= 128:
+            raise ValidationError("X-Integration-Key-Id must contain 8 to 128 characters", field_name="X-Integration-Key-Id")
+        secret = self.webhook_secrets.secret_for(webhook.integration_key_id)
+        if secret is None:
+            raise ForbiddenError("integration key is not recognized", code="webhook_key_unknown")
+        verify_servant_webhook(
+            secret, timestamp=webhook.timestamp, nonce=webhook.nonce, method=webhook.method, path=webhook.path,
+            raw_body=webhook.raw_body, provided_signature=webhook.signature, now=self._clock(),
+        )
+
+        def record_nonce(state: StoreState) -> None:
+            nonce_key = (context.tenant_id, webhook.integration_key_id, webhook.nonce)
+            if nonce_key in state.webhook_nonces:
+                raise ForbiddenError("webhook nonce was already used", code="webhook_nonce_replay")
+            now = self._clock()
+            state.webhook_nonces[nonce_key] = now
+            cutoff = now - timedelta(seconds=_WEBHOOK_NONCE_TTL_SECONDS)
+            for stale_key, seen_at in list(state.webhook_nonces.items()):
+                if seen_at < cutoff:
+                    del state.webhook_nonces[stale_key]
+
+        self.repository.atomic(record_nonce)
 
     @staticmethod
     def _body(body: dict[str, Any], allowed: set[str], required: set[str]) -> None:
@@ -668,15 +793,24 @@ class AgoraReviewService:
     @staticmethod
     def _find_conversation_by_ref(state: StoreState, tenant_id: str, case_id: str, ref: dict[str, Any]) -> Conversation | None:
         for (tenant, _), conversation in state.conversations.items():
-            if tenant == tenant_id and conversation.review_case_id == case_id and conversation.external_conversation_ref() == ref:
+            if tenant == tenant_id and conversation.review_case_id == case_id and external_ref_matches(conversation.external_conversation_ref(), ref):
                 return conversation
         return None
 
     def _pending_revision_ids(self, state: StoreState, tenant_id: str, case_id: str) -> list[str]:
+        case_revisions = [
+            revision for (tenant, _), revision in state.revisions.items()
+            if tenant == tenant_id and revision.review_case_id == case_id
+        ]
+        # A failed revision that a later retry already claims via retry_of_revision_id
+        # is superseded; it stays as preserved evidence (UAT-M06-009) but no longer
+        # shows up as outstanding work, otherwise every historical failure would
+        # linger in pending_revision_ids forever even after it was retried.
+        claimed = {revision.retry_of_revision_id for revision in case_revisions if revision.retry_of_revision_id}
         rows = sorted(
             (
-                revision for (tenant, _), revision in state.revisions.items()
-                if tenant == tenant_id and revision.review_case_id == case_id and revision.status in _PENDING_REVISION_STATUSES
+                revision for revision in case_revisions
+                if revision.status in _PENDING_REVISION_STATUSES and revision.id not in claimed
             ),
             key=lambda revision: revision.created_at,
         )
@@ -706,11 +840,22 @@ class AgoraReviewService:
     def _case_outcome(self, state: StoreState, case: ReviewCase, context: ActorContext) -> _Outcome:
         return _Outcome(self._case_to_api(state, case, context), 200, "review_case", case.id, case.version)
 
-    def _conversation_outcome(self, conversation: Conversation, status: int) -> _Outcome:
-        return _Outcome(conversation.to_api([]), status, "conversation", conversation.id, conversation.version)
+    def _conversation_outcome(self, state: StoreState, conversation: Conversation, context: ActorContext, status: int) -> _Outcome:
+        actions = self._conversation_actions(state, conversation, context)
+        return _Outcome(conversation.to_api(actions), status, "conversation", conversation.id, conversation.version)
 
     @staticmethod
-    def _receipt_outcome(event_id: str, status: str, now: datetime, correlation_id: str) -> _Outcome:
+    def _receipt_outcome(
+        event_id: str,
+        status: str,
+        now: datetime,
+        correlation_id: str,
+        *,
+        aggregate_id: str | None = None,
+        aggregate_version: int | None = None,
+        audit_result: str | None = None,
+        audit_reason_code: str | None = None,
+    ) -> _Outcome:
         value = {
             "receipt_id": new_id(),
             "event_id": event_id,
@@ -718,7 +863,10 @@ class AgoraReviewService:
             "received_at": wire_time(now),
             "correlation_id": correlation_id,
         }
-        return _Outcome(value, 202, "receipt", None, None)
+        return _Outcome(
+            value, 202, "revision", aggregate_id, aggregate_version,
+            audit_result=audit_result, audit_reason_code=audit_reason_code,
+        )
 
     def _audit(
         self,

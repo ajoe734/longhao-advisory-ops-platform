@@ -165,6 +165,17 @@ def require_external_ref(value: Any, field_name: str) -> dict[str, Any]:
     }
 
 
+def external_ref_matches(stored: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    """Compares ``ExternalRef``-shaped dicts on their identity fields only.
+
+    Both sides may legally omit optional fields (``version``, ``checksum_sha256``);
+    a raw dict ``==`` would false-negative whenever one side carries an optional
+    field the other does not, even though they reference the same external object.
+    """
+
+    return all(stored.get(key) == candidate.get(key) for key in ("system", "external_id", "kind"))
+
+
 _CASE_API_STATES = {
     "queued": "queued",
     "assigned": "assigned",
@@ -460,3 +471,4 @@ class IdempotencyReceipt:
     response_value: Any
     error: DomainError | None
     completed_at: datetime
+    aggregate_version: int | None = None

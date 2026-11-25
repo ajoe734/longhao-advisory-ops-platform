@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 import inspect
+import json
 from time import perf_counter
 from typing import Any, Callable
 
 from .domain import ActorContext, DomainError, ValidationError, new_id
+from .ports import WebhookRequest
 from .service import AgoraReviewService, ServiceResponse
 from .telemetry import M06Telemetry
 
@@ -42,6 +44,7 @@ class M06Controller:
         path: dict[str, str] | None = None,
         query: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
+        raw_body: bytes | None = None,
     ) -> ApiResponse:
         body = body or {}
         path = path or {}
@@ -50,7 +53,7 @@ class M06Controller:
         correlation_id = headers.get("x-correlation-id") or new_id()
         started = perf_counter()
         try:
-            response = self._dispatch(operation_id, context, body, path, query, headers, correlation_id)
+            response = self._dispatch(operation_id, context, body, path, query, headers, correlation_id, raw_body)
             response_headers = {"X-Correlation-Id": correlation_id}
             if response.etag:
                 response_headers["ETag"] = response.etag
@@ -92,6 +95,7 @@ class M06Controller:
         query: dict[str, Any],
         headers: dict[str, str],
         correlation_id: str,
+        raw_body: bytes | None,
     ) -> ServiceResponse:
         key = headers.get("idempotency-key", "")
         version = self._if_match(headers.get("if-match"))
@@ -119,10 +123,35 @@ class M06Controller:
                 context, path["review_case_id"], body, expected_version=version, idempotency_key=key, correlation_id=correlation_id
             )
         if operation_id == "receive_servant_revision":
-            return self.service.receive_servant_revision(context, body, idempotency_key=key, correlation_id=correlation_id)
+            webhook = self._webhook_request(headers, raw_body)
+            return self.service.receive_servant_revision(
+                context, body, idempotency_key=key, correlation_id=correlation_id, webhook=webhook
+            )
         if operation_id == "get_revision_request":
             return self.service.get_revision_request(context, path["revision_id"], correlation_id=correlation_id)
         raise ValidationError("unknown operation_id", code="operation_not_found")
+
+    @staticmethod
+    def _webhook_request(headers: dict[str, str], raw_body: bytes | None) -> WebhookRequest:
+        signature = headers.get("x-webhook-signature")
+        timestamp = headers.get("x-webhook-timestamp")
+        nonce = headers.get("x-webhook-nonce")
+        key_id = headers.get("x-integration-key-id")
+        if not signature:
+            raise ValidationError("X-Webhook-Signature is required", field_name="X-Webhook-Signature")
+        if not timestamp:
+            raise ValidationError("X-Webhook-Timestamp is required", field_name="X-Webhook-Timestamp")
+        if not nonce:
+            raise ValidationError("X-Webhook-Nonce is required", field_name="X-Webhook-Nonce")
+        if not key_id:
+            raise ValidationError("X-Integration-Key-Id is required", field_name="X-Integration-Key-Id")
+        if raw_body is None:
+            raise ValidationError("raw request body is required to verify the webhook signature", field_name="raw_body")
+        webhook_path = next(path for _, path, operation in ROUTES if operation == "receive_servant_revision")
+        return WebhookRequest(
+            signature=signature, timestamp=timestamp, nonce=nonce, integration_key_id=key_id,
+            raw_body=raw_body, method="POST", path=f"/api/v1{webhook_path}",
+        )
 
     @staticmethod
     def _if_match(value: str | None) -> int | None:
@@ -185,9 +214,11 @@ def create_fastapi_router(service: AgoraReviewService, context_resolver: Callabl
             if inspect.isawaitable(context):
                 context = await context
             request_body: dict[str, Any] = {}
+            raw_body: bytes | None = None
             if method not in {"GET", "HEAD"}:
+                raw_body = await request.body()
                 try:
-                    request_body = await request.json()
+                    request_body = json.loads(raw_body) if raw_body else {}
                 except Exception:  # FastAPI/Starlette raises different decode errors by version.
                     request_body = {}
             result = controller.handle(
@@ -197,6 +228,7 @@ def create_fastapi_router(service: AgoraReviewService, context_resolver: Callabl
                 path=dict(request.path_params),
                 query=dict(request.query_params),
                 headers=dict(request.headers),
+                raw_body=raw_body,
             )
             return JSONResponse(result.body, status_code=result.status, headers=result.headers)
 

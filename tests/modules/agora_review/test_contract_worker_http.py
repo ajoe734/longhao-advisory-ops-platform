@@ -11,7 +11,7 @@ import yaml
 
 from modules.agora_review.domain import ConflictError, ValidationError, canonical_hash
 from modules.agora_review.http import M06Controller, ROUTES
-from modules.agora_review.ports import FakeArtifactDiff, FakeServant
+from modules.agora_review.ports import FakeArtifactDiff, FakeServant, StaticWebhookSecretStore
 from modules.agora_review.repository import InMemoryRepository
 from modules.agora_review.service import AgoraReviewService
 from workers.tasks.agora_review.tasks import LocalEventBus, OutboxPublisher, ServantDispatchPublisher
@@ -28,6 +28,7 @@ from conftest import (
     open_conversation,
     request_revision,
     seed_case,
+    webhook_request,
 )
 
 
@@ -71,20 +72,19 @@ def test_m06_producer_envelopes_validate_against_shared_json_schemas(m06, analys
     assign(m06, supervisor, case_id)
     conversation = open_conversation(m06, analyst, case_id).data
     revision = request_revision(m06, analyst, case_id, conversation["id"]).data
+    callback_body = {
+        "event_id": str(uuid4()),
+        "revision_id": revision["id"],
+        "conversation_ref": conversation["external_conversation_ref"],
+        "base_artifact_ref": artifact_ref(CANDIDATE_A),
+        "result_artifact_ref": {"system": "agora", "external_id": "artifact-v4", "kind": "revised_report"},
+        "result_content_sha256": CONTENT_V4,
+        "status": "completed",
+        "completed_at": "2026-11-23T02:00:00Z",
+        "transcript_snapshot_asset_id": str(uuid4()),
+    }
     m06["service"].receive_servant_revision(
-        servant_adapter,
-        {
-            "event_id": str(uuid4()),
-            "revision_id": revision["id"],
-            "conversation_ref": conversation["external_conversation_ref"],
-            "base_artifact_ref": artifact_ref(CANDIDATE_A),
-            "result_artifact_ref": {"system": "agora", "external_id": "artifact-v4", "kind": "revised_report"},
-            "result_content_sha256": CONTENT_V4,
-            "status": "completed",
-            "completed_at": "2026-11-23T02:00:00Z",
-            "transcript_snapshot_asset_id": str(uuid4()),
-        },
-        idempotency_key="contract-callback01",
+        servant_adapter, callback_body, idempotency_key="contract-callback01", webhook=webhook_request(callback_body),
     )
     snapshot = m06["repository"].snapshot()
     assert {event.event_type for event in snapshot.outbox.values()} == {"review.revision_requested", "review.revision_received"}
@@ -118,20 +118,19 @@ def test_wire_responses_validate_against_openapi_1_0(m06, analyst, supervisor, s
     validate("Revision", revision)
     fetched_revision = m06["service"].get_revision_request(analyst, revision["id"]).data
     validate("Revision", fetched_revision)
+    callback_body = {
+        "event_id": str(uuid4()),
+        "revision_id": revision["id"],
+        "conversation_ref": conversation["external_conversation_ref"],
+        "base_artifact_ref": artifact_ref(CANDIDATE_A),
+        "result_artifact_ref": {"system": "agora", "external_id": "artifact-v4", "kind": "revised_report"},
+        "result_content_sha256": CONTENT_V4,
+        "status": "completed",
+        "completed_at": "2026-11-23T02:00:00Z",
+        "transcript_snapshot_asset_id": str(uuid4()),
+    }
     receipt = m06["service"].receive_servant_revision(
-        servant_adapter,
-        {
-            "event_id": str(uuid4()),
-            "revision_id": revision["id"],
-            "conversation_ref": conversation["external_conversation_ref"],
-            "base_artifact_ref": artifact_ref(CANDIDATE_A),
-            "result_artifact_ref": {"system": "agora", "external_id": "artifact-v4", "kind": "revised_report"},
-            "result_content_sha256": CONTENT_V4,
-            "status": "completed",
-            "completed_at": "2026-11-23T02:00:00Z",
-            "transcript_snapshot_asset_id": str(uuid4()),
-        },
-        idempotency_key="wire-callback-001",
+        servant_adapter, callback_body, idempotency_key="wire-callback-001", webhook=webhook_request(callback_body),
     ).data
     validate("CallbackReceipt", receipt)
 
@@ -232,5 +231,6 @@ def test_production_composition_refuses_fake_adapters():
     repository = InMemoryRepository()
     servant = FakeServant()
     diff = FakeArtifactDiff()
+    webhook_secrets = StaticWebhookSecretStore({})
     with pytest.raises(RuntimeError):
-        AgoraReviewService(repository, servant, diff, environment="production")
+        AgoraReviewService(repository, servant, diff, webhook_secrets, environment="production")

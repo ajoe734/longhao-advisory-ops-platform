@@ -21,6 +21,7 @@ from conftest import (
     request_revision,
     seed_case,
     version_of,
+    webhook_request,
 )
 
 
@@ -55,20 +56,19 @@ def test_uat_m06_003_returned_revision_only_creates_a_new_version(m06, analyst, 
     assign(m06, supervisor, case_id)
     conversation = open_conversation(m06, analyst, case_id).data
     revision = request_revision(m06, analyst, case_id, conversation["id"]).data
+    callback_body = {
+        "event_id": "50000000-0000-0000-0000-000000000001",
+        "revision_id": revision["id"],
+        "conversation_ref": conversation["external_conversation_ref"],
+        "base_artifact_ref": artifact_ref(CANDIDATE_A),
+        "result_artifact_ref": {"system": "agora", "external_id": "artifact-v4", "kind": "revised_report"},
+        "result_content_sha256": CONTENT_V4,
+        "status": "completed",
+        "completed_at": "2026-11-23T02:00:00Z",
+        "transcript_snapshot_asset_id": "60000000-0000-0000-0000-000000000001",
+    }
     receipt = m06["service"].receive_servant_revision(
-        servant_adapter,
-        {
-            "event_id": "50000000-0000-0000-0000-000000000001",
-            "revision_id": revision["id"],
-            "conversation_ref": conversation["external_conversation_ref"],
-            "base_artifact_ref": artifact_ref(CANDIDATE_A),
-            "result_artifact_ref": {"system": "agora", "external_id": "artifact-v4", "kind": "revised_report"},
-            "result_content_sha256": CONTENT_V4,
-            "status": "completed",
-            "completed_at": "2026-11-23T02:00:00Z",
-            "transcript_snapshot_asset_id": "60000000-0000-0000-0000-000000000001",
-        },
-        idempotency_key="callback-00000001",
+        servant_adapter, callback_body, idempotency_key="callback-00000001", webhook=webhook_request(callback_body),
     ).data
     assert receipt["status"] == "accepted"
     case_after = m06["service"].get_review_case(analyst, case_id).data
@@ -129,20 +129,19 @@ def test_uat_m06_006_conversation_scope_cannot_cross_case_or_tenant(m06, analyst
     conversation = open_conversation(m06, analyst, case_id).data
     revision = request_revision(m06, analyst, case_id, conversation["id"]).data
     forged_ref = {"system": "agora", "external_id": "conv-from-another-tenant", "kind": "servant_conversation"}
+    callback_body = {
+        "event_id": "50000000-0000-0000-0000-000000000002",
+        "revision_id": revision["id"],
+        "conversation_ref": forged_ref,
+        "base_artifact_ref": artifact_ref(CANDIDATE_A),
+        "result_artifact_ref": {"system": "agora", "external_id": "artifact-forged", "kind": "revised_report"},
+        "result_content_sha256": CONTENT_V4,
+        "status": "completed",
+        "completed_at": "2026-11-23T02:00:00Z",
+        "transcript_snapshot_asset_id": "60000000-0000-0000-0000-000000000002",
+    }
     receipt = m06["service"].receive_servant_revision(
-        servant_adapter,
-        {
-            "event_id": "50000000-0000-0000-0000-000000000002",
-            "revision_id": revision["id"],
-            "conversation_ref": forged_ref,
-            "base_artifact_ref": artifact_ref(CANDIDATE_A),
-            "result_artifact_ref": {"system": "agora", "external_id": "artifact-forged", "kind": "revised_report"},
-            "result_content_sha256": CONTENT_V4,
-            "status": "completed",
-            "completed_at": "2026-11-23T02:00:00Z",
-            "transcript_snapshot_asset_id": "60000000-0000-0000-0000-000000000002",
-        },
-        idempotency_key="callback-forged001",
+        servant_adapter, callback_body, idempotency_key="callback-forged001", webhook=webhook_request(callback_body),
     ).data
     assert receipt["status"] == "quarantined"
     unchanged = m06["service"].get_revision_request(analyst, revision["id"]).data
@@ -199,20 +198,19 @@ def test_uat_m06_009_failed_revision_can_be_retried_and_keeps_the_failed_evidenc
     assign(m06, supervisor, case_id)
     conversation = open_conversation(m06, analyst, case_id).data
     first_revision = request_revision(m06, analyst, case_id, conversation["id"], key="rev-0000firstA").data
+    fail_body = {
+        "event_id": "50000000-0000-0000-0000-000000000003",
+        "revision_id": first_revision["id"],
+        "conversation_ref": conversation["external_conversation_ref"],
+        "base_artifact_ref": artifact_ref(CANDIDATE_A),
+        "result_artifact_ref": None,
+        "result_content_sha256": None,
+        "status": "failed",
+        "completed_at": "2026-11-23T02:00:00Z",
+        "transcript_snapshot_asset_id": "60000000-0000-0000-0000-000000000003",
+    }
     m06["service"].receive_servant_revision(
-        servant_adapter,
-        {
-            "event_id": "50000000-0000-0000-0000-000000000003",
-            "revision_id": first_revision["id"],
-            "conversation_ref": conversation["external_conversation_ref"],
-            "base_artifact_ref": artifact_ref(CANDIDATE_A),
-            "result_artifact_ref": None,
-            "result_content_sha256": None,
-            "status": "failed",
-            "completed_at": "2026-11-23T02:00:00Z",
-            "transcript_snapshot_asset_id": "60000000-0000-0000-0000-000000000003",
-        },
-        idempotency_key="callback-failed001",
+        servant_adapter, fail_body, idempotency_key="callback-failed001", webhook=webhook_request(fail_body),
     )
     failed = m06["service"].get_revision_request(analyst, first_revision["id"]).data
     assert failed["state"] == "failed"
@@ -222,7 +220,10 @@ def test_uat_m06_009_failed_revision_can_be_retried_and_keeps_the_failed_evidenc
     still_failed = m06["service"].get_revision_request(analyst, first_revision["id"]).data
     assert still_failed == failed  # the original failed attempt/artifact is untouched
     case = m06["service"].get_review_case(analyst, case_id).data
-    assert set(case["pending_revision_ids"]) == {first_revision["id"], retry_revision["id"]}
+    # first_revision is preserved as evidence (still fetchable above) but is superseded
+    # by the retry it is now bound to, so it no longer counts as outstanding work.
+    assert set(case["pending_revision_ids"]) == {retry_revision["id"]}
+    assert m06["service"].get_revision_request(analyst, retry_revision["id"]).data["id"] == retry_revision["id"]
 
 
 def test_uat_m06_010_degraded_dependency_shows_last_known_state_not_an_empty_or_completed_view(m06, analyst, supervisor):
@@ -246,20 +247,19 @@ def test_uat_m06_011_significant_numeric_changes_surface_as_a_visible_pending_di
     revision = request_revision(m06, analyst, case_id, conversation["id"]).data
     m06["diff"].register(CONTENT_V3, CONTENT_V4, ("target_price: 100 -> 120", "risk_rating: B2 -> B3"))
 
+    diff_callback_body = {
+        "event_id": "50000000-0000-0000-0000-000000000004",
+        "revision_id": revision["id"],
+        "conversation_ref": conversation["external_conversation_ref"],
+        "base_artifact_ref": artifact_ref(CANDIDATE_A),
+        "result_artifact_ref": {"system": "agora", "external_id": "artifact-v4", "kind": "revised_report"},
+        "result_content_sha256": CONTENT_V4,
+        "status": "completed",
+        "completed_at": "2026-11-23T02:00:00Z",
+        "transcript_snapshot_asset_id": "60000000-0000-0000-0000-000000000004",
+    }
     m06["service"].receive_servant_revision(
-        servant_adapter,
-        {
-            "event_id": "50000000-0000-0000-0000-000000000004",
-            "revision_id": revision["id"],
-            "conversation_ref": conversation["external_conversation_ref"],
-            "base_artifact_ref": artifact_ref(CANDIDATE_A),
-            "result_artifact_ref": {"system": "agora", "external_id": "artifact-v4", "kind": "revised_report"},
-            "result_content_sha256": CONTENT_V4,
-            "status": "completed",
-            "completed_at": "2026-11-23T02:00:00Z",
-            "transcript_snapshot_asset_id": "60000000-0000-0000-0000-000000000004",
-        },
-        idempotency_key="callback-diff0001",
+        servant_adapter, diff_callback_body, idempotency_key="callback-diff0001", webhook=webhook_request(diff_callback_body),
     )
     results = [row for row in m06["repository"].snapshot().revision_results.values() if row.request_id == revision["id"]]
     assert len(results) == 1

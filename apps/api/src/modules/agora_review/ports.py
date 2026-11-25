@@ -144,6 +144,43 @@ class FakeArtifactDiff:
         return self._diffs.get((before_sha256, after_sha256), ())
 
 
+@dataclass(frozen=True)
+class WebhookRequest:
+    """Everything needed to verify the ``X-Webhook-*``/``X-Integration-Key-Id`` envelope.
+
+    ``raw_body`` must be the exact bytes the caller signed; re-serialized JSON can
+    reorder keys or whitespace and silently break a legitimate signature.
+    """
+
+    signature: str
+    timestamp: str
+    nonce: str
+    integration_key_id: str
+    raw_body: bytes
+    method: str = "POST"
+    path: str = "/api/v1/webhooks/servant-revisions"
+
+
+class WebhookSecretPort(Protocol):
+    """Resolves the shared HMAC secret for a given ``X-Integration-Key-Id``."""
+
+    is_fake: bool
+
+    def secret_for(self, integration_key_id: str) -> bytes | None: ...
+
+
+class StaticWebhookSecretStore:
+    """Fixed-key fake adapter for tests; never backed by a real secret manager."""
+
+    is_fake = True
+
+    def __init__(self, secrets: dict[str, bytes]) -> None:
+        self._secrets = dict(secrets)
+
+    def secret_for(self, integration_key_id: str) -> bytes | None:
+        return self._secrets.get(integration_key_id)
+
+
 def servant_webhook_signature(
     secret: bytes, *, timestamp: str, nonce: str, method: str, path: str, raw_body: bytes
 ) -> str:
