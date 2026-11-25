@@ -289,6 +289,29 @@ def test_uat_m09_010_correction_preserves_original_content(m09, member_a, operat
     assert any(row["id"] == original.id and row["content_sha256"] == original_hash for row in listed.data["items"])
 
 
+def test_apply_receipt_allows_failed_bounce_after_sent_but_never_after_delivered():
+    """F5 regression: a provider bounce can legitimately arrive after the
+    carrier handoff ("sent") but before a delivery is confirmed; only a
+    confirmed "delivered" message must never regress to "failed"."""
+    from modules.legendflow_delivery.domain import Delivery
+
+    def make(status: str) -> Delivery:
+        return Delivery(
+            id="x", tenant_id=TENANT, version=1, created_at=NOW, updated_at=NOW, publication_id=PUBLICATION_X,
+            recipient_id="r", customer_id=MEMBER_A, entitlement_id=ENTITLEMENT_A1, channel="email",
+            rendered_sha256="a" * 64, rendered_asset_id=REPORT_VERSION_X, provider_idempotency_key="k",
+            expires_at=NOW, status=status,
+        )
+
+    sent = make("sent")
+    assert sent.apply_receipt("failed", NOW) is True
+    assert sent.status == "failed"
+
+    delivered = make("delivered")
+    assert delivered.apply_receipt("failed", NOW) is False
+    assert delivered.status == "delivered"
+
+
 def test_uat_m09_011_marketing_opt_out_never_suppresses_service_notice():
     binding = ChannelBinding(
         id="x", tenant_id=TENANT, version=1, created_at=NOW, updated_at=NOW, customer_id=MEMBER_A, channel="sms",
@@ -341,3 +364,194 @@ def test_uat_m09_012_webhook_requires_valid_signature_and_dedupes_legitimate_rep
     replay = send_receipt(env, body, idempotency_key="receipt-good-0002", nonce="x" * 16)
     assert replay.data["status"] == "duplicate"
     assert replay.data["receipt_id"] == accepted.data["receipt_id"]
+
+
+def test_uat_m09_002_denied_report_access_is_still_audited(m09, member_a):
+    """F1 regression: atomic() discards the whole working copy on raise, so a
+    denial audit row appended on the same path that then raises would never
+    persist. The denial must be recorded by a dedicated follow-up write."""
+    env = m09
+    before = env["repository"].read(lambda state: len(state.audit_events))
+    with pytest.raises(ForbiddenError):
+        env["service"].request_member_report_access(member_a, "60000000-0000-0000-0000-000000000099")
+    after = env["repository"].read(lambda state: len(state.audit_events))
+    assert after - before >= 1
+
+
+def test_uat_m09_010_correction_links_replacement_delivery_to_original_either_order(m09):
+    """F3 regression: replaces_delivery_id must end up set regardless of
+    whether the replacement publication is dispatched before or after the
+    publication.corrected event that links it back to the original."""
+    env = m09
+    from workers.tasks.legendflow_delivery.consumer import M09EventConsumer
+    from modules.legendflow_delivery.domain import canonical_hash
+
+    def correct(original_publication_id: str, replacement_publication_id: str, replacement_report_version_id: str, event_id: str) -> None:
+        payload = {"publication_id": original_publication_id, "replacement_publication_id": replacement_publication_id, "replacement_report_version_id": replacement_report_version_id}
+        envelope = {
+            "event_id": event_id, "event_type": "publication.corrected", "schema_version": "1.0.0",
+            "tenant_id": TENANT, "producer": "M08", "aggregate_type": "publication", "aggregate_id": original_publication_id,
+            "aggregate_version": 2, "sequence_no": 1, "occurred_at": "2026-11-23T01:02:03.000000Z", "emitted_at": "2026-11-23T01:02:03.000000Z",
+            "correlation_id": "c3100000-0000-0000-0000-000000000001", "causation_id": None, "idempotency_key": f"publication.corrected:{event_id}",
+            "classification": "research_confidential", "payload_sha256": canonical_hash(payload), "payload": payload,
+        }
+        result = M09EventConsumer(env["repository"], env["service"]).consume(envelope)
+        assert result.status == "applied"
+
+    # Order A: correction event arrives before the replacement is dispatched.
+    set_entitlement(env, state="active")
+    seed_publication(env)
+    dispatch(env)
+    original_a = _only_message(env)
+    replacement_a = "50000000-0000-0000-0000-000000000005"
+    correct(PUBLICATION_X, replacement_a, "60000000-0000-0000-0000-000000000005", "e2100000-0000-0000-0000-000000000001")
+    seed_publication(env, publication_id=replacement_a, report_version_id="60000000-0000-0000-0000-000000000005", body_sha256="c" * 64)
+    dispatch(env, replacement_a)
+    linked_a = env["repository"].read(
+        lambda state: next(m for (t, _), m in state.deliveries.items() if t == TENANT and m.publication_id == replacement_a)
+    )
+    assert linked_a.replaces_delivery_id == original_a.id
+
+    # Order B: replacement is dispatched first; the correction event must
+    # backfill replaces_delivery_id onto the already-created delivery.
+    original_publication_b = "50000000-0000-0000-0000-000000000006"
+    seed_publication(env, publication_id=original_publication_b, report_version_id="60000000-0000-0000-0000-000000000006", recipient_id="30000000-0000-0000-0000-000000000006", customer_id=MEMBER_B, entitlement_id="40000000-0000-0000-0000-000000000006", body_sha256="d" * 64)
+    set_entitlement(env, entitlement_id="40000000-0000-0000-0000-000000000006", customer_id=MEMBER_B, state="active")
+    dispatch(env, original_publication_b)
+    original_b = env["repository"].read(
+        lambda state: next(m for (t, _), m in state.deliveries.items() if t == TENANT and m.publication_id == original_publication_b)
+    )
+    replacement_b = "50000000-0000-0000-0000-000000000007"
+    seed_publication(env, publication_id=replacement_b, report_version_id="60000000-0000-0000-0000-000000000007", recipient_id="30000000-0000-0000-0000-000000000006", customer_id=MEMBER_B, entitlement_id="40000000-0000-0000-0000-000000000006", body_sha256="e" * 64)
+    dispatch(env, replacement_b)  # dispatched BEFORE the correction event
+    correct(original_publication_b, replacement_b, "60000000-0000-0000-0000-000000000007", "e2100000-0000-0000-0000-000000000002")
+    linked_b = env["repository"].read(
+        lambda state: next(m for (t, _), m in state.deliveries.items() if t == TENANT and m.publication_id == replacement_b)
+    )
+    assert linked_b.replaces_delivery_id == original_b.id
+
+
+def test_uat_m09_010_withdrawal_cancels_queued_jobs_and_process_job_independently_refuses_to_send(m09):
+    """F3/F2 regression: withdrawal must stop a still-queued job from ever
+    dispatching retracted content, both through the consumer's immediate
+    cancellation and through process_job's own live re-check."""
+    env = m09
+    from workers.tasks.legendflow_delivery.consumer import M09EventConsumer
+    from modules.legendflow_delivery.domain import canonical_hash
+
+    set_entitlement(env, state="active")
+    seed_publication(env)
+    dispatch(env)
+    message = _only_message(env)
+    job = env["repository"].read(lambda state: next(j for (t, _), j in state.jobs.items() if t == TENANT))
+    assert job.status == "pending"
+
+    payload = {"publication_id": PUBLICATION_X, "withdrawal_record_id": "90000000-0000-0000-0000-000000000099", "effective_at": "2026-11-23T01:02:03.000000Z", "notify_recipients": True}
+    envelope = {
+        "event_id": "e2200000-0000-0000-0000-000000000001", "event_type": "publication.withdrawn", "schema_version": "1.0.0",
+        "tenant_id": TENANT, "producer": "M08", "aggregate_type": "publication", "aggregate_id": PUBLICATION_X,
+        "aggregate_version": 2, "sequence_no": 1, "occurred_at": "2026-11-23T01:02:03.000000Z", "emitted_at": "2026-11-23T01:02:03.000000Z",
+        "correlation_id": "c3200000-0000-0000-0000-000000000001", "causation_id": None, "idempotency_key": "publication.withdrawn:test-1",
+        "classification": "research_confidential", "payload_sha256": canonical_hash(payload), "payload": payload,
+    }
+    result = M09EventConsumer(env["repository"], env["service"]).consume(envelope)
+    assert result.status == "applied"
+    assert "cancelled=1" in result.result_code
+
+    job_after = env["repository"].read(lambda state: state.jobs[(TENANT, job.id)])
+    assert job_after.status == "cancelled"
+    message_after = _only_message(env)
+    assert message_after.status == "suppressed"
+    assert message_after.suppression_reason == "publication_withdrawn"
+
+    # Defense in depth: even a job that stayed "leased" past the cancellation
+    # must never dispatch, because process_job re-checks withdrawal live.
+    seed_publication(env, publication_id="50000000-0000-0000-0000-000000000008", recipient_id="30000000-0000-0000-0000-000000000009", customer_id=MEMBER_B, entitlement_id="40000000-0000-0000-0000-000000000009", report_version_id="60000000-0000-0000-0000-000000000008")
+    set_entitlement(env, entitlement_id="40000000-0000-0000-0000-000000000009", customer_id=MEMBER_B, state="active")
+    dispatch(env, "50000000-0000-0000-0000-000000000008")
+    other_job = env["repository"].read(
+        lambda state: next(j for (t, _), j in state.jobs.items() if t == TENANT and state.deliveries[(t, j.message_id)].publication_id == "50000000-0000-0000-0000-000000000008")
+    )
+
+    def mark_withdrawn(state):
+        state.publications[(TENANT, "50000000-0000-0000-0000-000000000008")].state = "withdrawn"
+
+    env["repository"].atomic(mark_withdrawn)
+    env["service"].lease_jobs("worker-1", TENANT, limit=10)
+    outcome = env["service"].process_job("worker-1", TENANT, other_job.id)
+    assert outcome.result == "suppressed"
+    other_message = env["repository"].read(
+        lambda state: next(m for (t, _), m in state.deliveries.items() if t == TENANT and m.publication_id == "50000000-0000-0000-0000-000000000008")
+    )
+    assert other_message.suppression_reason == "publication_withdrawn"
+
+
+def test_uat_m09_011_set_communication_preference_end_to_end(m09, member_a, operator):
+    """F4 regression: set_communication_preference had zero calls across the
+    whole suite; it must be exercised through the real API, must reject a
+    consent whose own purpose does not match, must block marketing opt-in
+    while a CRM suppression is active, and a service opt-out must actually
+    change which channels dispatch_publication fans out to."""
+    env = m09
+    from modules.legendflow_delivery.domain import ValidationError
+
+    set_entitlement(env, state="active")
+    seed_publication(env)
+    env["service"].bind_member_channel(
+        member_a, {"channel": "sms", "verified_channel_proof_ref": CHANNEL_PROOF_LINE_OK, "service_delivery_enabled": True},
+        idempotency_key="pref-bind-0001",
+    )
+
+    privacy_consent_id = "c4000000-0000-0000-0000-000000000001"
+    marketing_consent_id = "c4000000-0000-0000-0000-000000000002"
+
+    def grant_consent(consent_id: str, purpose: str, granted: bool) -> None:
+        def mutate(state):
+            state.consents[(TENANT, consent_id)] = {"customer_id": MEMBER_A, "purpose": purpose, "granted": granted}
+
+        env["repository"].atomic(mutate)
+
+    grant_consent(privacy_consent_id, "privacy", True)
+    grant_consent(marketing_consent_id, "marketing", True)
+
+    # A consent recorded for a different purpose must never unlock marketing,
+    # even though it is granted.
+    with pytest.raises(ValidationError) as excinfo:
+        env["service"].set_communication_preference(
+            member_a, {"channel": "sms", "purpose": "marketing", "enabled": True, "consent_id": privacy_consent_id},
+            idempotency_key="pref-marketing-wrong-consent-0001",
+        )
+    assert excinfo.value.code == "consent_required_for_marketing_optin"
+
+    # A CRM suppression (crm.suppression_changed, read from state.suppressions)
+    # blocks a marketing opt-in even with a correctly-purposed, granted consent.
+    def suppress() -> None:
+        def mutate(state):
+            state.suppressions[(TENANT, MEMBER_A, "marketing_contact")] = True
+
+        env["repository"].atomic(mutate)
+
+    suppress()
+    with pytest.raises(ValidationError) as excinfo:
+        env["service"].set_communication_preference(
+            member_a, {"channel": "sms", "purpose": "marketing", "enabled": True, "consent_id": marketing_consent_id},
+            idempotency_key="pref-marketing-suppressed-0001",
+        )
+    assert excinfo.value.code == "marketing_opt_in_blocked_by_suppression"
+
+    # A real service-channel opt-out through the API must suppress that
+    # channel at the next dispatch, with an audit row recorded for the call.
+    before_audit = env["repository"].read(lambda state: len(state.audit_events))
+    result = env["service"].set_communication_preference(
+        member_a, {"channel": "sms", "purpose": "service", "enabled": False, "consent_id": privacy_consent_id},
+        idempotency_key="pref-service-optout-0001",
+    )
+    assert result.data["enabled"] is False
+    after_audit = env["repository"].read(lambda state: len(state.audit_events))
+    assert after_audit > before_audit
+
+    dispatch(env)
+    sms_messages = env["repository"].read(
+        lambda state: [m for (t, _), m in state.deliveries.items() if t == TENANT and m.customer_id == MEMBER_A and m.channel == "sms"]
+    )
+    assert sms_messages == []

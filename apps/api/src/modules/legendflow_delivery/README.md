@@ -1,9 +1,15 @@
 # M09 · LegendFlow 與訊息交付
 
 依 [docs/modules/M09-legendflow_delivery.md](../../../../../docs/modules/M09-legendflow_delivery.md) 實作。
-與 M01 相同，本模組目前是可獨立測試的 domain + in-memory adapter，尚未經由
-`plugin.py` 掛上共用 `longhao_platform` runtime（該 runtime 本身也尚未要求模組掛載）；
-`http.py` 的 `create_fastapi_router` 可在 FastAPI 可用時供 build steward 整合。
+本模組的 domain + in-memory adapter 可獨立測試；`plugin.py`
+（`MODULE_ID = "M09"`、`register(runtime)`）讓 `longhao_platform.app.PlatformRuntime.bootstrap()`
+掛上本模組的 FastAPI router（非 production 環境下以本模組自己的 synthetic
+provider 組裝 `LegendflowDeliveryService`；production 因尚無真實 channel/entitlement
+adapter，`register()` 會因 `LegendflowDeliveryService` 自身的生產環境防呆而失敗，
+回報為 `broken`/`MODULE_REGISTRATION_FAILED`，而非悄悄用假 adapter 服務會員資料）。
+`http.py` 的 `create_fastapi_router` 不再自帶 `/api/v1` 前綴，交由
+`longhao_platform.http.create_app()` 統一掛載，避免路徑重複成
+`/api/v1/api/v1/...`。
 
 ## 模組結構
 
@@ -21,6 +27,8 @@
   DLQ/timeout 例外為非投資判斷的摘要草稿，不可自行核准重驅。
 - `http.py`：framework-neutral controller；`create_fastapi_router` 延遲匯入
   FastAPI。
+- `plugin.py`：`PlatformRuntime.discover_modules()` 的註冊入口
+  （`MODULE_ID`、`register(runtime)`）。
 
 ## 已知限制與 NOT_CONNECTED
 

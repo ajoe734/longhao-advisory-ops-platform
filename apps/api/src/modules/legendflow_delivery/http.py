@@ -197,7 +197,10 @@ def create_fastapi_router(
         raise RuntimeError("FastAPI must be supplied by the shared application build") from exc
 
     controller = M09Controller(service)
-    router = APIRouter(prefix="/api/v1", tags=["M09"])
+    # No prefix here: longhao_platform.http.create_app() mounts every module
+    # router with app.include_router(router, prefix="/api/v1") itself, so a
+    # prefix on this router would double up into "/api/v1/api/v1/...".
+    router = APIRouter(tags=["M09"])
 
     def endpoint_for(operation_id: str, method: str) -> Callable[..., Any]:
         async def endpoint(request: Request) -> JSONResponse:

@@ -233,7 +233,10 @@ class Delivery:
                 self.delivered_at, changed = occurred_at, True
             return changed
         if receipt_type == "failed":
-            if self.status not in _HARD_FINAL and _FORWARD_RANK.get(self.status, -1) < _FORWARD_RANK["sent"] and self.status != "failed":
+            # a provider can bounce a message after handing it to the carrier
+            # ("sent"); only a confirmed "delivered" (or an already hard-final
+            # / already-failed message) must never regress to "failed".
+            if self.status not in _HARD_FINAL and self.status not in {"delivered", "failed"}:
                 self.status = "failed"
                 changed = True
             return changed

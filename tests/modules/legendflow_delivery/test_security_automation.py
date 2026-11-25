@@ -116,3 +116,42 @@ def test_fake_adapters_are_forbidden_in_production_composition(m09):
             report_access=env["report_access"], channel_proof=env["channel_proof"], channel_send=env["channel_send"],
             integration_keys=env["integration_keys"], hmac_key=b"0" * 32, environment="production",
         )
+
+
+# ---- F6: member-role enforcement, replay-safe proof verification, and the
+#      list_deliveries role grant matching the published OpenAPI contract ---
+
+def test_require_member_rejects_a_customer_session_with_no_member_role(m09):
+    env = m09
+    from modules.legendflow_delivery.domain import ActorContext, ForbiddenError as _ForbiddenError
+
+    impostor = ActorContext(TENANT, "20000000-0000-0000-0000-000000000009", frozenset(), principal_type="customer", customer_id="20000000-0000-0000-0000-000000000009")
+    with pytest.raises(_ForbiddenError):
+        env["service"].get_member_feed(impostor)
+
+
+def test_bind_member_channel_idempotent_replay_succeeds_after_single_use_proof_is_consumed(m09, member_a):
+    env = m09
+    body = {"channel": "line", "verified_channel_proof_ref": CHANNEL_PROOF_LINE_OK, "service_delivery_enabled": True}
+    first = env["service"].bind_member_channel(member_a, body, idempotency_key="bind-single-use-0001")
+
+    # Simulate the proof being single-use at the real provider: a second
+    # verify() call for the same proof_ref now fails.
+    env["channel_proof"].fail(CHANNEL_PROOF_LINE_OK, "forged")
+
+    replay = env["service"].bind_member_channel(member_a, body, idempotency_key="bind-single-use-0001")
+    assert replay.idempotency_replayed is True
+    assert replay.data["id"] == first.data["id"]
+
+
+def test_list_deliveries_grants_exactly_the_published_contract_roles(m09, supervisor):
+    env = m09
+    set_entitlement(env, state="active")
+    seed_publication(env)
+    dispatch(env)
+
+    # api/openapi.yaml's x-allowed-roles for list_deliveries is
+    # [service_agent, delivery_operator] only; delivery_supervisor must be
+    # rejected rather than silently granted undocumented read access.
+    with pytest.raises(ForbiddenError):
+        env["service"].list_deliveries(supervisor)

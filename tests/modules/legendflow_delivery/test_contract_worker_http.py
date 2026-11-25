@@ -33,13 +33,28 @@ from conftest import (
 )
 
 
+#: event_type -> classification, matching events/registry.json exactly (the
+#: consumer now validates classification against each event's real schema).
+_CLASSIFICATION = {
+    "customer.identity_linked": "customer_confidential",
+    "customer.consent_changed": "customer_confidential",
+    "contract.terminated": "customer_confidential",
+    "entitlement.changed": "customer_confidential",
+    "report.signature_revoked": "research_confidential",
+    "publication.created": "research_confidential",
+    "publication.withdrawn": "research_confidential",
+    "publication.corrected": "research_confidential",
+    "crm.suppression_changed": "customer_confidential",
+}
+
+
 def _envelope(event_type: str, aggregate_type: str, aggregate_id: str, payload: dict, *, sequence_no: int = 1, producer: str = "M08", event_id: str = "e5000000-0000-0000-0000-000000000001") -> dict:
     return {
         "event_id": event_id, "event_type": event_type, "schema_version": "1.0.0", "tenant_id": TENANT,
         "producer": producer, "aggregate_type": aggregate_type, "aggregate_id": aggregate_id, "aggregate_version": sequence_no,
         "sequence_no": sequence_no, "occurred_at": "2026-11-22T00:00:00.000000Z", "emitted_at": "2026-11-22T00:00:00.000000Z",
         "correlation_id": "c6000000-0000-0000-0000-000000000001", "causation_id": None,
-        "idempotency_key": f"{event_type}:synthetic-{sequence_no}", "classification": "research_confidential",
+        "idempotency_key": f"{event_type}:synthetic-{sequence_no}", "classification": _CLASSIFICATION.get(event_type, "customer_confidential"),
         "payload_sha256": canonical_hash(payload), "payload": payload,
     }
 
@@ -289,3 +304,268 @@ def test_http_controller_webhook_route_requires_no_bearer_context():
     operation_ids = {route[2] for route in ROUTES}
     assert "receive_message_receipt" in operation_ids
     assert {"GET", "POST"} >= {route[0] for route in ROUTES}
+
+
+# ---- F2: process_job revalidation and lookup-first retry -------------------
+
+def test_process_job_retry_of_unknown_looks_up_before_sending_again(m09):
+    env = m09
+    set_entitlement(env, state="active")
+    seed_publication(env)
+    dispatch(env)
+    message = env["repository"].read(lambda state: next(m for (t, _), m in state.deliveries.items() if t == TENANT))
+    env["channel_send"].queue(message.provider_idempotency_key, SendOutcome("unknown"))
+
+    send_calls = []
+    original_send = env["channel_send"].send
+
+    def counting_send(*args, **kwargs):
+        send_calls.append(args)
+        return original_send(*args, **kwargs)
+
+    env["channel_send"].send = counting_send
+    job = env["repository"].read(lambda state: next(j for (t, _), j in state.jobs.items() if t == TENANT))
+
+    env["service"].lease_jobs("worker-1", TENANT, limit=10)
+    first = env["service"].process_job("worker-1", TENANT, job.id)
+    assert first.result == "unknown"
+    assert len(send_calls) == 1
+
+    # The provider actually received the first attempt; a bounded retry must
+    # discover that through lookup() instead of blind-sending a second time.
+    env["channel_send"].seed_accepted(message.provider_idempotency_key, "provider-ref-9001")
+    env["clock"].advance(10)  # past the retry backoff so the job is leasable again
+    env["service"].lease_jobs("worker-1", TENANT, limit=10)
+    second = env["service"].process_job("worker-1", TENANT, job.id)
+    assert second.result == "accepted"
+    assert len(send_calls) == 1
+
+
+def test_process_job_handles_entitlement_dependency_outage_without_aborting_batch(m09):
+    env = m09
+    from modules.legendflow_delivery.domain import DependencyUnavailableError
+
+    set_entitlement(env, state="active")
+    seed_publication(env)
+    dispatch(env)
+    job = env["repository"].read(lambda state: next(j for (t, _), j in state.jobs.items() if t == TENANT))
+    env["service"].lease_jobs("worker-1", TENANT, limit=10)
+
+    def unavailable(tenant_id, entitlement_id):
+        raise DependencyUnavailableError("entitlement authority is not available", code="entitlement_lookup_failed")
+
+    env["entitlements"].current = unavailable
+
+    outcome = env["service"].process_job("worker-1", TENANT, job.id)  # must not raise
+    assert outcome.result == "unknown"
+    job_after = env["repository"].read(lambda state: state.jobs[(TENANT, job.id)])
+    assert job_after.status == "retry"
+    assert job_after.last_error_code == "entitlement_lookup_unavailable"
+
+
+def test_process_job_rechecks_channel_binding_and_preference_before_send(m09, member_a):
+    env = m09
+    from modules.legendflow_delivery.domain import CommunicationPreference, new_id
+
+    set_entitlement(env, state="active")
+    seed_publication(env)
+    env["service"].bind_member_channel(
+        member_a, {"channel": "sms", "verified_channel_proof_ref": CHANNEL_PROOF_LINE_OK, "service_delivery_enabled": True},
+        idempotency_key="recheck-bind-0001",
+    )
+    dispatch(env)
+    sms_job = env["repository"].read(
+        lambda state: next(j for (t, _), j in state.jobs.items() if t == TENANT and state.deliveries[(t, j.message_id)].channel == "sms")
+    )
+
+    # The preference flips to opted-out after the job was queued but before
+    # the worker sends; process_job must re-check it, not just trust dispatch time.
+    def disable_pref(state):
+        pref = CommunicationPreference(
+            id=new_id(), tenant_id=TENANT, version=1, created_at=NOW, updated_at=NOW,
+            customer_id=MEMBER_A, channel="sms", purpose="service", enabled=False, consent_id=new_id(),
+        )
+        state.preferences[(TENANT, pref.id)] = pref
+        state.preference_index[(TENANT, MEMBER_A, "sms", "service")] = pref.id
+
+    env["repository"].atomic(disable_pref)
+    env["service"].lease_jobs("worker-1", TENANT, limit=10)
+    outcome = env["service"].process_job("worker-1", TENANT, sms_job.id)
+    assert outcome.result == "suppressed"
+    sms_message = env["repository"].read(
+        lambda state: next(m for (t, _), m in state.deliveries.items() if t == TENANT and m.channel == "sms")
+    )
+    assert sms_message.suppression_reason == "service_preference_disabled"
+
+
+# ---- F5: webhook field validation and nonce-burn ordering ------------------
+
+def test_webhook_rejects_malformed_nonce_and_key_id_length(m09):
+    env = m09
+    set_entitlement(env, state="active")
+    seed_publication(env)
+    dispatch(env)
+    message = env["repository"].read(lambda state: next(m for (t, _), m in state.deliveries.items() if t == TENANT))
+    from modules.legendflow_delivery.domain import UnauthorizedError
+
+    body = {
+        "event_id": "ec000000-0000-0000-0000-000000000001", "provider_message_ref": "ref", "delivery_id": message.id,
+        "provider_status": "accepted", "provider_occurred_at": "2026-11-23T01:02:03.000000Z",
+        "provider_receipt_asset_id": "90000000-0000-0000-0000-000000000040",
+    }
+    with pytest.raises(UnauthorizedError) as excinfo:
+        send_receipt(env, body, idempotency_key="receipt-shortnonce-0001", nonce="short")
+    assert excinfo.value.code == "webhook_nonce_invalid"
+
+    with pytest.raises(UnauthorizedError) as excinfo:
+        send_receipt(env, body, idempotency_key="receipt-shortkey-0001", nonce="u" * 16, key_id="short")
+    assert excinfo.value.code == "integration_key_id_invalid"
+
+
+def test_webhook_rejects_oversized_provider_message_ref_and_non_integer_sequence(m09):
+    env = m09
+    set_entitlement(env, state="active")
+    seed_publication(env)
+    dispatch(env)
+    message = env["repository"].read(lambda state: next(m for (t, _), m in state.deliveries.items() if t == TENANT))
+    from modules.legendflow_delivery.domain import ValidationError
+
+    base_body = {
+        "event_id": "ec100000-0000-0000-0000-000000000001", "provider_message_ref": "r" * 201, "delivery_id": message.id,
+        "provider_status": "accepted", "provider_occurred_at": "2026-11-23T01:02:03.000000Z",
+        "provider_receipt_asset_id": "90000000-0000-0000-0000-000000000041",
+    }
+    with pytest.raises(ValidationError) as excinfo:
+        send_receipt(env, base_body, idempotency_key="receipt-longref-0001", nonce="v" * 16)
+    assert excinfo.value.field_name == "provider_message_ref"
+
+    bad_sequence_body = dict(base_body, provider_message_ref="ref", provider_sequence="not-an-int", event_id="ec100000-0000-0000-0000-000000000002")
+    with pytest.raises(ValidationError) as excinfo:
+        send_receipt(env, bad_sequence_body, idempotency_key="receipt-badseq-0001", nonce="w" * 16)
+    assert excinfo.value.field_name == "provider_sequence"
+
+
+def test_webhook_rejects_integration_key_whose_provider_does_not_match_delivery_channel(m09):
+    env = m09
+    set_entitlement(env, state="active")
+    seed_publication(env)
+    dispatch(env)
+    message = env["repository"].read(lambda state: next(m for (t, _), m in state.deliveries.items() if t == TENANT))
+    from modules.legendflow_delivery.domain import ValidationError
+    from modules.legendflow_delivery.ports import IntegrationKey
+
+    line_key_id = "synthetic-line-only-adapter-0001"
+    env["integration_keys"].register(IntegrationKey(key_id=line_key_id, tenant_id=TENANT, secret=WEBHOOK_SECRET, provider="line"))
+    body = {
+        "event_id": "ec200000-0000-0000-0000-000000000001", "provider_message_ref": "ref", "delivery_id": message.id,
+        "provider_status": "accepted", "provider_occurred_at": "2026-11-23T01:02:03.000000Z",
+        "provider_receipt_asset_id": "90000000-0000-0000-0000-000000000042",
+    }
+    with pytest.raises(ValidationError) as excinfo:
+        send_receipt(env, body, idempotency_key="receipt-wrongprovider-0001", nonce="x" * 16, key_id=line_key_id)
+    assert excinfo.value.code == "receipt_provider_mismatch"
+
+
+def test_webhook_nonce_is_not_wasted_when_the_request_then_fails_validation(m09):
+    env = m09
+    set_entitlement(env, state="active")
+    seed_publication(env)
+    dispatch(env)
+    from modules.legendflow_delivery.domain import NotFoundError
+
+    missing_delivery_id = "90000000-0000-0000-0000-000000000098"
+    body = {
+        "event_id": "ec300000-0000-0000-0000-000000000001", "provider_message_ref": "ref", "delivery_id": missing_delivery_id,
+        "provider_status": "accepted", "provider_occurred_at": "2026-11-23T01:02:03.000000Z",
+        "provider_receipt_asset_id": "90000000-0000-0000-0000-000000000043",
+    }
+    nonce = "y" * 16
+    with pytest.raises(NotFoundError):
+        send_receipt(env, body, idempotency_key="receipt-notfound-0001", nonce=nonce)
+
+    # Same nonce, now against a real delivery: the earlier failed call must
+    # never have durably burned it.
+    message = env["repository"].read(lambda state: next(m for (t, _), m in state.deliveries.items() if t == TENANT))
+    good_body = dict(body, delivery_id=message.id, event_id="ec300000-0000-0000-0000-000000000002")
+    accepted = send_receipt(env, good_body, idempotency_key="receipt-notfound-0002", nonce=nonce)
+    assert accepted.data["status"] == "accepted"
+
+
+# ---- F7: consumer atomicity, envelope schema strictness, contract scoping -
+
+def test_consumer_apply_and_inbox_commit_in_one_transaction(m09, monkeypatch):
+    env = m09
+    payload = {
+        "contract_id": "f0000000-0000-0000-0000-000000000010", "customer_id": MEMBER_A,
+        "terminated_at": "2026-11-22T00:00:00.000000Z", "refund_evaluation_required": False,
+    }
+    envelope = _envelope("contract.terminated", "contract", payload["contract_id"], payload, producer="M02", event_id="ed000000-0000-0000-0000-000000000001")
+    consumer = M09EventConsumer(env["repository"], env["service"])
+
+    def boom(self, state, envelope, key, result_code):
+        raise RuntimeError("simulated crash between apply and inbox write")
+
+    monkeypatch.setattr(M09EventConsumer, "_finalize", boom)
+    with pytest.raises(RuntimeError):
+        consumer.consume(envelope)
+
+    # The whole transaction rolled back: the business projection write made
+    # by _apply is not left committed without its matching inbox receipt.
+    assert env["repository"].read(lambda state: dict(state.terminated_customers)) == {}
+    assert env["repository"].read(lambda state: dict(state.inbox)) == {}
+
+
+def test_consumer_rejects_payload_enum_value_not_in_the_published_schema(m09):
+    env = m09
+    consumer = M09EventConsumer(env["repository"], env["service"])
+    payload = {
+        "entitlement_id": "40000000-0000-0000-0000-000000000011", "customer_id": MEMBER_A,
+        "contract_id": "f0000000-0000-0000-0000-000000000011", "state": "not_a_real_state",
+        "decision_id": "d0000000-0000-0000-0000-000000000011", "valid_until": "2026-12-22T00:00:00Z",
+    }
+    envelope = _envelope("entitlement.changed", "entitlement", payload["entitlement_id"], payload, producer="M02", event_id="ee000000-0000-0000-0000-000000000001")
+    with pytest.raises(ValidationError) as excinfo:
+        consumer.consume(envelope)
+    assert excinfo.value.code == "event_schema_invalid"
+
+
+def test_contract_termination_is_scoped_per_contract_not_per_customer(m09):
+    env = m09
+    consumer = M09EventConsumer(env["repository"], env["service"])
+
+    kept_entitlement = "40000000-0000-0000-0000-000000000012"
+    terminated_entitlement = "40000000-0000-0000-0000-000000000013"
+    kept_contract = "f0000000-0000-0000-0000-000000000012"
+    terminated_contract = "f0000000-0000-0000-0000-000000000013"
+
+    for entitlement_id, contract_id in [(kept_entitlement, kept_contract), (terminated_entitlement, terminated_contract)]:
+        payload = {
+            "entitlement_id": entitlement_id, "customer_id": MEMBER_A, "contract_id": contract_id,
+            "state": "active", "decision_id": "d0000000-0000-0000-0000-000000000012", "valid_until": "2026-12-22T00:00:00Z",
+        }
+        envelope = _envelope("entitlement.changed", "entitlement", entitlement_id, payload, producer="M02", event_id=f"ef00000{entitlement_id[-1]}-0000-0000-0000-000000000001")
+        assert consumer.consume(envelope).status == "applied"
+
+    terminate_payload = {
+        "contract_id": terminated_contract, "customer_id": MEMBER_A,
+        "terminated_at": "2026-11-22T00:00:00.000000Z", "refund_evaluation_required": False,
+    }
+    terminate_envelope = _envelope("contract.terminated", "contract", terminated_contract, terminate_payload, producer="M02", event_id="ef100000-0000-0000-0000-000000000001")
+    assert consumer.consume(terminate_envelope).status == "applied"
+
+    set_entitlement(env, entitlement_id=kept_entitlement, state="active")
+    set_entitlement(env, entitlement_id=terminated_entitlement, state="active")
+
+    kept_publication = "50000000-0000-0000-0000-000000000020"
+    terminated_publication = "50000000-0000-0000-0000-000000000021"
+    seed_publication(env, publication_id=kept_publication, entitlement_id=kept_entitlement, report_version_id="60000000-0000-0000-0000-000000000020")
+    seed_publication(env, publication_id=terminated_publication, entitlement_id=terminated_entitlement, report_version_id="60000000-0000-0000-0000-000000000021")
+
+    kept_summary = dispatch(env, kept_publication)
+    terminated_summary = dispatch(env, terminated_publication)
+    assert kept_summary.created == 1 and kept_summary.suppressed == 0
+    assert terminated_summary.created == 0 and terminated_summary.suppressed == 1
+    terminated_message = env["repository"].read(
+        lambda state: next(m for (t, _), m in state.deliveries.items() if t == TENANT and m.publication_id == terminated_publication)
+    )
+    assert terminated_message.suppression_reason == "contract_terminated"

@@ -30,13 +30,17 @@ export function RedriveReconciliation({
 
   const delivery = state.value;
   const canReconcile = isAllowed(delivery.allowed_actions, "reconcile_delivery");
+  const canRedrive = isAllowed(delivery.allowed_actions, "redrive_delivery_event");
   const reasonValid = reasonCode.trim().length > 0 && reasonCode.trim().length <= 80;
+  const redriveDisabled = !canRedrive || !reasonValid || !approvedBy || !expectedEventId;
+  const redriveDisabledReason = !canRedrive ? "目前狀態或角色不允許重驅" : undefined;
 
   return (
     <main className="m09-stack">
       {state.kind === "conflict" && (
         <aside role="alert"><strong>版本衝突</strong><p>{state.message} 伺服器版本：{state.currentVersion}</p></aside>
       )}
+      {state.kind === "stale" && <aside role="status"><strong>資料可能已過期</strong><p>{state.message}</p></aside>}
       <header className="m09-panel">
         <p className="m09-eyebrow">重驅與收件對帳</p>
         <h1>{delivery.publication_id}</h1>
@@ -59,7 +63,8 @@ export function RedriveReconciliation({
         <label htmlFor="m09-expected-event">預期 dead-letter 事件 ID</label>
         <input id="m09-expected-event" value={expectedEventId} onChange={(event) => setExpectedEventId(event.target.value)} />
         <button
-          disabled={!reasonValid || !approvedBy || !expectedEventId}
+          disabled={redriveDisabled}
+          title={redriveDisabledReason}
           onClick={() => onRedrive(reasonCode.trim(), approvedBy.trim(), expectedEventId.trim())}
         >
           送出重驅申請

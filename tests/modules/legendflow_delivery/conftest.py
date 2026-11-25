@@ -78,7 +78,11 @@ def m09():
     channel_proof = FakeChannelProofPort()
     channel_send = FakeChannelSendPort()
     integration_keys = FakeIntegrationKeyPort()
-    integration_keys.register(IntegrationKey(key_id=WEBHOOK_KEY_ID, tenant_id=TENANT, secret=WEBHOOK_SECRET, provider="line"))
+    # Registered as "legendflow" because every default-fixture delivery used by
+    # webhook tests is the legendflow feed message; receipts must come from the
+    # provider that actually owns the channel being receipted (see
+    # service.receive_message_receipt's key.provider check).
+    integration_keys.register(IntegrationKey(key_id=WEBHOOK_KEY_ID, tenant_id=TENANT, secret=WEBHOOK_SECRET, provider="legendflow"))
     clock = FixedClock()
 
     channel_proof.register(

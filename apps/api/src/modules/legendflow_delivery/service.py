@@ -97,6 +97,26 @@ class JobOutcome:
     result: str  # accepted / failed / unknown / suppressed / expired / dead_letter
 
 
+@dataclass(frozen=True)
+class _JobPrep:
+    """Result of ``process_job``'s local-only revalidation phase.
+
+    ``done`` is set when the job was fully resolved without needing a
+    provider call (expired/withdrawn/revoked/suppressed/already-advanced);
+    otherwise the remaining fields describe exactly what the caller needs to
+    run the provider call outside of any repository transaction.
+    """
+
+    done: JobOutcome | None
+    message_id: str | None = None
+    entitlement_id: str | None = None
+    channel: str | None = None
+    fingerprint: str | None = None
+    idempotency_key: str | None = None
+    content_sha256: str | None = None
+    message_status: str | None = None
+
+
 class LegendflowDeliveryService:
     """M09 LegendFlow member feed, channel binding and delivery dispatch.
 
@@ -198,9 +218,12 @@ class LegendflowDeliveryService:
         now = self._clock()
 
         def query(state: StoreState) -> ServiceResponse:
+            # ``atomic()`` discards the whole working copy when the callback
+            # raises, so a denial/failure audit row must never be appended on
+            # the same path that then raises; it is written by a dedicated
+            # follow-up transaction in the except block below instead.
             if (context.tenant_id, report_version_id) in state.revoked_signatures:
-                self._audit(state, context, "request_member_report_access", "delivery", None, None, correlation_id, "denied", "signature_revoked")
-                raise ForbiddenError("report access policy denied the request", code="report_access_denied")
+                raise ForbiddenError("report access policy denied the request", code="report_access_signature_revoked")
             eligible = any(
                 report_version_id in state.publications[(tenant, message.publication_id)].report_version_ids
                 and self._currently_entitled(message.entitlement_id, context.tenant_id, now)
@@ -210,13 +233,8 @@ class LegendflowDeliveryService:
                 and (tenant, message.publication_id) in state.publications
             )
             if not eligible:
-                self._audit(state, context, "request_member_report_access", "delivery", None, None, correlation_id, "denied", "not_entitled")
-                raise ForbiddenError("report access policy denied the request", code="report_access_denied")
-            try:
-                grant = self.report_access.sign(context.tenant_id, report_version_id, context.customer_id)
-            except DependencyUnavailableError:
-                self._audit(state, context, "request_member_report_access", "delivery", None, None, correlation_id, "failed", "report_store_unavailable")
-                raise
+                raise ForbiddenError("report access policy denied the request", code="report_access_not_entitled")
+            grant = self.report_access.sign(context.tenant_id, report_version_id, context.customer_id)
             audit_access_id = new_id()
             self._audit(state, context, "request_member_report_access", "delivery", None, None, correlation_id, "succeeded", None, audit_access_id)
             return ServiceResponse(
@@ -229,7 +247,14 @@ class LegendflowDeliveryService:
                 }
             )
 
-        return self.repository.atomic(query)
+        try:
+            return self.repository.atomic(query)
+        except ForbiddenError as exc:
+            self._audit_failure(context, "request_member_report_access", correlation_id, exc.code, result="denied")
+            raise
+        except DependencyUnavailableError as exc:
+            self._audit_failure(context, "request_member_report_access", correlation_id, exc.code)
+            raise
 
     def bind_member_channel(
         self, context: ActorContext, body: dict[str, Any], *, idempotency_key: str, correlation_id: str | None = None
@@ -242,17 +267,26 @@ class LegendflowDeliveryService:
         if not isinstance(body["service_delivery_enabled"], bool):
             raise ValidationError("service_delivery_enabled must be a boolean", field_name="service_delivery_enabled")
         proof_ref = require_uuid(body["verified_channel_proof_ref"], "verified_channel_proof_ref")
-        try:
-            proof = self.channel_proof.verify(channel, proof_ref)
-        except (UnauthorizedError, DependencyUnavailableError) as exc:
-            self._audit_failure(context, "bind_member_channel", correlation_id, exc.code)
-            raise
+        request = {"customer_id": context.customer_id, **body}
+        # A verified channel proof is typically single-use at the real provider:
+        # calling verify() again on an idempotent replay would fail even though
+        # the original request already succeeded. Only re-verify when this is
+        # genuinely a new (or conflicting) request, not a same-body replay.
+        if self._is_idempotent_replay(context, "bind_member_channel", idempotency_key, request):
+            proof = None
+        else:
+            try:
+                proof = self.channel_proof.verify(channel, proof_ref)
+            except (UnauthorizedError, DependencyUnavailableError) as exc:
+                self._audit_failure(context, "bind_member_channel", correlation_id, exc.code)
+                raise
         provider = CHANNEL_PROVIDER_NAME[channel]
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
         service_delivery_enabled = body["service_delivery_enabled"]
 
         def mutate(state: StoreState) -> _Outcome:
+            assert proof is not None  # only reached when verification above ran
             index_key = (context.tenant_id, provider, channel, proof.destination_fingerprint)
             existing_id = state.binding_index.get(index_key)
             if existing_id:
@@ -291,7 +325,7 @@ class LegendflowDeliveryService:
             state.binding_index[index_key] = binding.id
             return _Outcome(binding.to_api([]), 201, "channel_binding", binding.id, binding.version)
 
-        return self._run_command(context, "bind_member_channel", idempotency_key, {"customer_id": context.customer_id, **body}, correlation_id, mutate)
+        return self._run_command(context, "bind_member_channel", idempotency_key, request, correlation_id, mutate)
 
     def set_communication_preference(
         self, context: ActorContext, body: dict[str, Any], *, idempotency_key: str, correlation_id: str | None = None
@@ -315,8 +349,15 @@ class LegendflowDeliveryService:
             consent = state.consents.get((context.tenant_id, consent_id))
             if not consent or consent["customer_id"] != context.customer_id:
                 raise ValidationError("consent_id does not exist for this member", code="consent_not_found", field_name="consent_id")
-            if purpose == "marketing" and enabled and not consent.get("granted"):
-                raise ValidationError("marketing opt-in requires a granted consent", code="consent_required_for_marketing_optin", field_name="consent_id")
+            if purpose == "marketing" and enabled:
+                if consent.get("purpose") != "marketing" or not consent.get("granted"):
+                    raise ValidationError(
+                        "marketing opt-in requires a granted marketing consent", code="consent_required_for_marketing_optin", field_name="consent_id",
+                    )
+                if state.suppressions.get((context.tenant_id, context.customer_id, "marketing_contact")) is True or state.suppressions.get((context.tenant_id, context.customer_id, "all_nonessential_contact")) is True:
+                    raise ValidationError(
+                        "marketing opt-in is blocked by an active CRM suppression", code="marketing_opt_in_blocked_by_suppression", field_name="enabled",
+                    )
 
             index_key = (context.tenant_id, context.customer_id, channel, purpose)
             existing_id = state.preference_index.get(index_key)
@@ -352,7 +393,10 @@ class LegendflowDeliveryService:
         as_of: datetime | None = None,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize_staff(context, {"service_agent", "delivery_operator", "delivery_supervisor"})
+        # Only the two roles published in api/openapi.yaml's x-allowed-roles for
+        # list_deliveries may call it; granting delivery_supervisor here without
+        # a merged contract change would let code and contract diverge silently.
+        self._authorize_staff(context, {"service_agent", "delivery_operator"})
         if not 1 <= limit <= 200:
             raise ValidationError("limit must be between 1 and 200", field_name="limit")
         if state_filter and state_filter not in _DELIVERY_STATES:
@@ -375,7 +419,7 @@ class LegendflowDeliveryService:
             self._audit(state, context, "list_deliveries", "delivery", None, None, correlation_id, "succeeded")
             return ServiceResponse(
                 {
-                    "items": [item.to_api(self._delivery_actions(item, context)) for item in page],
+                    "items": [item.to_api(self._delivery_actions(state, item, context)) for item in page],
                     "next_cursor": page[-1].id if len(rows) > limit else None,
                     "as_of": wire_time(snapshot_at),
                     "total_estimate": len(rows),
@@ -398,14 +442,24 @@ class LegendflowDeliveryService:
         raw_body: bytes,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
+        if not 8 <= len(key_id) <= 128:
+            raise UnauthorizedError("integration key id is malformed", code="integration_key_id_invalid")
+        if not 16 <= len(nonce) <= 128:
+            raise UnauthorizedError("webhook nonce is malformed", code="webhook_nonce_invalid")
         key = self.integration_keys.resolve(key_id)
-        self._verify_webhook(key_id, key.secret, timestamp, nonce, method, path, raw_body, signature)
+        self._verify_webhook_signature(timestamp, nonce, method, path, raw_body, signature, key.secret)
         actor_id = str(uuid5(_RECIPIENT_NAMESPACE_ACTOR, key_id))
         context = ActorContext(key.tenant_id, actor_id, frozenset({"messaging_adapter"}), principal_type="service")
         self._body(body, {"event_id", "provider_message_ref", "delivery_id", "provider_sequence", "provider_status", "provider_occurred_at", "provider_receipt_asset_id"}, {"event_id", "provider_message_ref", "delivery_id", "provider_status", "provider_occurred_at", "provider_receipt_asset_id"})
         event_id = require_uuid(body["event_id"], "event_id")
         delivery_id = require_uuid(body["delivery_id"], "delivery_id")
         receipt_asset_id = require_uuid(body["provider_receipt_asset_id"], "provider_receipt_asset_id")
+        provider_message_ref = body["provider_message_ref"]
+        if not isinstance(provider_message_ref, str) or not 1 <= len(provider_message_ref) <= 200:
+            raise ValidationError("provider_message_ref must contain 1 to 200 characters", field_name="provider_message_ref")
+        provider_sequence = body.get("provider_sequence")
+        if provider_sequence is not None and (isinstance(provider_sequence, bool) or not isinstance(provider_sequence, int) or provider_sequence < 0):
+            raise ValidationError("provider_sequence must be a non-negative integer or null", field_name="provider_sequence")
         provider_status = body["provider_status"]
         if provider_status not in {"accepted", "sent", "delivered", "failed", "read"}:
             raise ValidationError("provider_status is not supported", field_name="provider_status")
@@ -414,6 +468,14 @@ class LegendflowDeliveryService:
         now = self._clock()
 
         def mutate(state: StoreState) -> _Outcome:
+            # The nonce is only durably recorded if this whole transaction
+            # commits; a request that fails validation below never wastes a
+            # single-use nonce (see ``_verify_webhook_signature``).
+            nonce_key = (key_id, nonce)
+            if nonce_key in state.webhook_nonces:
+                raise UnauthorizedError("webhook nonce was already used", code="webhook_nonce_replayed")
+            state.webhook_nonces[nonce_key] = WebhookNonceReceipt(key_id=key_id, nonce=nonce, received_at=now)
+
             duplicate_id = state.receipt_index.get((context.tenant_id, key.provider, event_id))
             if duplicate_id:
                 existing = state.receipts[(context.tenant_id, duplicate_id)]
@@ -424,6 +486,8 @@ class LegendflowDeliveryService:
             message = state.deliveries.get((context.tenant_id, delivery_id))
             if message is None:
                 raise NotFoundError("delivery was not found")
+            if CHANNEL_PROVIDER_NAME.get(message.channel) != key.provider:
+                raise ValidationError("integration key provider does not match the delivery channel", code="receipt_provider_mismatch", field_name="key_id")
             payload_sha256 = canonical_hash(body)
             changed = message.apply_receipt(provider_status, occurred_at)
             receipt = DeliveryReceiptRecord(
@@ -473,12 +537,24 @@ class LegendflowDeliveryService:
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
 
+        def fetch(state: StoreState) -> Delivery:
+            message = state.deliveries.get((context.tenant_id, delivery_id))
+            if message is None:
+                raise NotFoundError("delivery was not found")
+            return message
+
+        snapshot = self.repository.read(fetch)
+        self._cas(snapshot.version, expected_version)
+        # The provider lookup is a network call; it must never run while holding
+        # the in-process transaction lock (or, against a real repository, an
+        # open DB transaction) the way the commit callback below does.
+        outcome = self.channel_send.lookup(snapshot.channel, snapshot.provider_idempotency_key)
+
         def mutate(state: StoreState) -> _Outcome:
             message = state.deliveries.get((context.tenant_id, delivery_id))
             if message is None:
                 raise NotFoundError("delivery was not found")
             self._cas(message.version, expected_version)
-            outcome = self.channel_send.lookup(message.channel, message.provider_idempotency_key)
             attempt_outcome = {"accepted": "accepted", "rejected": "rejected", "timeout": "unknown", "unknown": "unknown"}[outcome.outcome]
             attempt = DeliveryAttempt(
                 id=new_id(), tenant_id=context.tenant_id, message_id=message.id, attempt_no=message.attempt_count + 1,
@@ -510,7 +586,7 @@ class LegendflowDeliveryService:
                         "read_at": wire_time(message.read_at) if message.read_at else None,
                     },
                 )
-            return _Outcome(message.to_api(self._delivery_actions(message, context)), 202, "delivery", message.id, message.version)
+            return _Outcome(message.to_api(self._delivery_actions(state, message, context)), 202, "delivery", message.id, message.version)
 
         return self._run_command(context, "reconcile_delivery", idempotency_key, {"delivery_id": delivery_id, **body}, correlation_id, mutate, default_status=202)
 
@@ -608,6 +684,7 @@ class LegendflowDeliveryService:
                     withdrawal_record_id=existing.withdrawal_record_id if existing else None,
                 )
             created = suppressed = skipped = 0
+            original_publication_id = state.correction_links.get((tenant_id, publication_id))
             for recipient in recipient_rows:
                 for channel in self._dispatch_channels(state, tenant_id, recipient.customer_id):
                     binding_id = self._binding_id_for(state, tenant_id, recipient.customer_id, channel)
@@ -621,7 +698,15 @@ class LegendflowDeliveryService:
                         decision_id = entitlement.decision_id
                     except DependencyUnavailableError:
                         entitled, decision_id = False, None
-                    blocked = (tenant_id, recipient.customer_id) in state.terminated_customers
+                    # keyed per contract: terminating one of a customer's contracts
+                    # must never block dispatch tied to a different, still-active one.
+                    projection = state.entitlements.get((tenant_id, recipient.entitlement_id))
+                    blocked = projection is not None and (tenant_id, recipient.customer_id, projection.contract_id) in state.terminated_customers
+                    replaces_delivery_id = (
+                        self._find_replaced_delivery(state, tenant_id, original_publication_id, recipient.recipient_id, channel)
+                        if original_publication_id
+                        else None
+                    )
                     message = Delivery(
                         id=new_id(), tenant_id=tenant_id, version=1, created_at=now, updated_at=now,
                         publication_id=publication_id, recipient_id=recipient.recipient_id, customer_id=recipient.customer_id,
@@ -630,6 +715,7 @@ class LegendflowDeliveryService:
                         provider_idempotency_key=key, expires_at=snapshot.valid_until,
                         read_capability=CHANNEL_READ_CAPABILITY.get(channel, "unknown"),
                         last_authorized_at=now, checked_entitlement_version=None, last_entitlement_decision_id=decision_id,
+                        replaces_delivery_id=replaces_delivery_id,
                     )
                     state.deliveries[(tenant_id, message.id)] = message
                     state.delivery_by_idempotency_key[(tenant_id, key)] = message.id
@@ -687,32 +773,113 @@ class LegendflowDeliveryService:
         """Revalidate, call the provider adapter and record one attempt.
 
         A ``timeout``/``unknown`` outcome always queries the provider by the
-        message's stable idempotency key before deciding retry/dead-letter,
-        so a worker restart never produces a second logical message.
+        message's stable idempotency key before deciding retry/dead-letter, so
+        a worker restart never produces a second logical message; a job that
+        is *retrying* an already-``unknown`` message looks the result up
+        first and only sends if the provider genuinely never saw it, so a
+        bounded retry can never blind-send a second real request. Revalidation
+        (expiry, withdrawal, revoked signature, binding/preference, live
+        entitlement) and the provider call itself run outside the repository
+        transaction; only the final commit re-checks the lease.
         """
         now = self._clock()
 
-        def mutate(state: StoreState) -> JobOutcome:
+        def prepare(state: StoreState) -> _JobPrep:
             job = state.jobs[(tenant_id, job_id)]
             if job.lease_owner != worker_id or job.status != "leased":
                 raise ConflictError("dispatch job lease was lost", code="worker_lease_lost")
             message = state.deliveries[(tenant_id, job.message_id)]
 
+            if message.status not in {"queued", "unknown", "failed"}:
+                # already advanced (e.g. a concurrent receipt or a duplicate
+                # lease after this job's lease expired mid-flight); nothing
+                # left for this worker to do.
+                job.status, job.lease_owner, job.lease_until = "sent", None, None
+                job.updated_at = now
+                return _JobPrep(JobOutcome(job.id, message.id, message.status))
+
             if message.expires_at <= now:
                 self._suppress(state, message, job, "content_expired", now, final_job_status="cancelled")
-                return JobOutcome(job.id, message.id, "expired")
+                return _JobPrep(JobOutcome(job.id, message.id, "expired"))
 
-            entitlement = self.entitlements.current(tenant_id, message.entitlement_id)
-            if entitlement.state not in _ACTIVE_ENTITLEMENT_STATES or entitlement.valid_until <= now:
+            publication = state.publications.get((tenant_id, message.publication_id))
+            if publication is not None and publication.state == "withdrawn":
+                self._suppress(state, message, job, "publication_withdrawn", now, final_job_status="cancelled")
+                return _JobPrep(JobOutcome(job.id, message.id, "suppressed"))
+            if publication is not None and (tenant_id, publication.report_version_id) in state.revoked_signatures:
+                self._suppress(state, message, job, "signature_revoked", now, final_job_status="cancelled")
+                return _JobPrep(JobOutcome(job.id, message.id, "suppressed"))
+
+            fingerprint = message.channel
+            if message.channel != "legendflow":
+                binding = message.channel_binding_id and state.channel_bindings.get((tenant_id, message.channel_binding_id))
+                preference = next(
+                    (
+                        p for (t, _), p in state.preferences.items()
+                        if t == tenant_id and p.customer_id == message.customer_id and p.channel == message.channel and p.purpose == "service"
+                    ),
+                    None,
+                )
+                allowed, reason = resolve_delivery_permission(purpose="service", binding=binding, preference=preference)
+                if not allowed:
+                    self._suppress(state, message, job, reason, now, final_job_status="cancelled")
+                    return _JobPrep(JobOutcome(job.id, message.id, "suppressed"))
+                fingerprint = binding.destination_hmac if binding else message.channel
+
+            return _JobPrep(
+                None, message_id=message.id, entitlement_id=message.entitlement_id, channel=message.channel,
+                fingerprint=fingerprint, idempotency_key=message.provider_idempotency_key,
+                content_sha256=message.rendered_sha256, message_status=message.status,
+            )
+
+        prep = self.repository.atomic(prepare)
+        if prep.done is not None:
+            return prep.done
+
+        try:
+            entitlement = self.entitlements.current(tenant_id, prep.entitlement_id)
+        except DependencyUnavailableError:
+
+            def unavailable(state: StoreState) -> JobOutcome:
+                job = state.jobs.get((tenant_id, job_id))
+                message = state.deliveries.get((tenant_id, prep.message_id))
+                if job is None or message is None or job.lease_owner != worker_id or job.status != "leased":
+                    raise ConflictError("dispatch job lease was lost", code="worker_lease_lost")
+                dead = self._fail_job(job, "entitlement_lookup_unavailable", now)
+                return JobOutcome(job.id, message.id, "dead_letter" if dead else "unknown")
+
+            return self.repository.atomic(unavailable)
+
+        if entitlement.state not in _ACTIVE_ENTITLEMENT_STATES or entitlement.valid_until <= now:
+
+            def revoked(state: StoreState) -> JobOutcome:
+                job = state.jobs.get((tenant_id, job_id))
+                message = state.deliveries.get((tenant_id, prep.message_id))
+                if job is None or message is None or job.lease_owner != worker_id or job.status != "leased":
+                    raise ConflictError("dispatch job lease was lost", code="worker_lease_lost")
                 message.last_entitlement_decision_id = entitlement.decision_id
                 self._suppress(state, message, job, "entitlement_revoked", now, final_job_status="cancelled")
                 return JobOutcome(job.id, message.id, "suppressed")
 
-            destination = message.channel_binding_id and state.channel_bindings.get((tenant_id, message.channel_binding_id))
-            fingerprint = destination.destination_hmac if destination else message.channel
-            result = self.channel_send.send(message.channel, fingerprint, message.provider_idempotency_key, message.rendered_sha256)
-            if result.outcome in {"timeout", "unknown"}:
-                result = self.channel_send.lookup(message.channel, message.provider_idempotency_key)
+            return self.repository.atomic(revoked)
+
+        # The provider call is a network round-trip; it must never run while
+        # holding the in-process transaction lock (or, against a real
+        # repository, an open DB transaction).
+        if prep.message_status == "unknown":
+            result = self.channel_send.lookup(prep.channel, prep.idempotency_key)
+            if result.outcome == "unknown":
+                result = self.channel_send.send(prep.channel, prep.fingerprint, prep.idempotency_key, prep.content_sha256)
+        else:
+            result = self.channel_send.send(prep.channel, prep.fingerprint, prep.idempotency_key, prep.content_sha256)
+        if result.outcome in {"timeout", "unknown"}:
+            result = self.channel_send.lookup(prep.channel, prep.idempotency_key)
+
+        def finalize(state: StoreState) -> JobOutcome:
+            job = state.jobs.get((tenant_id, job_id))
+            message = state.deliveries.get((tenant_id, prep.message_id))
+            if job is None or message is None or job.lease_owner != worker_id or job.status != "leased":
+                raise ConflictError("dispatch job lease was lost", code="worker_lease_lost")
 
             message.attempt_count += 1
             attempt = DeliveryAttempt(
@@ -755,9 +922,24 @@ class LegendflowDeliveryService:
                 self._emit_status_changed(state, message, correlation_id=new_id(), causation_id=None, now=now)
             return JobOutcome(job.id, message.id, "dead_letter" if dead else "unknown")
 
-        return self.repository.atomic(mutate)
+        return self.repository.atomic(finalize)
 
     # ---- command transaction helpers -------------------------------------
+
+    def _is_idempotent_replay(self, context: ActorContext, operation: str, key: str, request: dict[str, Any]) -> bool:
+        """True when ``key``/``request`` already has a committed receipt with a matching body.
+
+        Lets a caller skip re-running a single-use external side effect (e.g.
+        verifying a one-time channel proof) before handing off to
+        :meth:`_run_command`, which would otherwise replay the cached response
+        without ever calling ``mutate`` again.
+        """
+        if not _KEY_RE.fullmatch(key):
+            return False
+        receipt_key = (context.tenant_id, context.actor_id, operation, key)
+        fingerprint = canonical_hash(request)
+        receipt = self.repository.read(lambda state: state.idempotency.get(receipt_key))
+        return receipt is not None and receipt.request_sha256 == fingerprint
 
     def _run_command(
         self,
@@ -881,7 +1063,7 @@ class LegendflowDeliveryService:
     # ---- authorization, validation and mapping ---------------------------
 
     def _require_member(self, context: ActorContext) -> None:
-        if context.principal_type != "customer" or not context.customer_id:
+        if context.principal_type != "customer" or not context.customer_id or "member" not in context.roles:
             raise ForbiddenError("operation requires a verified member session", code="member_session_required")
 
     def _authorize_staff(self, context: ActorContext, roles: set[str]) -> None:
@@ -949,10 +1131,19 @@ class LegendflowDeliveryService:
             "correction_publication_id": projection.correction_publication_id,
         }
 
-    def _delivery_actions(self, message: Delivery, context: ActorContext) -> list[str]:
+    def _delivery_actions(self, state: StoreState, message: Delivery, context: ActorContext) -> list[str]:
         actions: list[str] = []
         if self._has_role(context, {"delivery_operator"}) and message.status in {"unknown", "queued", "accepted", "failed"}:
             actions.append("reconcile_delivery")
+        # delivery_supervisor cannot call list_deliveries today (see
+        # database/proposals/M09/contract-changes.md); this stays forward
+        # compatible so the action appears correctly once a contract change
+        # grants that role read access, instead of defaulting to a silent [].
+        if self._has_role(context, {"delivery_supervisor"}):
+            job_id = state.job_by_message.get((message.tenant_id, message.id))
+            job = state.jobs.get((message.tenant_id, job_id)) if job_id else None
+            if job is not None and job.status == "dead_letter":
+                actions.append("redrive_delivery_event")
         return sorted(set(actions))
 
     @staticmethod
@@ -985,7 +1176,64 @@ class LegendflowDeliveryService:
                 return binding.id
         return None
 
-    def _verify_webhook(self, key_id: str, secret: bytes, timestamp: str, nonce: str, method: str, path: str, raw_body: bytes, signature: str) -> None:
+    @staticmethod
+    def _find_replaced_delivery(state: StoreState, tenant_id: str, original_publication_id: str | None, recipient_id: str, channel: str) -> str | None:
+        if not original_publication_id:
+            return None
+        for (tenant, _), message in state.deliveries.items():
+            if tenant == tenant_id and message.publication_id == original_publication_id and message.recipient_id == recipient_id and message.channel == channel:
+                return message.id
+        return None
+
+    def link_correction_deliveries(self, state: StoreState, tenant_id: str, original_publication_id: str, replacement_publication_id: str) -> int:
+        """Backfill ``replaces_delivery_id`` when the correction event arrives
+        after the replacement publication has already been dispatched."""
+        originals = {
+            (message.recipient_id, message.channel): message.id
+            for (tenant, _), message in state.deliveries.items()
+            if tenant == tenant_id and message.publication_id == original_publication_id
+        }
+        now = self._clock()
+        linked = 0
+        for (tenant, _), message in state.deliveries.items():
+            if tenant != tenant_id or message.publication_id != replacement_publication_id:
+                continue
+            original_id = originals.get((message.recipient_id, message.channel))
+            if original_id is not None and message.replaces_delivery_id != original_id:
+                message.replaces_delivery_id = original_id
+                message.version += 1
+                message.updated_at = now
+                linked += 1
+        return linked
+
+    def cancel_queued_deliveries(self, state: StoreState, tenant_id: str, publication_id: str, reason: str) -> int:
+        """Cancel any delivery that has not yet reached the provider for ``publication_id``.
+
+        Used when a publication is withdrawn so a still-queued or
+        unresolved-retry job is never dispatched with retracted content; a
+        message that already advanced to accepted/sent/delivered is untouched.
+        """
+        now = self._clock()
+        cancelled = 0
+        for (tenant, _), message in state.deliveries.items():
+            if tenant != tenant_id or message.publication_id != publication_id or message.status not in {"queued", "unknown", "failed"}:
+                continue
+            job_id = state.job_by_message.get((tenant_id, message.id))
+            job = state.jobs.get((tenant_id, job_id)) if job_id else None
+            if job is None or job.status not in {"pending", "retry", "leased"}:
+                continue
+            self._suppress(state, message, job, reason, now, final_job_status="cancelled")
+            cancelled += 1
+        return cancelled
+
+    def _verify_webhook_signature(self, timestamp: str, nonce: str, method: str, path: str, raw_body: bytes, signature: str, secret: bytes) -> None:
+        """Pure HMAC/timestamp check; never burns the nonce.
+
+        The nonce is only recorded once inside the same transaction that
+        commits the business write (see ``receive_message_receipt``), so a
+        request that fails body/idempotency validation never permanently
+        wastes a single-use nonce.
+        """
         if not _TIMESTAMP_RE.fullmatch(timestamp):
             raise UnauthorizedError("webhook timestamp is malformed", code="webhook_timestamp_invalid")
         skew = abs(int(self._clock().timestamp()) - int(timestamp))
@@ -995,14 +1243,6 @@ class LegendflowDeliveryService:
         expected = hmac.new(secret, material, sha256).hexdigest()
         if not hmac.compare_digest(expected, signature.strip().lower()):
             raise UnauthorizedError("webhook signature is invalid", code="webhook_signature_invalid")
-
-        def mutate(state: StoreState) -> None:
-            nonce_key = (key_id, nonce)
-            if nonce_key in state.webhook_nonces:
-                raise UnauthorizedError("webhook nonce was already used", code="webhook_nonce_replayed")
-            state.webhook_nonces[nonce_key] = WebhookNonceReceipt(key_id=key_id, nonce=nonce, received_at=self._clock())
-
-        self.repository.atomic(mutate)
 
     def _audit(
         self,
@@ -1025,8 +1265,8 @@ class LegendflowDeliveryService:
             )
         )
 
-    def _audit_failure(self, context: ActorContext, action: str, correlation_id: str | None, code: str) -> None:
+    def _audit_failure(self, context: ActorContext, action: str, correlation_id: str | None, code: str, *, result: str = "failed") -> None:
         def record(state: StoreState) -> None:
-            self._audit(state, context, action, "delivery", None, None, correlation_id or new_id(), "failed", code)
+            self._audit(state, context, action, "delivery", None, None, correlation_id or new_id(), result, code)
 
         self.repository.atomic(record)

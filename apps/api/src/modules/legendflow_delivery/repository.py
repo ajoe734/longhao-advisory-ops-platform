@@ -39,7 +39,12 @@ class StoreState:
     entitlements: dict[tuple[str, str], EntitlementProjection] = field(default_factory=dict)
     suppressions: dict[tuple[str, str, str], bool] = field(default_factory=dict)
     consents: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
-    terminated_customers: dict[tuple[str, str], str] = field(default_factory=dict)
+    #: (tenant_id, customer_id, contract_id) -> terminated_at; keyed per contract so
+    #: terminating one contract never blocks dispatch for the customer's other contracts.
+    terminated_customers: dict[tuple[str, str, str], Any] = field(default_factory=dict)
+    #: (tenant_id, replacement_publication_id) -> original_publication_id, recorded when
+    #: publication.corrected arrives so replacement deliveries can be linked either order.
+    correction_links: dict[tuple[str, str], str] = field(default_factory=dict)
     revoked_signatures: dict[tuple[str, str], str] = field(default_factory=dict)
     identity_links: dict[tuple[str, str], set[str]] = field(default_factory=dict)
     webhook_nonces: dict[tuple[str, str], WebhookNonceReceipt] = field(default_factory=dict)
