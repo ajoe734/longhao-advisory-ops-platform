@@ -8,11 +8,12 @@
 
 ## 契約協調項（本模組對 OpenAPI 模糊處的落地解讀）
 
-- `create_kyc_submission` 與 `assess_suitability` 的 `If-Match` 路徑為 `application_id`，但該聚合由 M01/M02 擁有。本模組落地為：CAS 比對的是「本模組對該 application 擁有的最新資源版本」（尚無則視為版本 0），不新造跨模組版本 port；首筆建立必須帶 `If-Match: "0"`。
-- `request_due_diligence_refresh` 路徑為 `customer_id`；CAS 比對該客戶目前最新一筆 `kyc.submission` 的版本（本模組實際變更的資源）。
-- `KycSubmission.state` 的 `submission_version` 在「核准/拒絕後再次 `create_kyc_submission`」或「`submitted`/`under_review`/`incomplete` 狀態下再次 `submit_kyc`（代表在審核中修改答案）」時遞增為新的一行；舊版本的原始答案與審核證據永不覆寫（`decide_kyc` 會先確認自己評的是最新版本，否則回 `stale_submission`）。
+- `create_kyc_submission` 與 `assess_suitability` 的 `If-Match` 路徑為 `application_id`，但該聚合由 M01/M02 擁有。本模組落地為：CAS 比對的是 `ApplicationGatewayPort.get_signed_application()` 回報的 application 目前版本，不新造 M03 自己的版本號。`IfMatch` 契約 pattern（`^"[1-9][0-9]*"$`）不允許 `"0"`；首筆 `create_kyc_submission`／`assess_suitability` 一樣要帶該 application 當前版本（fake gateway 預設為 `"1"`），不是 `"0"`。
+- `request_due_diligence_refresh` 路徑為 `customer_id`；CAS 比對該客戶目前最新一筆 `kyc.submission` 的版本（本模組實際變更的資源）。此端點只對 `staffBearer`＋`kyc_reviewer` 開放（OpenAPI `security` 未列 `customerBearer`），客戶不能自行觸發重評。
+- `KycSubmission.state` 的 `submission_version` 在「核准/拒絕後再次 `create_kyc_submission`」或「`submitted`/`under_review`/`incomplete`/`refresh_required` 狀態下再次 `submit_kyc`（代表在審核中修改答案或完成到期重評）」時遞增為新的一行；舊版本的原始答案與審核證據永不覆寫（`decide_kyc` 會先確認自己評的是最新版本，否則回 `stale_submission`）。重送文件只需與目前這筆申請（`application_id`／`customer_id`）相符，不限定同一個 `submission_version` 上傳。
 - `get_kyc_submission` 僅 `staffBearer`；`kyc_reviewer` 看完整案件，`sales`/`service_agent` 看欄位遮罩投影（`masked_business_view`：清空答案快照、文件清單與 reviewer_id，保留 `missing_field_codes`/`next_review_due_at`），其餘角色 403。
-- `assess_suitability` 的 `decision`/`conditions`/`reason_code` 是呼叫端對確定性規則結果的**覆核輸入**：伺服器用 `compute_suitability()` 重新計算期望結果；若呼叫端提交值與計算值一致視為確認，只需 `suitability_reviewer`；不一致（override）則額外要求 `suitability_authorizer` 角色，且永久記錄 `suitability_overrides`（maker-checker 證據）。not_suitable 永遠不能被已付費等外部事實繞過；本模組對此沒有、也不會新增旁路端點。
+- `decide_kyc` 核准前會重新檢查 `document_ids` 與 `verification_evidence_ids` 指向的文件皆屬本次送件且 `scan_status=='clean'`（未掃描完成或已被隔離的文件永遠不能核准通過）；`verification_evidence_ids` 必須是本次送件的文件。若該 `submission.submitted_by`（代客戶送件的 staff）與目前決定者 actor 相同則回 403 `maker_checker_violation`——代送件與核准必須分屬不同 staff。核准成功會把該客戶任何 `pending`/`manual_required` 的 due-diligence `refresh_case` 結案，避免 refresh 流程卡死。
+- `assess_suitability` 的 `decision`/`conditions`/`reason_code` 是呼叫端對確定性規則結果的**覆核輸入**：伺服器用 `compute_suitability()` 重新計算期望結果；若呼叫端提交值與計算值一致（包含 `conditional` 時的條件集合沒有被削弱）視為確認，只需 `suitability_reviewer`；不一致或**削弱**既有 `conditional` 條件（override）則額外要求 `suitability_authorizer` 角色，且永久記錄 `suitability_overrides`（maker-checker 證據）；override 時若覆核的 actor 與上一筆評估的 `assessed_by` 相同，即使同時持有兩個角色仍回 403 `maker_checker_violation`。每次呼叫都會新增一筆不可變 `SuitabilityAssessment`（新 `id`），絕不覆寫前一筆判斷的證據；回應一律 `201`（OpenAPI 未定義 `200`）。not_suitable 永遠不能被已付費等外部事實繞過；本模組對此沒有、也不會新增旁路端點。
 
 ## 自動化
 

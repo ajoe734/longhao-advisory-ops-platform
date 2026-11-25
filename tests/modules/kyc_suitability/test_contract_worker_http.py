@@ -27,6 +27,7 @@ from conftest import (
     complete_answers,
     create_submission,
     customer_context,
+    mark_document_clean,
     suitability_answers,
     upload_document,
 )
@@ -60,6 +61,7 @@ def test_controller_returns_etag_problem_and_replay_headers(m03, kyc_reviewer):
     )
     assert first.status == 201 and first.headers["ETag"] == '"1"'
     assert replay.headers["Idempotency-Replayed"] == "true"
+    assert replay.headers["ETag"] == '"1"'  # a replayed response still carries the resource's ETag
     assert stale.status == 404
     assert stale.headers["Content-Type"] == "application/problem+json"
 
@@ -77,8 +79,15 @@ def test_m03_producer_envelopes_validate_against_shared_json_schemas(m03, kyc_re
         },
         expected_version=1, idempotency_key="contract-assess",
     )
+    service.request_due_diligence_refresh(
+        kyc_reviewer, CUSTOMER_A,
+        {"trigger": "scheduled", "reason_code": "periodic_refresh", "due_at": "2027-01-01T00:00:00.000000Z", "form_version": "m03-kyc-form-v1"},
+        expected_version=1, idempotency_key="contract-refresh",
+    )
     snapshot = service.repository.snapshot()
-    assert {event.event_type for event in snapshot.outbox.values()} == {"kyc.decision_recorded", "suitability.assessed"}
+    assert {event.event_type for event in snapshot.outbox.values()} == {
+        "kyc.decision_recorded", "suitability.assessed", "kyc.refresh_required",
+    }
     for event in snapshot.outbox.values():
         schema_path = ROOT / "events" / "schemas" / f"{event.event_type}.v1.schema.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
@@ -110,6 +119,7 @@ def test_wire_responses_validate_against_openapi_1_0(m03, kyc_reviewer, suitabil
         expected_version=_version(uploaded), idempotency_key="wire-submit-0001",
     )
     validate("KycSubmission", submitted.data)
+    mark_document_clean(service, uploaded.data["asset_id"])
     decided = service.decide_kyc(
         kyc_reviewer, submitted.data["id"],
         {
@@ -133,6 +143,14 @@ def test_wire_responses_validate_against_openapi_1_0(m03, kyc_reviewer, suitabil
     validate("SuitabilityAssessment", assessed.data)
     status = service.get_document_status(kyc_reviewer, uploaded.data["asset_id"])
     validate("DocumentStatus", status.data)
+    assert status.etag == '"2"'  # ETag present on a get_document_status 200 (version bumped by the clean scan)
+
+    refreshed = service.request_due_diligence_refresh(
+        kyc_reviewer, CUSTOMER_A,
+        {"trigger": "scheduled", "reason_code": "periodic_refresh", "due_at": "2027-01-01T00:00:00.000000Z", "form_version": "m03-kyc-form-v1"},
+        expected_version=1, idempotency_key="wire-refresh-0001",
+    )
+    validate("KycSubmission", refreshed.data)
 
     problem = M03Controller(service).handle(
         "decide_kyc", kyc_reviewer, path={"submission_id": decided.data["id"]},
@@ -229,6 +247,47 @@ def test_document_scan_worker_never_marks_pending_as_passed_on_transient_failure
     worker.run_once("scan-drill")
     document = service.repository.snapshot().documents[(TENANT, uploaded.data["asset_id"])]
     assert document.scan_status == "pending"
+
+
+def test_document_scan_worker_tracks_lease_attempts_and_alerts_after_max_retries(m03):
+    service = m03["service"]
+    customer = customer_context(CUSTOMER_A)
+    created = create_submission(service, customer, APPLICATION_A, "scan-retry-create")
+    uploaded = upload_document(service, customer, created.data["id"], _version(created), "scan-retry-upload")
+    asset_id = uploaded.data["asset_id"]
+    m03["scanner"].fail(asset_id, "timeout")
+    worker = DocumentScanWorker(service.repository, m03["scanner"], max_attempts=2)
+
+    def make_due(state):
+        for document in state.documents.values():
+            document.next_attempt_at = None
+            document.lease_until = None
+
+    worker.run_once("scan-retry-a")
+    document = service.repository.snapshot().documents[(TENANT, asset_id)]
+    assert document.attempt_count == 1 and document.last_error_code == "document_scanner_timeout"
+    assert document.lease_owner is None  # released so another worker can retry
+    assert not worker.alerts
+
+    service.repository.atomic(make_due)
+    worker.run_once("scan-retry-b")
+    document = service.repository.snapshot().documents[(TENANT, asset_id)]
+    assert document.attempt_count == 2 and document.scan_status == "pending"  # still never "passed" on failure
+    assert worker.alerts and worker.alerts[0].startswith("m03_document_scanner_unavailable:")
+
+
+def test_document_scan_worker_rejects_stolen_lease(m03):
+    service = m03["service"]
+    customer = customer_context(CUSTOMER_A)
+    created = create_submission(service, customer, APPLICATION_A, "scan-lease-create")
+    uploaded = upload_document(service, customer, created.data["id"], _version(created), "scan-lease-upload")
+    asset_id = uploaded.data["asset_id"]
+    worker = DocumentScanWorker(service.repository, m03["scanner"])
+    worker._lease("scan-lease-worker-a", 50)  # another worker already owns the lease
+
+    with pytest.raises(ConflictError) as exc:
+        worker._complete(TENANT, asset_id, "scan-lease-worker-b", ScanOutcome("clean"))
+    assert exc.value.code == "worker_lease_lost"
 
 
 def test_production_composition_refuses_fake_adapters():

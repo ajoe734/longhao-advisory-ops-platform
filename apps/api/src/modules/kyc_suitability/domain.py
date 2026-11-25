@@ -140,6 +140,7 @@ class KycSubmission:
     identity_verification_method: str | None = None
     verification_evidence_ids: list[str] = field(default_factory=list)
     submitted_at: datetime | None = None
+    submitted_by: str | None = None
     reviewer_id: str | None = None
     reviewed_at: datetime | None = None
     next_review_due_at: datetime | None = None
@@ -205,6 +206,11 @@ class SubmissionDocument:
     verified_by: str | None = None
     verified_at: datetime | None = None
     classification: str = "customer_confidential"
+    attempt_count: int = 0
+    lease_owner: str | None = None
+    lease_until: datetime | None = None
+    next_attempt_at: datetime | None = None
+    last_error_code: str | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
 
@@ -399,3 +405,4 @@ class IdempotencyReceipt:
     response_value: Any
     error: DomainError | None
     completed_at: datetime
+    aggregate_version: int | None = None

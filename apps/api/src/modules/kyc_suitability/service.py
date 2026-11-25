@@ -279,8 +279,13 @@ class KycSuitabilityService:
                 raise ValidationError("form_version does not match the open submission", field_name="form_version")
             for document_id in document_ids:
                 document = state.documents.get((context.tenant_id, document_id))
-                if not document or document.submission_id != submission.id:
-                    raise ValidationError("document_ids must reference uploads for this submission", field_name="document_ids")
+                owning_submission = state.submissions.get((context.tenant_id, document.submission_id)) if document else None
+                if (
+                    not document or not owning_submission
+                    or owning_submission.application_id != submission.application_id
+                    or document.customer_id != submission.customer_id
+                ):
+                    raise ValidationError("document_ids must reference uploads for this application", field_name="document_ids")
                 if document.scan_status == "rejected":
                     raise ValidationError(
                         "a quarantined document cannot be submitted for review", code="document_quarantined", field_name="document_ids"
@@ -313,6 +318,7 @@ class KycSuitabilityService:
             target.missing_field_codes = missing
             target.status = "incomplete" if missing else "submitted"
             target.submitted_at = now
+            target.submitted_by = context.actor_id if context.principal_type == "staff" else None
             target.version += 1 if target is submission else 0
             target.updated_at = now
             return _Outcome(target.to_api(self._submission_actions(target, context)), 202, "kyc_submission", target.id, target.version)
@@ -359,6 +365,24 @@ class KycSuitabilityService:
                 raise ConflictError("a newer submission version supersedes this one; evaluate it instead", code="stale_submission")
             if submission.status not in {"submitted", "under_review", "incomplete"}:
                 raise ConflictError("submission is not awaiting a decision", code="submission_not_awaiting_decision")
+            if submission.submitted_by is not None and submission.submitted_by == context.actor_id:
+                raise ForbiddenError(
+                    "the staff member who submitted this kyc record cannot also decide it", code="maker_checker_violation"
+                )
+            for evidence_id in verification_evidence_ids:
+                evidence_document = state.documents.get((context.tenant_id, evidence_id))
+                owning_submission = (
+                    state.submissions.get((context.tenant_id, evidence_document.submission_id)) if evidence_document else None
+                )
+                if (
+                    not evidence_document or not owning_submission
+                    or owning_submission.application_id != submission.application_id
+                    or evidence_document.customer_id != submission.customer_id
+                ):
+                    raise ValidationError(
+                        "verification_evidence_ids must reference documents uploaded for this application",
+                        code="evidence_not_found", field_name="verification_evidence_ids",
+                    )
 
             wire_decision = {"approve": "approved", "reject": "rejected", "request_information": "incomplete"}[body["decision"]]
             if body["decision"] == "request_information":
@@ -371,8 +395,21 @@ class KycSuitabilityService:
             else:
                 if submission.missing_field_codes:
                     raise ConflictError("submission still has missing fields", code="submission_incomplete")
+                not_clean_ids = sorted(
+                    document_id for document_id in set(submission.document_ids) | set(verification_evidence_ids)
+                    if state.documents[(context.tenant_id, document_id)].scan_status != "clean"
+                )
+                if not_clean_ids:
+                    raise ConflictError(
+                        "all submission documents and verification evidence must pass the quarantine scan before approval",
+                        code="document_not_clean",
+                    )
                 submission.status = "approved"
                 submission.next_review_due_at = next_review_due_at
+                open_case = self._open_refresh_case_for_customer(state, context.tenant_id, submission.customer_id)
+                if open_case:
+                    open_case.status = "completed"
+                    open_case.updated_at = now
             submission.decision_reason_code = reason_code
             submission.identity_verification_method = body["identity_verification_method"]
             submission.verification_evidence_ids = verification_evidence_ids
@@ -451,14 +488,22 @@ class KycSuitabilityService:
             existing = self._latest_assessment_for_application(state, context.tenant_id, application_id)
 
             computed_decision, computed_conditions, computed_reason = compute_suitability(answers, service_codes)
-            is_override = requested_decision != computed_decision
+            conditions_weakened = (
+                computed_decision == "conditional" and requested_decision == "conditional"
+                and not set(computed_conditions) <= set(conditions)
+            )
+            is_override = requested_decision != computed_decision or conditions_weakened
             if is_override:
                 self._authorize_staff(context, {"suitability_authorizer"})
+                if existing is not None and existing.assessed_by == context.actor_id:
+                    raise ForbiddenError(
+                        "the same actor cannot authorize an override of their own prior assessment",
+                        code="maker_checker_violation",
+                    )
 
-            assessment_id = existing.id if existing else new_id()
             next_version = (existing.version + 1) if existing else 1
             assessment = SuitabilityAssessment(
-                id=assessment_id,
+                id=new_id(),
                 tenant_id=context.tenant_id,
                 application_id=application_id,
                 customer_id=submission.customer_id,
@@ -476,7 +521,7 @@ class KycSuitabilityService:
                 assessed_by=context.actor_id,
                 assessed_at=now,
                 next_review_due_at=next_review_due_at,
-                created_at=existing.created_at if existing else now,
+                created_at=now,
                 updated_at=now,
             )
             state.assessments[(context.tenant_id, assessment.id)] = assessment
@@ -506,7 +551,7 @@ class KycSuitabilityService:
                 },
                 now=now,
             )
-            return self._assessment_outcome(assessment, context, 201 if existing is None else 200)
+            return self._assessment_outcome(assessment, context, 201)
 
         return self._run_command(context, "assess_suitability", idempotency_key, {"application_id": application_id, **body}, correlation_id, mutate)
 
@@ -521,7 +566,7 @@ class KycSuitabilityService:
         correlation_id: str | None = None,
     ) -> ServiceResponse:
         customer_id = require_uuid(customer_id, "customer_id")
-        self._authorize_submission_subject(context, customer_id, {"kyc_reviewer"})
+        self._authorize_staff(context, {"kyc_reviewer"})
         self._body(body, {"trigger", "reason_code", "due_at", "form_version"}, {"trigger", "reason_code", "due_at", "form_version"})
         if body["trigger"] not in _REFRESH_TRIGGERS:
             raise ValidationError("trigger is not supported", field_name="trigger")
@@ -617,7 +662,7 @@ class KycSuitabilityService:
             elif not self._staff(context, {"kyc_reviewer"}):
                 raise ForbiddenError("actor cannot view this document")
             self._audit(state, context, "get_document_status", "submission_document", document.id, document.version, correlation_id, "succeeded")
-            return ServiceResponse(document.to_status_api())
+            return ServiceResponse(document.to_status_api(), etag=self._etag(document.version))
 
         try:
             return self.repository.atomic(query)
@@ -646,7 +691,7 @@ class KycSuitabilityService:
             if receipt:
                 if receipt.request_sha256 != fingerprint:
                     raise ConflictError("Idempotency-Key was already used with a different payload", code="idempotency_conflict")
-                return _Outcome(receipt.response_value, receipt.response_status, "replay", None, None, receipt.error), True
+                return _Outcome(receipt.response_value, receipt.response_status, "replay", None, receipt.aggregate_version, receipt.error), True
             outcome = mutate(state)
             self._audit(
                 state, context, operation, outcome.aggregate_type, outcome.aggregate_id, outcome.aggregate_version,
@@ -662,6 +707,7 @@ class KycSuitabilityService:
                 response_value=outcome.value,
                 error=outcome.error,
                 completed_at=self._clock(),
+                aggregate_version=outcome.aggregate_version,
             )
             return outcome, False
 
@@ -892,12 +938,20 @@ class KycSuitabilityService:
         rows = [row for (tenant, _), row in state.assessments.items() if tenant == tenant_id and row.application_id == application_id]
         return max(rows, key=lambda row: row.version) if rows else None
 
+    @staticmethod
+    def _open_refresh_case_for_customer(state: StoreState, tenant_id: str, customer_id: str) -> RefreshCase | None:
+        rows = [
+            row for (tenant, _), row in state.refresh_cases.items()
+            if tenant == tenant_id and row.customer_id == customer_id and row.status in {"pending", "manual_required"}
+        ]
+        return max(rows, key=lambda row: row.created_at) if rows else None
+
     def _submission_actions(self, submission: KycSubmission, context: ActorContext) -> list[str]:
         actions: list[str] = []
         is_subject = (context.principal_type == "customer" and context.customer_id == submission.customer_id) or self._staff(context, {"kyc_reviewer"})
         if not is_subject:
             return actions
-        if submission.status in {"not_started", "in_progress", "incomplete"}:
+        if submission.status in {"not_started", "in_progress", "incomplete", "refresh_required"}:
             actions.append("request_kyc_upload")
             actions.append("submit_kyc")
         if self._staff(context, {"kyc_reviewer"}) and submission.status in {"submitted", "under_review", "incomplete"}:

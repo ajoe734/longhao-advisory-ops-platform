@@ -131,6 +131,19 @@ def _version(response) -> int:
     return int(response.etag.strip('"'))
 
 
+def mark_document_clean(service, asset_id: str, tenant_id: str = TENANT) -> None:
+    """Simulates DocumentScanWorker completing the isolation-zone scan clean, without the lease plumbing."""
+
+    def mutate(state):
+        document = state.documents[(tenant_id, asset_id)]
+        document.scan_status = "clean"
+        document.scan_rejection_code = None
+        document.scanned_at = document.updated_at
+        document.version += 1
+
+    service.repository.atomic(mutate)
+
+
 def approve_full_cycle(service, kyc_reviewer, application_id: str, signature_id: str, key_prefix: str):
     customer_id = service.application_gateway.get_signed_application(TENANT, application_id).customer_id
     customer = customer_context(customer_id)
@@ -138,6 +151,7 @@ def approve_full_cycle(service, kyc_reviewer, application_id: str, signature_id:
     submission_id = created.data["id"]
     uploaded = upload_document(service, customer, submission_id, _version(created), f"{key_prefix}-upload")
     asset_id = uploaded.data["asset_id"]
+    mark_document_clean(service, asset_id)
     submitted = service.submit_kyc(
         customer, submission_id,
         {"form_version": "m03-kyc-form-v1", "answers": complete_answers(), "document_ids": [asset_id], "declaration_consent_id": SIGNATURE_A},

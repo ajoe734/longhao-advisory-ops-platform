@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Protocol
 
-from modules.kyc_suitability.domain import ConflictError, utc_now
+from modules.kyc_suitability.domain import ConflictError, ValidationError, utc_now
 from modules.kyc_suitability.ports import DocumentScannerPort, ExternalVerificationPort
 from modules.kyc_suitability.repository import InMemoryRepository, StoreState
 
@@ -156,6 +156,7 @@ class DocumentScanWorker:
         self.repository = repository
         self.scanner = scanner
         self.max_attempts = max_attempts
+        self.alerts: list[str] = []
 
     def run_once(self, worker_id: str, limit: int = 50) -> WorkerResult:
         leased = self._lease(worker_id, limit)
@@ -174,18 +175,40 @@ class DocumentScanWorker:
         return WorkerResult(processed, retried, dead)
 
     def _lease(self, worker_id: str, limit: int) -> list[tuple[str, str]]:
+        now = utc_now()
+
         def lease(state: StoreState) -> list[tuple[str, str]]:
-            candidates = [key for key, document in state.documents.items() if document.scan_status == "pending"][:limit]
-            return candidates
+            candidates = sorted(
+                (
+                    (key, document) for key, document in state.documents.items()
+                    if document.scan_status == "pending"
+                    and (document.next_attempt_at is None or document.next_attempt_at <= now)
+                    and (document.lease_until is None or document.lease_until <= now)
+                ),
+                key=lambda item: item[1].created_at,
+            )[:limit]
+            keys: list[tuple[str, str]] = []
+            for key, document in candidates:
+                document.lease_owner = worker_id
+                document.lease_until = now + timedelta(seconds=30)
+                keys.append(key)
+            return keys
 
         return self.repository.atomic(lease)
 
     def _complete(self, tenant_id: str, document_id: str, worker_id: str, outcome) -> None:
         def complete(state: StoreState) -> None:
             document = state.documents[(tenant_id, document_id)]
+            if document.lease_owner != worker_id:
+                raise ConflictError("document scan lease was lost", code="worker_lease_lost")
             document.scan_status = outcome.status
             document.scan_rejection_code = outcome.rejection_code
             document.scanned_at = utc_now()
+            document.attempt_count = 0
+            document.last_error_code = None
+            document.lease_owner = None
+            document.lease_until = None
+            document.next_attempt_at = None
             document.version += 1
             document.updated_at = document.scanned_at
 
@@ -193,9 +216,26 @@ class DocumentScanWorker:
 
     def _fail(self, tenant_id: str, document_id: str, worker_id: str, code: str) -> bool:
         # Transient scanner failures keep the document pending (not readable,
-        # not review-eligible); never interpreted as clean. No bounded retry
-        # is needed here because "pending" is already the safe terminal state
-        # until the scanner becomes available again.
+        # not review-eligible); never interpreted as clean. Attempts and the
+        # last error code are tracked for alerting; the lease is released
+        # with a backoff so another worker can retry once it is due.
+        now = utc_now()
+
+        def fail(state: StoreState) -> bool:
+            document = state.documents[(tenant_id, document_id)]
+            if document.lease_owner != worker_id:
+                raise ConflictError("document scan lease was lost", code="worker_lease_lost")
+            document.attempt_count += 1
+            document.last_error_code = code
+            document.lease_owner = None
+            document.lease_until = None
+            document.next_attempt_at = now + timedelta(seconds=min(300, 2 ** document.attempt_count))
+            document.updated_at = now
+            return document.attempt_count >= self.max_attempts
+
+        exhausted = self.repository.atomic(fail)
+        if exhausted:
+            self.alerts.append(f"m03_document_scanner_unavailable:{document_id}:{code}")
         return False
 
 
@@ -257,16 +297,25 @@ class DueDiligenceWorker:
     def _complete(self, tenant_id: str, case_id: str, worker_id: str) -> None:
         def complete(state: StoreState) -> None:
             case = state.refresh_cases[(tenant_id, case_id)]
+            if case.lease_owner != worker_id:
+                raise ConflictError("refresh case lease was lost", code="worker_lease_lost")
             case.status = "completed"
             case.lease_owner = None
             case.lease_until = None
             case.updated_at = utc_now()
+            submission = state.submissions.get((tenant_id, case.submission_id))
+            if submission is not None and submission.status == "refresh_required":
+                submission.status = "approved"
+                submission.version += 1
+                submission.updated_at = case.updated_at
 
         self.repository.atomic(complete)
 
     def _require_manual(self, tenant_id: str, case_id: str, worker_id: str, code: str) -> None:
         def require(state: StoreState) -> None:
             case = state.refresh_cases[(tenant_id, case_id)]
+            if case.lease_owner != worker_id:
+                raise ConflictError("refresh case lease was lost", code="worker_lease_lost")
             case.status = "manual_required"
             case.last_error_code = code
             case.lease_owner = None
@@ -281,6 +330,8 @@ class DueDiligenceWorker:
 
         def fail(state: StoreState) -> bool:
             case = state.refresh_cases[(tenant_id, case_id)]
+            if case.lease_owner != worker_id:
+                raise ConflictError("refresh case lease was lost", code="worker_lease_lost")
             case.attempt_count += 1
             case.last_error_code = code
             case.lease_owner = None
@@ -297,3 +348,23 @@ class DueDiligenceWorker:
         if is_manual:
             self.alerts.append(f"m03_due_diligence_manual_required:{case_id}:{code}")
         return is_manual
+
+    def redrive(self, tenant_id: str, case_id: str, reason: str) -> None:
+        """Manual requeue of a ``manual_required`` case; the runbook requires a non-empty reason."""
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValidationError("redrive reason must not be empty", field_name="reason")
+
+        def requeue(state: StoreState) -> None:
+            case = state.refresh_cases[(tenant_id, case_id)]
+            if case.status != "manual_required":
+                raise ConflictError("only manual_required cases can be redriven", code="refresh_case_not_manual")
+            case.status = "pending"
+            case.attempt_count = 0
+            case.last_error_code = None
+            case.lease_owner = None
+            case.lease_until = None
+            case.next_attempt_at = None
+            case.updated_at = utc_now()
+
+        self.repository.atomic(requeue)
+        self.alerts.append(f"m03_due_diligence_redriven:{case_id}:{reason}")

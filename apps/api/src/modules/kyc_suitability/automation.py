@@ -4,7 +4,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
-from .domain import ActorContext, ForbiddenError, NotFoundError, ValidationError, canonical_hash, new_id, require_uuid, utc_now
+from .domain import (
+    ActorContext,
+    ConflictError,
+    ForbiddenError,
+    NotFoundError,
+    ValidationError,
+    canonical_hash,
+    new_id,
+    require_uuid,
+    utc_now,
+)
 from .repository import InMemoryRepository, StoreState
 
 
@@ -108,6 +118,8 @@ class OcrAutomationService:
             document = state.documents.get((context.tenant_id, document_id))
             if not document or document.submission_id != submission_id:
                 raise ValidationError("document does not belong to this submission", field_name="document_id")
+            if document.scan_status != "clean":
+                raise ConflictError("document has not passed the quarantine scan", code="document_not_clean")
             suggestions = self.assistant.extract(document_id, submission.answers)
             run = OcrExtractionRun(
                 id=new_id(),

@@ -13,6 +13,11 @@ ALTER TABLE kyc.submission_document
   ADD COLUMN IF NOT EXISTS scan_rejection_code text,
   ADD COLUMN IF NOT EXISTS scanned_at timestamptz,
   ADD COLUMN IF NOT EXISTS classification text NOT NULL DEFAULT 'customer_confidential',
+  ADD COLUMN IF NOT EXISTS attempt_count integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS lease_owner text,
+  ADD COLUMN IF NOT EXISTS lease_until timestamptz,
+  ADD COLUMN IF NOT EXISTS next_attempt_at timestamptz,
+  ADD COLUMN IF NOT EXISTS last_error_code text,
   ADD CONSTRAINT m03_submission_document_scan_status_ck
     CHECK (scan_status IN ('pending', 'clean', 'rejected')) NOT VALID,
   ADD CONSTRAINT m03_submission_document_scan_rejection_ck
@@ -24,10 +29,20 @@ ALTER TABLE kyc.submission_document
     CHECK ((scan_status = 'pending') = (scanned_at IS NULL)) NOT VALID,
   ADD CONSTRAINT m03_submission_document_classification_ck
     CHECK (classification IN ('customer_confidential', 'aml_restricted', 'research_confidential', 'internal')) NOT VALID,
+  ADD CONSTRAINT m03_submission_document_attempt_count_ck
+    CHECK (attempt_count >= 0) NOT VALID,
   -- The human review decision can never move forward on an unscanned or
   -- rejected document; it must stay "pending" review until scanning clears it.
   ADD CONSTRAINT m03_submission_document_review_requires_clean_ck
     CHECK (verification_state = 'pending' OR scan_status = 'clean') NOT VALID;
+
+-- Maker-checker for decide_kyc: the staff actor who submitted on a
+-- customer's behalf (self_or_authorized_staff) can never also be the
+-- actor who decides it; see m03.decide_kyc's maker_checker_violation gate.
+ALTER TABLE kyc.submission
+  ADD COLUMN IF NOT EXISTS submitted_by uuid,
+  ADD CONSTRAINT m03_submission_submitted_by_fk
+    FOREIGN KEY (tenant_id, submitted_by) REFERENCES core.actor(tenant_id, id) NOT VALID;
 
 -- OCR is advisory only: it never overwrites kyc.submission.answers_ciphertext.
 -- This immutable child records the untrusted draft, confidence and whether it
@@ -142,8 +157,10 @@ CREATE INDEX IF NOT EXISTS ix_m03_refresh_case_pending
   ON kyc.refresh_case (tenant_id, next_attempt_at)
   WHERE status = 'pending';
 
-CREATE TRIGGER guard_row BEFORE UPDATE ON kyc.submission_document
-FOR EACH ROW EXECUTE FUNCTION core.touch_version();
+-- kyc.submission_document already has a guard_row BEFORE UPDATE trigger from
+-- database/migrations/0002_isolation_indexes.sql; creating a second trigger
+-- of the same name on the same table fails on PostgreSQL, so this proposal
+-- does not redeclare it.
 CREATE TRIGGER guard_row BEFORE UPDATE OR DELETE ON kyc.document_extraction
 FOR EACH ROW EXECUTE FUNCTION core.reject_evidence_mutation();
 CREATE TRIGGER guard_row BEFORE UPDATE OR DELETE ON kyc.document_extraction_review
@@ -177,6 +194,12 @@ COMMENT ON COLUMN kyc.submission_document.scan_status IS 'M03 隔離區防毒/MI
 COMMENT ON COLUMN kyc.submission_document.scan_rejection_code IS 'M03 掃描拒絕安全代碼；不含可外洩細節。';
 COMMENT ON COLUMN kyc.submission_document.scanned_at IS 'M03 掃描完成時間。';
 COMMENT ON COLUMN kyc.submission_document.classification IS 'M03 物件資料分級，供下載授權與稽核使用。';
+COMMENT ON COLUMN kyc.submission_document.attempt_count IS 'M03 DocumentScanWorker 掃描重試次數；僅計失敗，成功即清零。';
+COMMENT ON COLUMN kyc.submission_document.lease_owner IS 'M03 目前持有掃描 lease 的 worker_id；完成或失敗後清空。';
+COMMENT ON COLUMN kyc.submission_document.lease_until IS 'M03 掃描 lease 到期時間，過期才可被其他 worker 重新取用。';
+COMMENT ON COLUMN kyc.submission_document.next_attempt_at IS 'M03 下次可重試掃描時間（指數後退）。';
+COMMENT ON COLUMN kyc.submission_document.last_error_code IS 'M03 最近一次掃描失敗的安全代碼；不含可外洩細節。';
+COMMENT ON COLUMN kyc.submission.submitted_by IS 'M03 代客戶送件的 staff actor；NULL 表示客戶本人送件。decide_kyc 的 maker-checker 檢查依此欄位拒絕同一 actor 自審。';
 COMMENT ON TABLE kyc.document_extraction IS 'M03 OCR欄位抽取未信任草稿，保留model/prompt/ruleset版本與是否與客戶原答衝突；無合併/命令權。';
 COMMENT ON TABLE kyc.document_extraction_review IS 'M03 審核者對OCR草稿的人工決定（確認/採用/升級），不可變。';
 COMMENT ON TABLE kyc.suitability_override IS 'M03 適合度規則覆核例外：規則計算值、核定人、理由；maker-checker獨立證據。';
