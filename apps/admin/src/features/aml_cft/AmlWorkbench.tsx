@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import type { AmlCase, Page, ViewState } from "./types";
 import { isAllowed } from "./viewState";
 
@@ -58,6 +58,9 @@ export function AmlCaseDetail({
   onDeny: (reasonCode: string) => void;
   onReload: () => void;
 }) {
+  const [eddReason, setEddReason] = useState("");
+  const [decisionReason, setDecisionReason] = useState("");
+
   if (state.kind === "loading") return <p role="status">案件載入中…</p>;
   if (state.kind === "denied") return <p role="alert">無權限檢視此案件，或案件不存在；本次存取已記錄 audit。</p>;
   if (state.kind === "error") return <p role="alert">{state.problem.code}（correlation：{state.problem.correlation_id}）</p>;
@@ -66,10 +69,20 @@ export function AmlCaseDetail({
   const item = state.value;
   const canAct = isAllowed(item.allowed_actions, "add_aml_case_action");
   const canDecide = isAllowed(item.allowed_actions, "decide_aml_case");
+  const trimmedEddReason = eddReason.trim();
+  const trimmedDecisionReason = decisionReason.trim();
+  const submitEdd = () => {
+    if (!trimmedEddReason) return;
+    onRequestEdd(trimmedEddReason);
+    setEddReason("");
+  };
   return (
     <section className="m04-panel" aria-labelledby="aml-case-detail-title">
       <h1 id="aml-case-detail-title">案件 {item.id}</h1>
       <p role="status">目前階段：{CASE_STATE_LABEL[item.state]}（版本 {item.version}）</p>
+      {state.kind === "stale" && (
+        <p role="alert">{state.message}{state.lastSuccessAt ? `（最後成功：${state.lastSuccessAt}）` : ""}</p>
+      )}
       {state.kind === "conflict" && (
         <div role="alert">
           <p>{state.message}（目前版本：{state.currentVersion}）</p>
@@ -90,17 +103,39 @@ export function AmlCaseDetail({
             disabled={!canAct}
             title={!canAct ? "目前狀態或角色不可要求補件" : undefined}
             aria-label="補件理由"
+            aria-describedby={!canAct ? "aml-case-action-disabled-reason" : undefined}
+            value={eddReason}
+            onChange={(event) => setEddReason(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter") onRequestEdd((event.target as HTMLInputElement).value);
+              if (event.key === "Enter") {
+                event.preventDefault();
+                submitEdd();
+              }
             }}
           />
         </label>
-        <button disabled={!canDecide} title={!canDecide ? "目前狀態、角色或 maker-checker 規則不可核定" : undefined} onClick={() => onApprove("independent_review_confirmed")}>
+        <button disabled={!canAct || !trimmedEddReason} onClick={submitEdd}>
+          送出補件要求
+        </button>
+        {!canAct && <p id="aml-case-action-disabled-reason" role="note">目前狀態或角色不可要求補件</p>}
+        <label>
+          核定理由
+          <input
+            disabled={!canDecide}
+            title={!canDecide ? "目前狀態、角色或 maker-checker 規則不可核定" : undefined}
+            aria-label="核定理由"
+            aria-describedby={!canDecide ? "aml-case-decision-disabled-reason" : undefined}
+            value={decisionReason}
+            onChange={(event) => setDecisionReason(event.target.value)}
+          />
+        </label>
+        <button disabled={!canDecide || !trimmedDecisionReason} onClick={() => onApprove(trimmedDecisionReason)}>
           核定解除
         </button>
-        <button disabled={!canDecide} title={!canDecide ? "目前狀態、角色或 maker-checker 規則不可核定" : undefined} onClick={() => onDeny("independent_review_confirmed")}>
+        <button disabled={!canDecide || !trimmedDecisionReason} onClick={() => onDeny(trimmedDecisionReason)}>
           核定限制
         </button>
+        {!canDecide && <p id="aml-case-decision-disabled-reason" role="note">目前狀態、角色或 maker-checker 規則不可核定</p>}
       </div>
     </section>
   );

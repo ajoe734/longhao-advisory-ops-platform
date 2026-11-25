@@ -10,11 +10,13 @@ from modules.aml_cft.domain import (
     BusinessClearance,
     ConflictError,
     InboxReceipt,
+    OutboxEvent,
     SYSTEM_ACTOR_ID,
     ValidationError,
     canonical_hash,
     new_id,
     utc_now,
+    wire_time,
 )
 from modules.aml_cft.repository import InMemoryRepository, StoreState
 
@@ -122,13 +124,21 @@ class AmlEventConsumer:
             if case is None:
                 return "no_open_case_to_annotate"
             now = utc_now()
-            state.case_actions[(tenant_id, new_id())] = AmlCaseAction(
-                id=new_id(), tenant_id=tenant_id, version=1, created_at=now, updated_at=now, case_id=case.id,
+            action_id = new_id()
+            state.case_actions[(tenant_id, action_id)] = AmlCaseAction(
+                id=action_id, tenant_id=tenant_id, version=1, created_at=now, updated_at=now, case_id=case.id,
                 actor_id=SYSTEM_ACTOR_ID, action_code="record_investigation", reason_code="kyc_rejected_context",
                 restricted_note_asset_id=payload["submission_id"], occurred_at=now,
             )
             case.version += 1
             case.updated_at = now
+            self._emit(
+                state, event_type="aml.case_changed", tenant_id=tenant_id, aggregate_type="aml_case", aggregate_id=case.id,
+                aggregate_version=case.version, correlation_id=envelope["correlation_id"],
+                idempotency_key=f"{envelope['event_id']}:aml.case_changed:{case.id}", classification="aml_restricted",
+                payload={"case_id": case.id, "screening_id": case.screening_ids[-1], "restricted_record_version": case.version},
+                now=now,
+            )
             return "kyc_rejection_annotated"
         if event_type == "customer.profile_updated":
             if not set(payload["changed_field_codes"]) & _RISK_RELEVANT_FIELDS:
@@ -150,9 +160,42 @@ class AmlEventConsumer:
                 )
                 state.clearances[(tenant, refreshed_clearance.id)] = refreshed_clearance
                 ids.append(refreshed_clearance.id)
+                self._emit(
+                    state, event_type="business_clearance.changed", tenant_id=tenant_id, aggregate_type="business_clearance",
+                    aggregate_id=refreshed_clearance.id, aggregate_version=refreshed_clearance.version,
+                    correlation_id=envelope["correlation_id"],
+                    idempotency_key=f"{envelope['event_id']}:business_clearance.changed:{refreshed_clearance.id}",
+                    classification="customer_confidential",
+                    payload={
+                        "clearance_id": refreshed_clearance.id, "application_id": refreshed_clearance.application_id,
+                        "decision": refreshed_clearance.decision, "expires_at": wire_time(refreshed_clearance.valid_until),
+                    },
+                    now=now,
+                )
                 refreshed += 1
             return f"clearances_flagged_for_refresh:{refreshed}" if refreshed else "no_refresh_needed"
         raise ValidationError("event type is not consumed by M04", code="unsupported_event_type")
+
+    @staticmethod
+    def _emit(
+        state: StoreState, *, event_type: str, tenant_id: str, aggregate_type: str, aggregate_id: str,
+        aggregate_version: int, correlation_id: str, idempotency_key: str, classification: str,
+        payload: dict[str, Any], now: datetime,
+    ) -> None:
+        sequence = 1 + max(
+            (
+                event.sequence_no for (tenant, _), event in state.outbox.items()
+                if tenant == tenant_id and event.aggregate_type == aggregate_type and event.aggregate_id == aggregate_id
+            ),
+            default=0,
+        )
+        event = OutboxEvent(
+            event_id=new_id(), event_type=event_type, tenant_id=tenant_id, aggregate_type=aggregate_type,
+            aggregate_id=aggregate_id, aggregate_version=aggregate_version, sequence_no=sequence,
+            correlation_id=correlation_id, causation_id=None, idempotency_key=idempotency_key,
+            classification=classification, payload=payload, occurred_at=now, emitted_at=now,
+        )
+        state.outbox[(tenant_id, event.event_id)] = event
 
     @staticmethod
     def _validate_envelope(envelope: dict[str, Any]) -> None:

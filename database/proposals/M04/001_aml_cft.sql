@@ -6,10 +6,15 @@ SET TIME ZONE 'UTC';
 -- low/standard/high; the baseline CHECK still has low/medium/high/undetermined.
 -- OpenAPI is the wire contract authority (see ../../../docs/modules/M04-aml_cft.md
 -- section 6); this corrects the baseline instead of inventing a module-local
--- enum. Existing synthetic rows, if any, are backfilled before validation.
+-- enum. The old baseline CHECK must be dropped before the backfill UPDATE:
+-- its own unnamed-constraint auto-name is `case_file_risk_level_check` (the
+-- bare table name, not schema-qualified as `aml_case_file_risk_level_check`),
+-- and it does not allow 'standard' yet, so backfilling into it first would
+-- itself violate the constraint it is meant to replace.
+ALTER TABLE aml.case_file
+  DROP CONSTRAINT IF EXISTS case_file_risk_level_check;
 UPDATE aml.case_file SET risk_level = 'standard' WHERE risk_level IN ('medium', 'undetermined');
 ALTER TABLE aml.case_file
-  DROP CONSTRAINT IF EXISTS aml_case_file_risk_level_check,
   ADD CONSTRAINT m04_case_file_risk_level_ck
     CHECK (risk_level IN ('low', 'standard', 'high')) NOT VALID;
 
@@ -21,6 +26,20 @@ ALTER TABLE aml.screening
   ADD COLUMN IF NOT EXISTS manual_required boolean NOT NULL DEFAULT false,
   ADD CONSTRAINT m04_screening_scope_ck
     CHECK (scope IS NULL OR jsonb_typeof(scope) = 'array') NOT VALID;
+
+-- start_aml_screening creates the screening row before the provider has
+-- accepted dispatch (provider/provider_request_id/list_version are not yet
+-- known), but the baseline schema requires list_version NOT NULL and a
+-- UNIQUE(tenant_id, provider, provider_request_id) that would collide across
+-- concurrently pending rows (same tenant, provider='', provider_request_id='').
+-- Relax list_version for the pending window and replace the baseline unique
+-- constraint with a partial index that only applies once a real provider
+-- request id has been assigned.
+ALTER TABLE aml.screening ALTER COLUMN list_version DROP NOT NULL;
+ALTER TABLE aml.screening DROP CONSTRAINT IF EXISTS screening_tenant_id_provider_provider_request_id_key;
+CREATE UNIQUE INDEX IF NOT EXISTS m04_screening_provider_request_uidx
+  ON aml.screening (tenant_id, provider, provider_request_id)
+  WHERE provider_request_id <> '';
 
 -- OpenAPI AmlCase.screening_ids is an array (one case can accumulate more than
 -- one possible/confirmed match); the baseline case_file keeps a single

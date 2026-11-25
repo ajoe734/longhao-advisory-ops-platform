@@ -8,13 +8,13 @@ from jsonschema import Draft202012Validator, FormatChecker
 import pytest
 import yaml
 
-from modules.aml_cft.domain import ActorContext, ConflictError, ValidationError, canonical_hash, wire_time
+from modules.aml_cft.domain import ActorContext, ConflictError, UnauthorizedError, ValidationError, canonical_hash, wire_time
 from modules.aml_cft.http import M04Controller, ROUTES
 from modules.aml_cft.ports import FakeApplicationAccess, FakeEvidenceStore, FakeScreeningProvider
 from modules.aml_cft.repository import InMemoryRepository
 from modules.aml_cft.service import AmlCftService
 from workers.tasks.aml_cft.consumer import AmlEventConsumer
-from workers.tasks.aml_cft.tasks import LocalEventBus, OutboxPublisher
+from workers.tasks.aml_cft.tasks import LocalEventBus, OutboxPublisher, ScreeningDispatchWorker
 
 from conftest import (
     APPLICATION_A,
@@ -25,6 +25,7 @@ from conftest import (
     declaration_body,
     screening_callback,
     screening_request,
+    webhook_headers,
 )
 
 
@@ -58,7 +59,7 @@ def test_controller_requires_if_match_for_supervisor_decision(m04, officer, supe
     service = m04["service"]
     screening = service.start_aml_screening(officer, screening_request(), idempotency_key="ctl-screen-001").data
     adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
-    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id=str(uuid4())), idempotency_key="ctl-callback-001")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id=str(uuid4())), idempotency_key="ctl-callback-001", **webhook_headers())
     case_id = service.list_aml_cases(officer).data["items"][0]["id"]
     controller = M04Controller(service)
     missing = controller.handle(
@@ -74,7 +75,7 @@ def test_m04_producer_envelopes_validate_against_shared_json_schemas(m04, office
     service = m04["service"]
     screening = service.start_aml_screening(officer, screening_request(), idempotency_key="contract-screen-001").data
     adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
-    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id=str(uuid4())), idempotency_key="contract-callback-001")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id=str(uuid4())), idempotency_key="contract-callback-001", **webhook_headers())
     snapshot = m04["repository"].snapshot()
     event_types = {event.event_type for event in snapshot.outbox.values()}
     assert event_types == {"aml.case_changed", "business_clearance.changed"}
@@ -105,7 +106,7 @@ def test_wire_responses_validate_against_openapi_1_0(m04, officer, supervisor, c
     validate("AmlScreening", screening)
 
     adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
-    receipt = service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id=str(uuid4())), idempotency_key="wire-callback-0001").data
+    receipt = service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id=str(uuid4())), idempotency_key="wire-callback-0001", **webhook_headers()).data
     validate("CallbackReceipt", receipt)
 
     cases = service.list_aml_cases(officer).data
@@ -191,7 +192,7 @@ def test_consumer_flags_approved_clearance_for_refresh_on_identity_change(m04, o
     service = m04["service"]
     screening = service.start_aml_screening(officer, screening_request(), idempotency_key="consumer-screen-001").data
     adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
-    service.receive_aml_screening(adapter, screening_callback(screening["id"], "clear", event_id=str(uuid4())), idempotency_key="consumer-callback-001")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "clear", event_id=str(uuid4())), idempotency_key="consumer-callback-001", **webhook_headers())
     before = service.get_business_clearance(
         ActorContext(TENANT, "20000000-0000-0000-0000-000000000004", frozenset({"company_acceptor"}), principal_type="staff"), APPLICATION_A,
     ).data
@@ -212,7 +213,7 @@ def test_outbox_worker_uses_lease_bounded_retry_and_no_duplicate_publish(m04, of
     service = m04["service"]
     screening = service.start_aml_screening(officer, screening_request(), idempotency_key="worker-screen-001").data
     adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
-    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id=str(uuid4())), idempotency_key="worker-callback-001")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id=str(uuid4())), idempotency_key="worker-callback-001", **webhook_headers())
     bus = LocalEventBus()
     bus.failure_mode = "timeout"
     publisher = OutboxPublisher(m04["repository"], bus, max_attempts=2)
@@ -229,6 +230,163 @@ def test_outbox_worker_uses_lease_bounded_retry_and_no_duplicate_publish(m04, of
     assert len(bus.envelopes) == 2
     third = publisher.run_once("worker-c")
     assert third.processed == 0 and len(bus.envelopes) == 2
+
+
+def test_outbox_worker_reclaims_a_lease_abandoned_by_a_dead_worker(m04, officer):
+    # F4 regression: a worker that leases rows and then dies must not leave
+    # them stuck in "leased" forever; a later worker must redrive them once
+    # the lease has expired.
+    service = m04["service"]
+    screening = service.start_aml_screening(officer, screening_request(), idempotency_key="reclaim-screen-001").data
+    adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id=str(uuid4())), idempotency_key="reclaim-callback-001", **webhook_headers())
+    bus = LocalEventBus()
+    publisher = OutboxPublisher(m04["repository"], bus)
+
+    leased = publisher._lease("worker-dead", limit=50)
+    assert len(leased) == 2
+
+    def expire_lease(state):
+        for event in state.outbox.values():
+            event.lease_until = m04["clock"].value  # the dead worker's 30s lease has elapsed
+    m04["repository"].atomic(expire_lease)
+
+    reclaimed = publisher.run_once("worker-b")
+    assert reclaimed.processed == 2  # under the old bug these rows stay "leased" forever and this would be 0
+    assert len(bus.envelopes) == 2
+    snapshot = m04["repository"].snapshot()
+    assert all(event.status == "published" for event in snapshot.outbox.values())
+
+
+def test_dispatch_worker_reclaims_a_job_lease_abandoned_by_a_dead_worker(m04, officer):
+    service = m04["service"]
+    service.start_aml_screening(officer, screening_request(), idempotency_key="dispatch-reclaim-001")
+    worker = ScreeningDispatchWorker(m04["repository"], m04["provider"])
+
+    leased = worker._lease("worker-dead", limit=50)
+    assert len(leased) == 1
+
+    def expire_lease(state):
+        for job in state.jobs.values():
+            job.lease_until = m04["clock"].value
+    m04["repository"].atomic(expire_lease)
+
+    result = worker.run_once("worker-b")
+    assert result.dispatched == 1
+    snapshot = m04["repository"].snapshot()
+    job = next(iter(snapshot.jobs.values()))
+    assert job.status == "done" and job.redrive_reason == "lease_expired_redrive"
+
+
+def test_receive_aml_screening_requires_valid_webhook_headers(m04, officer):
+    # F5 regression: the OpenAPI-required X-Webhook-Timestamp/-Nonce and
+    # X-Integration-Key-Id must actually be checked, not silently ignored.
+    service = m04["service"]
+    screening = service.start_aml_screening(officer, screening_request(), idempotency_key="webhook-screen-001").data
+    adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
+    body = screening_callback(screening["id"], "clear", event_id=str(uuid4()))
+
+    with pytest.raises(UnauthorizedError) as missing:
+        service.receive_aml_screening(adapter, body, idempotency_key="webhook-callback-missing")
+    assert missing.value.status == 401
+
+    with pytest.raises(UnauthorizedError):
+        service.receive_aml_screening(
+            adapter, body, idempotency_key="webhook-callback-stale",
+            webhook_timestamp=str(int(NOW.timestamp()) - 301), webhook_nonce="n" * 32, integration_key_id="integration-key-01",
+        )
+
+    with pytest.raises(UnauthorizedError):
+        service.receive_aml_screening(
+            adapter, body, idempotency_key="webhook-callback-short-nonce",
+            webhook_timestamp=str(int(NOW.timestamp())), webhook_nonce="short", integration_key_id="integration-key-01",
+        )
+
+    accepted = service.receive_aml_screening(adapter, body, idempotency_key="webhook-callback-ok", **webhook_headers())
+    assert accepted.data["status"] == "accepted"
+
+
+def test_controller_threads_webhook_headers_to_the_service(m04, officer):
+    service = m04["service"]
+    screening = service.start_aml_screening(officer, screening_request(), idempotency_key="webhook-ctl-screen-001").data
+    adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
+    controller = M04Controller(service)
+    body = screening_callback(screening["id"], "clear", event_id=str(uuid4()))
+
+    denied = controller.handle("receive_aml_screening", adapter, body=body, headers={"Idempotency-Key": "webhook-ctl-missing"})
+    assert denied.status == 401
+
+    accepted = controller.handle(
+        "receive_aml_screening", adapter, body=body,
+        headers={
+            "Idempotency-Key": "webhook-ctl-ok",
+            "X-Webhook-Timestamp": str(int(NOW.timestamp())),
+            "X-Webhook-Nonce": "n" * 32,
+            "X-Integration-Key-Id": "integration-key-01",
+        },
+    )
+    assert accepted.status == 202
+
+
+def test_consumer_kyc_rejection_emits_aml_case_changed_and_action_key_matches_id(m04, officer):
+    # F4 regression: the case_action dict key must be the same uuid as the
+    # stored action's id, and annotating an open case must emit aml.case_changed
+    # so M04's own case-version bump is observable like every other mutation.
+    service = m04["service"]
+    screening = service.start_aml_screening(officer, screening_request(), idempotency_key="consumer-kyc-screen-001").data
+    adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id=str(uuid4())), idempotency_key="consumer-kyc-callback-001", **webhook_headers())
+    case_id = service.list_aml_cases(officer).data["items"][0]["id"]
+
+    consumer = AmlEventConsumer(m04["repository"])
+    before_event_ids = {event.event_id for event in m04["repository"].snapshot().outbox.values()}
+    payload = {"submission_id": str(uuid4()), "application_id": APPLICATION_A, "decision": "rejected", "next_review_due_at": None}
+    result = consumer.consume(incoming("kyc.decision_recorded", "M03", "kyc_submission", APPLICATION_A, 1, payload))
+    assert result.result_code == "kyc_rejection_annotated"
+
+    snapshot = m04["repository"].snapshot()
+    for key, action in snapshot.case_actions.items():
+        assert key == (action.tenant_id, action.id)
+    new_events = [event for event in snapshot.outbox.values() if event.event_id not in before_event_ids]
+    assert any(event.event_type == "aml.case_changed" and event.aggregate_id == case_id for event in new_events)
+
+
+def test_consumer_profile_refresh_emits_business_clearance_changed(m04, officer):
+    # F4 regression: downgrading an approved clearance for a refresh must
+    # publish business_clearance.changed, not just mutate state silently.
+    service = m04["service"]
+    screening = service.start_aml_screening(officer, screening_request(), idempotency_key="consumer-refresh-screen-001").data
+    adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "clear", event_id=str(uuid4())), idempotency_key="consumer-refresh-callback-001", **webhook_headers())
+
+    consumer = AmlEventConsumer(m04["repository"])
+    before_event_ids = {event.event_id for event in m04["repository"].snapshot().outbox.values()}
+    payload = {"customer_id": CUSTOMER_A, "changed_field_codes": ["identity_evidence"], "profile_evidence_ref": str(uuid4())}
+    result = consumer.consume(incoming("customer.profile_updated", "M01", "customer", CUSTOMER_A, 1, payload))
+    assert result.result_code.startswith("clearances_flagged_for_refresh")
+
+    snapshot = m04["repository"].snapshot()
+    new_events = [event for event in snapshot.outbox.values() if event.event_id not in before_event_ids]
+    assert any(
+        event.event_type == "business_clearance.changed" and event.payload["decision"] == "pending" for event in new_events
+    )
+
+
+def test_aml_case_changed_envelope_version_matches_restricted_record_version(m04, officer):
+    # F4 regression: the aml.case_changed envelope's aggregate_version must be
+    # the case's own version, not whatever aggregate the triggering command's
+    # outcome happened to report (here, the screening's version).
+    service = m04["service"]
+    screening = service.start_aml_screening(officer, screening_request(), idempotency_key="version-screen-001").data
+    adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id=str(uuid4())), idempotency_key="version-callback-001", **webhook_headers())
+
+    snapshot = m04["repository"].snapshot()
+    case_event = next(event for event in snapshot.outbox.values() if event.event_type == "aml.case_changed")
+    case = next(iter(snapshot.cases.values()))
+    screening_row = snapshot.screenings[(TENANT, screening["id"])]
+    assert screening_row.version == 2 and case.version == 1  # distinct aggregates, distinct versions
+    assert case_event.aggregate_version == case.version == case_event.payload["restricted_record_version"]
 
 
 def test_production_composition_refuses_fake_adapters():

@@ -118,6 +118,14 @@ def screening_request(application_id: str = APPLICATION_A, customer_id: str = CU
     }
 
 
+def webhook_headers(*, moment: datetime = NOW, nonce: str = "a" * 32, integration_key_id: str = "integration-adapter-001") -> dict:
+    return {
+        "webhook_timestamp": str(int(moment.timestamp())),
+        "webhook_nonce": nonce,
+        "integration_key_id": integration_key_id,
+    }
+
+
 def screening_callback(screening_id: str, result: str, *, event_id: str, list_version: str = "list-v1") -> dict:
     return {
         "event_id": event_id,

@@ -4,10 +4,23 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Protocol
 
-from modules.aml_cft.domain import ConflictError, DependencyUnavailableError, utc_now
+from modules.aml_cft.domain import (
+    AuditEvent,
+    BusinessClearance,
+    ConflictError,
+    DependencyUnavailableError,
+    OutboxEvent,
+    SYSTEM_ACTOR_ID,
+    new_id,
+    utc_now,
+    wire_time,
+)
 from modules.aml_cft.ports import ScreeningProviderPort
 from modules.aml_cft.repository import InMemoryRepository, StoreState
 from modules.aml_cft.telemetry import M04Telemetry
+
+
+_PENDING_VALIDITY = timedelta(days=1)
 
 
 class RetryableTaskError(Exception):
@@ -104,14 +117,21 @@ class OutboxPublisher:
             candidates = sorted(
                 (
                     (key, event) for key, event in state.outbox.items()
-                    if event.status in {"pending", "retry"}
-                    and (event.next_attempt_at is None or event.next_attempt_at <= now)
-                    and (event.lease_until is None or event.lease_until <= now)
+                    if (
+                        event.status in {"pending", "retry"}
+                        and (event.next_attempt_at is None or event.next_attempt_at <= now)
+                    )
+                    # A worker that died mid-lease never completes or fails the
+                    # row: once its lease expires, a later worker must be able
+                    # to safely redrive it instead of leaving it stuck forever.
+                    or (event.status == "leased" and event.lease_until is not None and event.lease_until <= now)
                 ),
                 key=lambda item: (item[1].emitted_at, item[1].sequence_no),
             )[:limit]
             keys: list[tuple[str, str]] = []
             for key, event in candidates:
+                if event.status == "leased":
+                    event.last_error_code = "lease_expired_redrive"
                 event.status = "leased"
                 event.lease_owner = worker_id
                 event.lease_until = now + timedelta(seconds=30)
@@ -195,12 +215,20 @@ class ScreeningDispatchWorker:
             selected = [
                 (tenant, job.id) for (tenant, _), job in state.jobs.items()
                 if job.kind == "dispatch_aml_screening"
-                and job.status in {"pending", "retry"}
-                and (job.next_attempt_at is None or job.next_attempt_at <= now)
-                and (job.lease_until is None or job.lease_until <= now)
+                and (
+                    (
+                        job.status in {"pending", "retry"}
+                        and (job.next_attempt_at is None or job.next_attempt_at <= now)
+                    )
+                    # Reclaim a dispatch job stuck under a dead worker's expired
+                    # lease instead of leaving it "leased" forever.
+                    or (job.status == "leased" and job.lease_until is not None and job.lease_until <= now)
+                )
             ][:limit]
             for tenant, job_id in selected:
                 job = state.jobs[(tenant, job_id)]
+                if job.status == "leased":
+                    job.redrive_reason = "lease_expired_redrive"
                 job.status = "leased"
                 job.lease_owner = worker_id
                 job.lease_until = now + timedelta(seconds=30)
@@ -225,17 +253,62 @@ class ScreeningDispatchWorker:
         self.repository.atomic(apply)
 
     def _mark_manual_required(self, tenant_id: str, screening_id: str, job_id: str, worker_id: str) -> None:
+        now = utc_now()
+
         def apply(state: StoreState) -> None:
             screening = state.screenings[(tenant_id, screening_id)]
             screening.state = "error"
             screening.manual_required = True
-            screening.updated_at = utc_now()
+            screening.version += 1
+            screening.updated_at = now
             job = state.jobs[(tenant_id, job_id)]
             if job.lease_owner != worker_id:
                 raise ConflictError("dispatch job lease was lost", code="worker_lease_lost")
             job.status = "dead_letter"
             job.last_error_code = "screening_provider_timeout"
-            job.updated_at = utc_now()
+            job.updated_at = now
+
+            # A provider timeout must never leave a stale earlier "approved"
+            # clearance looking current: force a fresh pending/manual-required
+            # clearance and publish it, exactly as the synchronous error path
+            # in AmlCftService.receive_aml_screening does.
+            clearance = BusinessClearance(
+                id=new_id(), tenant_id=tenant_id,
+                version=1 + len(state.clearance_by_application.get((tenant_id, screening.application_id), [])),
+                created_at=now, updated_at=now, application_id=screening.application_id, customer_id=screening.customer_id,
+                decision="pending", policy_version=screening.policy_version, decided_by=SYSTEM_ACTOR_ID,
+                decided_at=now, valid_until=now + _PENDING_VALIDITY, safe_reason_code="manual_required", case_id=None,
+            )
+            state.clearances[(tenant_id, clearance.id)] = clearance
+            state.clearance_by_application.setdefault((tenant_id, screening.application_id), []).append(clearance.id)
+
+            payload = {
+                "clearance_id": clearance.id, "application_id": clearance.application_id,
+                "decision": clearance.decision, "expires_at": wire_time(clearance.valid_until),
+            }
+            correlation_id = new_id()
+            sequence = 1 + max(
+                (
+                    event.sequence_no for (tenant, _), event in state.outbox.items()
+                    if tenant == tenant_id and event.aggregate_type == "business_clearance" and event.aggregate_id == clearance.id
+                ),
+                default=0,
+            )
+            event = OutboxEvent(
+                event_id=new_id(), event_type="business_clearance.changed", tenant_id=tenant_id,
+                aggregate_type="business_clearance", aggregate_id=clearance.id, aggregate_version=clearance.version,
+                sequence_no=sequence, correlation_id=correlation_id, causation_id=None,
+                idempotency_key=f"dispatch_timeout:{job_id}:business_clearance.changed:{clearance.id}",
+                classification="customer_confidential", payload=payload, occurred_at=now, emitted_at=now,
+            )
+            state.outbox[(tenant_id, event.event_id)] = event
+
+            state.audit_events.append(AuditEvent(
+                id=new_id(), tenant_id=tenant_id, actor_id=SYSTEM_ACTOR_ID, purpose="automated_dispatch",
+                action="m04.screening_provider_timeout", aggregate_type="aml_screening", aggregate_id=screening.id,
+                aggregate_version=screening.version, correlation_id=correlation_id, result="manual_required",
+                reason_code="screening_provider_timeout", recorded_at=now,
+            ))
 
         self.repository.atomic(apply)
 

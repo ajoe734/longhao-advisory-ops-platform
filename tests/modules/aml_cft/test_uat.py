@@ -10,12 +10,16 @@ from modules.aml_cft.domain import ActorContext, ForbiddenError
 from conftest import (
     AI_SUMMARY_ACTOR,
     APPLICATION_A,
+    APPLICATION_B,
+    AUDITOR,
+    CUSTOMER_B,
     EVIDENCE_1,
     EVIDENCE_2,
     TENANT,
     declaration_body,
     screening_callback,
     screening_request,
+    webhook_headers,
 )
 
 
@@ -27,6 +31,7 @@ def test_uat_m04_001_possible_match_creates_restricted_case_and_blocks_clearance
         adapter,
         screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000001"),
         idempotency_key="callback-001",
+        **webhook_headers(),
     )
     assert callback.data["status"] == "accepted"
     cases = service.list_aml_cases(officer).data["items"]
@@ -39,7 +44,7 @@ def test_uat_m04_002_ai_summary_principal_cannot_decide(m04, officer, supervisor
     service = m04["service"]
     screening = service.start_aml_screening(officer, screening_request(), idempotency_key="screen-002").data
     adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
-    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000002"), idempotency_key="callback-002")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000002"), idempotency_key="callback-002", **webhook_headers())
     case_id = service.list_aml_cases(officer).data["items"][0]["id"]
     before = service.get_aml_case(officer, case_id).data
 
@@ -65,7 +70,7 @@ def test_uat_m04_003_general_ops_cannot_read_case_or_filing_detail(m04, officer,
     service = m04["service"]
     screening = service.start_aml_screening(officer, screening_request(), idempotency_key="screen-003").data
     adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
-    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000003"), idempotency_key="callback-003")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000003"), idempotency_key="callback-003", **webhook_headers())
     case_id = service.list_aml_cases(officer).data["items"][0]["id"]
 
     with pytest.raises(ForbiddenError):
@@ -103,7 +108,7 @@ def test_uat_m04_005_false_positive_release_requires_independent_checker(m04, of
     service = m04["service"]
     screening = service.start_aml_screening(officer, screening_request(), idempotency_key="screen-005").data
     adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
-    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000005"), idempotency_key="callback-005")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000005"), idempotency_key="callback-005", **webhook_headers())
     case_id = service.list_aml_cases(officer).data["items"][0]["id"]
     case = service.get_aml_case(officer, case_id).data
     action = service.add_aml_case_action(
@@ -128,7 +133,13 @@ def test_uat_m04_005_false_positive_release_requires_independent_checker(m04, of
     ).data
     assert decided["decision"] == "approved"
     snapshot = m04["repository"].snapshot()
-    assert len([a for (_, _), a in snapshot.case_actions.items() if a.case_id == case_id]) == 1
+    # maker's record_investigation + the checker's own decide_aml_case action;
+    # the rejected self-review attempt above must not have persisted a third.
+    case_actions = [a for (_, _), a in snapshot.case_actions.items() if a.case_id == case_id]
+    assert len(case_actions) == 2
+    decision_action = next(a for a in case_actions if a.action_code == "decision_approve")
+    assert decision_action.actor_id == supervisor.actor_id
+    assert decision_action.reason_code == "independent_review_confirmed"
     assert len(snapshot.clearance_by_application[(TENANT, APPLICATION_A)]) == 2
 
 
@@ -136,12 +147,12 @@ def test_uat_m04_006_list_version_refresh_blocks_and_keeps_v1_screening(m04, off
     service = m04["service"]
     adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
     first = service.start_aml_screening(officer, screening_request(), idempotency_key="screen-006a").data
-    service.receive_aml_screening(adapter, screening_callback(first["id"], "clear", event_id="80000000-0000-0000-0000-000000000061", list_version="list-v1"), idempotency_key="callback-006a")
+    service.receive_aml_screening(adapter, screening_callback(first["id"], "clear", event_id="80000000-0000-0000-0000-000000000061", list_version="list-v1"), idempotency_key="callback-006a", **webhook_headers())
     v1_snapshot = m04["repository"].snapshot().screenings[(TENANT, first["id"])]
     assert v1_snapshot.state == "clear" and v1_snapshot.list_version == "list-v1"
 
     second = service.start_aml_screening(officer, screening_request(), idempotency_key="screen-006b").data
-    service.receive_aml_screening(adapter, screening_callback(second["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000062", list_version="list-v2"), idempotency_key="callback-006b")
+    service.receive_aml_screening(adapter, screening_callback(second["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000062", list_version="list-v2"), idempotency_key="callback-006b", **webhook_headers())
 
     after = m04["repository"].snapshot()
     assert after.screenings[(TENANT, first["id"])].state == "clear"  # v1 record is never overwritten
@@ -165,7 +176,7 @@ def test_uat_m04_008_restricted_event_only_carries_safe_summary(m04, officer):
     service = m04["service"]
     screening = service.start_aml_screening(officer, screening_request(), idempotency_key="screen-008").data
     adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
-    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000008"), idempotency_key="callback-008")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000008"), idempotency_key="callback-008", **webhook_headers())
     snapshot = m04["repository"].snapshot()
     clearance_events = [event for event in snapshot.outbox.values() if event.event_type == "business_clearance.changed"]
     assert clearance_events
@@ -182,7 +193,7 @@ def test_uat_m04_009_edd_request_is_neutral_outside_the_workbench(m04, officer, 
     service = m04["service"]
     screening = service.start_aml_screening(officer, screening_request(), idempotency_key="screen-009").data
     adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
-    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000009"), idempotency_key="callback-009")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000009"), idempotency_key="callback-009", **webhook_headers())
     case_id = service.list_aml_cases(officer).data["items"][0]["id"]
     case = service.get_aml_case(officer, case_id).data
     due = m04["clock"].value + timedelta(days=3)
@@ -201,31 +212,49 @@ def test_uat_m04_010_auditor_needs_scoped_time_boxed_grant(m04, officer, supervi
     service = m04["service"]
     screening = service.start_aml_screening(officer, screening_request(), idempotency_key="screen-010").data
     adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
-    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000010"), idempotency_key="callback-010")
-    case_id = service.list_aml_cases(officer).data["items"][0]["id"]
-    auditor = ActorContext(TENANT, "20000000-0000-0000-0000-000000000005", frozenset({"internal_auditor"}), principal_type="staff")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000010"), idempotency_key="callback-010", **webhook_headers())
+    case_a_id = service.list_aml_cases(officer).data["items"][0]["id"]
+    auditor = ActorContext(TENANT, AUDITOR, frozenset({"internal_auditor"}), principal_type="staff")
 
     with pytest.raises(ForbiddenError):
-        service.get_aml_case(auditor, case_id)
+        service.get_aml_case(auditor, case_a_id)
+    assert service.list_aml_cases(auditor).data["items"] == []  # no grant yet: scoped listing, not a blanket queue
+
+    # A second, unrelated restricted case (case_b) that the auditor is never
+    # granted access to must stay excluded from the scoped listing even once
+    # case_a is granted.
+    screening_b = service.start_aml_screening(
+        officer, screening_request(application_id=APPLICATION_B, customer_id=CUSTOMER_B), idempotency_key="screen-010b",
+    ).data
+    service.receive_aml_screening(
+        adapter, screening_callback(screening_b["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000013"),
+        idempotency_key="callback-010b", **webhook_headers(),
+    )
+    case_b_id = next(item["id"] for item in service.list_aml_cases(officer).data["items"] if item["id"] != case_a_id)
 
     service.grant_case_read(
-        supervisor, case_id, auditor.actor_id, reason_code="scheduled_internal_audit",
+        supervisor, case_a_id, auditor.actor_id, reason_code="scheduled_internal_audit",
         expires_at=m04["clock"].value + timedelta(hours=1),
     )
-    read = service.get_aml_case(auditor, case_id)
-    assert read.data["id"] == case_id
+    read = service.get_aml_case(auditor, case_a_id)
+    assert read.data["id"] == case_a_id
+    with pytest.raises(ForbiddenError):
+        service.get_aml_case(auditor, case_b_id)
+    scoped_listing = service.list_aml_cases(auditor).data["items"]
+    assert [item["id"] for item in scoped_listing] == [case_a_id]  # case_a granted, case_b denied
     snapshot = m04["repository"].snapshot()
     assert any(event.actor_id == auditor.actor_id and event.result == "succeeded" for event in snapshot.audit_events)
     with pytest.raises(ForbiddenError):
         service.decide_aml_case(
-            auditor, case_id,
+            auditor, case_a_id,
             {"decision": "approve", "risk_level": "low", "reason_code": "auditor_cannot_decide", "restricted_evidence_ids": [EVIDENCE_1]},
             expected_version=read.data["version"], idempotency_key="decide-auditor-010",
         )
 
     m04["clock"].advance(hours=2)
     with pytest.raises(ForbiddenError):
-        service.get_aml_case(auditor, case_id)
+        service.get_aml_case(auditor, case_a_id)
+    assert service.list_aml_cases(auditor).data["items"] == []  # expired grant: scoped listing empties again
 
 
 def test_uat_m04_011_open_case_under_legal_hold_is_never_cleaned_up(m04, officer, supervisor):
@@ -234,7 +263,7 @@ def test_uat_m04_011_open_case_under_legal_hold_is_never_cleaned_up(m04, officer
     service = m04["service"]
     screening = service.start_aml_screening(officer, screening_request(), idempotency_key="screen-011").data
     adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
-    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000011"), idempotency_key="callback-011")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000011"), idempotency_key="callback-011", **webhook_headers())
     case_id = service.list_aml_cases(officer).data["items"][0]["id"]
     service.apply_legal_hold(supervisor, case_id, reason_code="regulatory_inquiry_pending")
 
@@ -248,7 +277,7 @@ def test_uat_m04_012_expired_clearance_cannot_be_reused(m04, officer, supervisor
     service = m04["service"]
     screening = service.start_aml_screening(officer, screening_request(), idempotency_key="screen-012").data
     adapter = ActorContext(TENANT, "20000000-0000-0000-0000-000000000006", frozenset({"aml_adapter"}), principal_type="service")
-    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000012"), idempotency_key="callback-012")
+    service.receive_aml_screening(adapter, screening_callback(screening["id"], "possible_match", event_id="80000000-0000-0000-0000-000000000012"), idempotency_key="callback-012", **webhook_headers())
     case_id = service.list_aml_cases(officer).data["items"][0]["id"]
     case = service.get_aml_case(officer, case_id).data
     decided = service.decide_aml_case(

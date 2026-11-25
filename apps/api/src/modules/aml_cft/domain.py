@@ -227,6 +227,7 @@ class AmlCaseAction:
     restricted_evidence_ids: list[str] = field(default_factory=list)
     due_at: datetime | None = None
     evidence_asset_id: str | None = None
+    independent_reviewer_id: str | None = None
 
 
 @dataclass

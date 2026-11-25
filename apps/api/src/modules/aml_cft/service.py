@@ -24,6 +24,7 @@ from .domain import (
     PreconditionRequiredError,
     StaleVersionError,
     SYSTEM_ACTOR_ID,
+    UnauthorizedError,
     ValidationError,
     canonical_hash,
     new_id,
@@ -37,11 +38,17 @@ from .repository import InMemoryRepository, StoreState
 
 _KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _SHA_RE = re.compile(r"^[a-f0-9]{64}$")
+_WEBHOOK_TIMESTAMP_RE = re.compile(r"^[0-9]{10}$")
+_WEBHOOK_SKEW_SECONDS = 300
 _SCOPE_VALUES = {"sanctions", "terrorist_financing", "pep", "adverse_media"}
 _ACTION_VALUES = {"request_edd", "request_information", "escalate", "record_investigation", "record_filing_reference"}
 _DECISION_VALUES = {"approve", "deny", "request_information"}
 _RISK_VALUES = {"low", "standard", "high"}
 _CASE_RESOLVED = {"cleared", "rejected", "closed"}
+# A "clear" screening result must never auto-approve while any case for the
+# same application/customer is still unresolved or was previously rejected;
+# only a case that was itself cleared may be superseded by a fresh clear.
+_CASE_BLOCKS_AUTO_CLEAR = {"open", "under_review", "escalated", "rejected", "closed"}
 
 # Deterministic synthetic system actor used for automated screening/outcome
 # projections (clear or error results) that are not an individual officer's
@@ -71,7 +78,11 @@ class _Outcome:
     aggregate_id: str | None
     aggregate_version: int | None
     error: DomainError | None = None
-    events: tuple[tuple[str, str, dict[str, Any]], ...] = ()
+    # (event_type, aggregate_id, aggregate_version, payload) - the version is the
+    # *event's own target aggregate* version, which is not always the command's
+    # primary aggregate (e.g. a business_clearance.changed event emitted from a
+    # screening or case command carries the clearance's own version).
+    events: tuple[tuple[str, str, int, dict[str, Any]], ...] = ()
 
 
 class AmlCftService:
@@ -130,14 +141,18 @@ class AmlCftService:
         if not isinstance(document_ids, list) or len(document_ids) > 30:
             raise ValidationError("restricted_document_ids must contain 0 to 30 items", field_name="restricted_document_ids")
         document_ids = [require_uuid(value, "restricted_document_ids") for value in document_ids]
-        if not self.evidence.exists(context.tenant_id, restricted_answer_asset_id):
-            raise ValidationError("restricted_answer_asset_id does not exist", code="evidence_not_found", field_name="restricted_answer_asset_id")
-        if any(not self.evidence.exists(context.tenant_id, value) for value in document_ids):
-            raise ValidationError("restricted document evidence does not exist", code="evidence_not_found", field_name="restricted_document_ids")
+        # Ownership/authorization must be resolved before any evidence-existence
+        # lookup: otherwise an actor who does not own (or whose application does
+        # not exist) could still learn whether an arbitrary evidence UUID exists
+        # in the tenant from the error returned, independent of their access.
         customer_id = self.application_access.customer_for(context.tenant_id, application_id)
         if customer_id is None:
             raise NotFoundError("application was not found")
         self._authorize_declaration(context, customer_id, action="submit_aml_declaration", correlation_id=correlation_id)
+        if not self.evidence.exists(context.tenant_id, restricted_answer_asset_id):
+            raise ValidationError("restricted_answer_asset_id does not exist", code="evidence_not_found", field_name="restricted_answer_asset_id")
+        if any(not self.evidence.exists(context.tenant_id, value) for value in document_ids):
+            raise ValidationError("restricted document evidence does not exist", code="evidence_not_found", field_name="restricted_document_ids")
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
 
@@ -258,9 +273,13 @@ class AmlCftService:
         body: dict[str, Any],
         *,
         idempotency_key: str,
+        webhook_timestamp: str | None = None,
+        webhook_nonce: str | None = None,
+        integration_key_id: str | None = None,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
         self._authorize_service(context, {"aml_adapter"}, action="receive_aml_screening", correlation_id=correlation_id)
+        self._authorize_webhook(webhook_timestamp, webhook_nonce, integration_key_id)
         self._body(
             body,
             {"event_id", "screening_id", "provider_ref", "list_version", "screened_at", "result", "restricted_result_asset_id", "result_sha256"},
@@ -273,10 +292,10 @@ class AmlCftService:
             raise ValidationError("result is not supported", field_name="result")
         if not _SHA_RE.fullmatch(str(body["result_sha256"])):
             raise ValidationError("result_sha256 must be lowercase SHA-256", field_name="result_sha256")
-        if not isinstance(body["provider_ref"], str) or len(body["provider_ref"]) > 160:
-            raise ValidationError("provider_ref exceeds 160 characters", field_name="provider_ref")
-        if not isinstance(body["list_version"], str) or len(body["list_version"]) > 160:
-            raise ValidationError("list_version exceeds 160 characters", field_name="list_version")
+        if not isinstance(body["provider_ref"], str) or not 1 <= len(body["provider_ref"]) <= 160:
+            raise ValidationError("provider_ref must contain 1 to 160 characters", field_name="provider_ref")
+        if not isinstance(body["list_version"], str) or not 1 <= len(body["list_version"]) <= 160:
+            raise ValidationError("list_version must contain 1 to 160 characters", field_name="list_version")
         screened_at = self._parse_time(body["screened_at"], "screened_at")
         if not self.evidence.exists(context.tenant_id, restricted_result_asset_id):
             raise ValidationError("restricted_result_asset_id does not exist", code="evidence_not_found", field_name="restricted_result_asset_id")
@@ -300,15 +319,27 @@ class AmlCftService:
             screening.version += 1
             screening.updated_at = now
 
-            events: list[tuple[str, str, dict[str, Any]]] = []
+            events: list[tuple[str, str, int, dict[str, Any]]] = []
             if screening.state == "clear":
-                screening.expires_at = now + _CLEAR_VALIDITY
-                clearance = self._append_clearance(
-                    state, context.tenant_id, screening.application_id, screening.customer_id,
-                    decision="approved", policy_version=screening.policy_version, decided_by=_SYSTEM_ACTOR_ID,
-                    decided_at=now, valid_until=screening.expires_at, safe_reason_code="screening_clear", case_id=None,
-                )
-                events.append(("business_clearance.changed", clearance.id, self._clearance_event_payload(clearance)))
+                blocking_case = self._blocking_case_for(state, context.tenant_id, screening.application_id, screening.customer_id)
+                if blocking_case is not None:
+                    # A prior possible/confirmed match (or rejection) for this
+                    # application/customer is still unresolved: a later clean
+                    # screening must never silently re-approve over it.
+                    screening.expires_at = None
+                    clearance = self._append_clearance(
+                        state, context.tenant_id, screening.application_id, screening.customer_id,
+                        decision="pending", policy_version=screening.policy_version, decided_by=_SYSTEM_ACTOR_ID,
+                        decided_at=now, valid_until=now + _PENDING_VALIDITY, safe_reason_code="case_pending_review", case_id=blocking_case.id,
+                    )
+                else:
+                    screening.expires_at = screened_at + _CLEAR_VALIDITY
+                    clearance = self._append_clearance(
+                        state, context.tenant_id, screening.application_id, screening.customer_id,
+                        decision="approved", policy_version=screening.policy_version, decided_by=_SYSTEM_ACTOR_ID,
+                        decided_at=now, valid_until=screening.expires_at, safe_reason_code="screening_clear", case_id=None,
+                    )
+                events.append(("business_clearance.changed", clearance.id, clearance.version, self._clearance_event_payload(clearance)))
             elif screening.state in {"possible_match", "confirmed_match"}:
                 case = self._open_or_attach_case(state, context, screening, restricted_result_asset_id, now)
                 clearance = self._append_clearance(
@@ -316,8 +347,8 @@ class AmlCftService:
                     decision="pending", policy_version=screening.policy_version, decided_by=_SYSTEM_ACTOR_ID,
                     decided_at=now, valid_until=now + _PENDING_VALIDITY, safe_reason_code="review_required", case_id=case.id,
                 )
-                events.append(("aml.case_changed", case.id, {"case_id": case.id, "screening_id": screening.id, "restricted_record_version": case.version}))
-                events.append(("business_clearance.changed", clearance.id, self._clearance_event_payload(clearance)))
+                events.append(("aml.case_changed", case.id, case.version, {"case_id": case.id, "screening_id": screening.id, "restricted_record_version": case.version}))
+                events.append(("business_clearance.changed", clearance.id, clearance.version, self._clearance_event_payload(clearance)))
             else:  # error
                 screening.manual_required = True
                 clearance = self._append_clearance(
@@ -325,7 +356,7 @@ class AmlCftService:
                     decision="pending", policy_version=screening.policy_version, decided_by=_SYSTEM_ACTOR_ID,
                     decided_at=now, valid_until=now + _PENDING_VALIDITY, safe_reason_code="manual_required", case_id=None,
                 )
-                events.append(("business_clearance.changed", clearance.id, self._clearance_event_payload(clearance)))
+                events.append(("business_clearance.changed", clearance.id, clearance.version, self._clearance_event_payload(clearance)))
 
             receipt = {"receipt_id": new_id(), "event_id": event_id, "status": "accepted", "received_at": wire_time(now), "correlation_id": correlation_id}
             return _Outcome(receipt, 202, "aml_screening", screening.id, screening.version, events=tuple(events))
@@ -379,7 +410,7 @@ class AmlCftService:
             state.case_actions[(context.tenant_id, action.id)] = action
             case.maker_actor_ids.add(context.actor_id)
             case.restricted_evidence_ids = sorted(set(case.restricted_evidence_ids) | set(evidence_ids) | {restricted_note_asset_id})
-            events: list[tuple[str, str, dict[str, Any]]] = []
+            events: list[tuple[str, str, int, dict[str, Any]]] = []
             if body["action"] == "escalate":
                 case.state = "escalated"
             elif body["action"] in {"request_edd", "request_information"}:
@@ -391,10 +422,10 @@ class AmlCftService:
                     decision="pending", policy_version=self._case_policy_version(state, case), decided_by=context.actor_id,
                     decided_at=now, valid_until=case.next_review_due_at, safe_reason_code="information_requested", case_id=case.id,
                 )
-                events.append(("business_clearance.changed", clearance.id, self._clearance_event_payload(clearance)))
+                events.append(("business_clearance.changed", clearance.id, clearance.version, self._clearance_event_payload(clearance)))
             case.version += 1
             case.updated_at = now
-            events.append(("aml.case_changed", case.id, {"case_id": case.id, "screening_id": case.screening_ids[-1], "restricted_record_version": case.version}))
+            events.append(("aml.case_changed", case.id, case.version, {"case_id": case.id, "screening_id": case.screening_ids[-1], "restricted_record_version": case.version}))
             return _Outcome(case.to_api(self._case_actions(case, context)), 200, "aml_case", case.id, case.version, events=tuple(events))
 
         return self._run_command(context, "add_aml_case_action", idempotency_key, {"aml_case_id": aml_case_id, **body}, correlation_id, mutate)
@@ -449,13 +480,13 @@ class AmlCftService:
             decision = body["decision"]
             if decision == "approve":
                 case.state = "cleared"
-                clearance_decision, safe_reason, default_validity = "approved", "case_cleared", _APPROVE_VALIDITY_DEFAULT
+                clearance_decision, safe_reason, default_validity, action_code = "approved", "case_cleared", _APPROVE_VALIDITY_DEFAULT, "decision_approve"
             elif decision == "deny":
                 case.state = "rejected"
-                clearance_decision, safe_reason, default_validity = "denied", "case_rejected", _DENIED_VALIDITY
+                clearance_decision, safe_reason, default_validity, action_code = "denied", "case_rejected", _DENIED_VALIDITY, "decision_deny"
             else:
                 case.state = "under_review"
-                clearance_decision, safe_reason, default_validity = "pending", "information_requested", _INFORMATION_VALIDITY
+                clearance_decision, safe_reason, default_validity, action_code = "pending", "information_requested", _INFORMATION_VALIDITY, "decision_request_information"
             valid_until = expires_at or (now + default_validity)
             if valid_until <= now:
                 raise ValidationError("expires_at must be in the future", field_name="expires_at")
@@ -464,11 +495,20 @@ class AmlCftService:
                 decision=clearance_decision, policy_version=self._case_policy_version(state, case), decided_by=context.actor_id,
                 decided_at=now, valid_until=valid_until, safe_reason_code=safe_reason, case_id=case.id,
             )
+            # The checker's decision is itself a case action (maker/checker
+            # trail), distinct from the maker's add_aml_case_action entries.
+            action = AmlCaseAction(
+                id=new_id(), tenant_id=context.tenant_id, version=1, created_at=now, updated_at=now,
+                case_id=case.id, actor_id=context.actor_id, action_code=action_code, reason_code=body["reason_code"],
+                restricted_note_asset_id=evidence_ids[0], occurred_at=now, restricted_evidence_ids=evidence_ids,
+                independent_reviewer_id=independent_reviewer_id,
+            )
+            state.case_actions[(context.tenant_id, action.id)] = action
             case.version += 1
             case.updated_at = now
             events = (
-                ("aml.case_changed", case.id, {"case_id": case.id, "screening_id": case.screening_ids[-1], "restricted_record_version": case.version}),
-                ("business_clearance.changed", clearance.id, self._clearance_event_payload(clearance)),
+                ("aml.case_changed", case.id, case.version, {"case_id": case.id, "screening_id": case.screening_ids[-1], "restricted_record_version": case.version}),
+                ("business_clearance.changed", clearance.id, clearance.version, self._clearance_event_payload(clearance)),
             )
             return _Outcome(clearance.to_api([], as_of=now), 200, "aml_case", case.id, case.version, events=events)
 
@@ -486,7 +526,10 @@ class AmlCftService:
         as_of: datetime | None = None,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize_staff(context, {"aml_officer", "aml_supervisor"}, action="list_aml_cases", correlation_id=correlation_id)
+        is_full_access = self._staff(context, {"aml_officer", "aml_supervisor"})
+        if not is_full_access and not self._staff(context, {"internal_auditor"}):
+            self._audit_failure(context, "list_aml_cases", correlation_id, "forbidden")
+            raise ForbiddenError("staff role is not allowed for this operation")
         if not 1 <= limit <= 200:
             raise ValidationError("limit must be between 1 and 200", field_name="limit")
         if state_filter and state_filter not in {"open", "under_review", "escalated", "cleared", "rejected", "closed"}:
@@ -495,6 +538,16 @@ class AmlCftService:
         snapshot_at = as_of or self._clock()
 
         def query(state: StoreState) -> ServiceResponse:
+            # internal_auditor never gets blanket case visibility: the
+            # listing is scoped to only the case_ids they hold an active,
+            # time-boxed grant for (REQ-M04-010), not the full queue.
+            granted_case_ids: set[str] | None = None
+            if not is_full_access:
+                now = self._clock()
+                granted_case_ids = {
+                    row.case_id for (tenant, _), row in state.read_grants.items()
+                    if tenant == context.tenant_id and row.auditor_actor_id == context.actor_id and row.expires_at > now
+                }
             rows = sorted(
                 (
                     item for (tenant, _), item in state.cases.items()
@@ -502,6 +555,7 @@ class AmlCftService:
                     and item.opened_at <= snapshot_at
                     and (not state_filter or item.state == state_filter)
                     and (not cursor or item.id > cursor)
+                    and (granted_case_ids is None or item.id in granted_case_ids)
                 ),
                 key=lambda item: item.id,
             )
@@ -523,8 +577,12 @@ class AmlCftService:
         correlation_id = self._correlation(correlation_id)
 
         def query(state: StoreState) -> ServiceResponse:
+            # Authorize using only the case_id, before the case lookup: an
+            # unauthorized actor must get the same Forbidden either way,
+            # never a different error depending on whether the case
+            # actually exists (UAT-M04-003 / SA-SD §12 existence oracle).
+            self._authorize_case_read(state, context, aml_case_id)
             case = self._stored_case(state, context.tenant_id, aml_case_id)
-            self._authorize_case_read(state, context, case)
             self._audit(state, context, "get_aml_case", "aml_case", case.id, case.version, correlation_id, "succeeded")
             return ServiceResponse(case.to_api(self._case_actions(case, context)), etag=self._etag(case.version))
 
@@ -636,10 +694,10 @@ class AmlCftService:
                 correlation_id, outcome.error.code if outcome.error else "succeeded", outcome.error.code if outcome.error else None,
             )
             if not outcome.error:
-                for event_type, aggregate_id, payload in outcome.events:
+                for event_type, aggregate_id, aggregate_version, payload in outcome.events:
                     self._emit(
                         state, event_type=event_type, tenant_id=context.tenant_id, aggregate_id=aggregate_id,
-                        aggregate_version=outcome.aggregate_version or 1, correlation_id=correlation_id,
+                        aggregate_version=aggregate_version, correlation_id=correlation_id,
                         idempotency_key=f"{key}:{event_type}:{aggregate_id}", payload=payload, now=self._clock(),
                     )
             state.idempotency[receipt_key] = IdempotencyReceipt(
@@ -727,6 +785,19 @@ class AmlCftService:
             "policy_version": clearance.policy_version,
         }
 
+    @staticmethod
+    def _blocking_case_for(state: StoreState, tenant_id: str, application_id: str, customer_id: str) -> AmlCaseFile | None:
+        return next(
+            (
+                case for (tenant, _), case in state.cases.items()
+                if tenant == tenant_id
+                and case.application_id == application_id
+                and case.customer_id == customer_id
+                and case.state in _CASE_BLOCKS_AUTO_CLEAR
+            ),
+            None,
+        )
+
     def _open_or_attach_case(
         self, state: StoreState, context: ActorContext, screening: AmlScreening, restricted_evidence_id: str, now: datetime,
     ) -> AmlCaseFile:
@@ -794,20 +865,31 @@ class AmlCftService:
             self._audit_failure(context, action, correlation_id, "forbidden")
         raise ForbiddenError("integration adapter role is not allowed for this operation")
 
-    def _authorize_case_read(self, state: StoreState, context: ActorContext, case: AmlCaseFile) -> None:
+    def _authorize_case_read(self, state: StoreState, context: ActorContext, case_id: str) -> None:
         if self._staff(context, {"aml_officer", "aml_supervisor"}):
             return
         if self._staff(context, {"internal_auditor"}):
             grant = next(
                 (
                     row for (tenant, _), row in state.read_grants.items()
-                    if tenant == context.tenant_id and row.case_id == case.id and row.auditor_actor_id == context.actor_id
+                    if tenant == context.tenant_id and row.case_id == case_id and row.auditor_actor_id == context.actor_id
                 ),
                 None,
             )
             if grant and grant.expires_at > self._clock():
                 return
         raise ForbiddenError("actor cannot read this AML case")
+
+    def _authorize_webhook(self, webhook_timestamp: str | None, webhook_nonce: str | None, integration_key_id: str | None) -> None:
+        if not isinstance(webhook_timestamp, str) or not _WEBHOOK_TIMESTAMP_RE.fullmatch(webhook_timestamp):
+            raise UnauthorizedError("X-Webhook-Timestamp must be a signed 10-digit Unix timestamp", code="webhook_signature_invalid")
+        signed_at = datetime.fromtimestamp(int(webhook_timestamp), tz=timezone.utc)
+        if abs((self._clock() - signed_at).total_seconds()) > _WEBHOOK_SKEW_SECONDS:
+            raise UnauthorizedError("X-Webhook-Timestamp is outside the allowed clock skew", code="webhook_signature_expired")
+        if not isinstance(webhook_nonce, str) or not 16 <= len(webhook_nonce) <= 128:
+            raise UnauthorizedError("X-Webhook-Nonce must contain 16 to 128 characters", code="webhook_signature_invalid")
+        if not isinstance(integration_key_id, str) or not 8 <= len(integration_key_id) <= 128:
+            raise UnauthorizedError("X-Integration-Key-Id must contain 8 to 128 characters", code="webhook_signature_invalid")
 
     @staticmethod
     def _staff(context: ActorContext, roles: set[str]) -> bool:

@@ -95,7 +95,12 @@ class M04Controller:
         if operation_id == "start_aml_screening":
             return self.service.start_aml_screening(context, body, idempotency_key=key, correlation_id=correlation_id)
         if operation_id == "receive_aml_screening":
-            return self.service.receive_aml_screening(context, body, idempotency_key=key, correlation_id=correlation_id)
+            return self.service.receive_aml_screening(
+                context, body, idempotency_key=key, correlation_id=correlation_id,
+                webhook_timestamp=headers.get("x-webhook-timestamp"),
+                webhook_nonce=headers.get("x-webhook-nonce"),
+                integration_key_id=headers.get("x-integration-key-id"),
+            )
         if operation_id == "list_aml_cases":
             return self.service.list_aml_cases(
                 context, state_filter=query.get("state"), cursor=query.get("cursor"),
