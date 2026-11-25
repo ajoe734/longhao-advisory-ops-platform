@@ -19,10 +19,20 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-dev.txt
       - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pip install -e apps/api
       - run: python scripts/validate_docs.py
       - run: python scripts/validate_contracts.py
       - run: python scripts/validate_sql.py
-      - run: python -m pytest -q mocks/test_server.py
+      - run: python -m pytest -q mocks/test_server.py qa/test_platform_runtime.py qa/test_cross_module_runtime.py qa/test_ui_registry.py
+      - run: python -m longhao_platform.main --check
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.23.5'
+          package-manager-cache: false
+      # Direct and development dependencies are exact-pinned. Replace with npm ci
+      # once the reviewed lockfile can be generated in a registry-enabled environment.
+      - run: npm install --prefix apps/admin --ignore-scripts --no-audit --no-fund
+      - run: npm run build --prefix apps/admin
       - run: python scripts/check_public_repository.py
       - name: Validate fourteen-worktree dispatch plan
         run: python scripts/prepare_worktrees.py --base HEAD

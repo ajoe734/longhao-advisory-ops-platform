@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "longhao-advisory-ops-api"
+version = "0.1.0"
+description = "Longhao advisory operations modular monolith"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.165.0",
+  "jsonschema==4.26.0",
+  "uvicorn==0.54.0",
+]
+
+[project.scripts]
+longhao-api = "longhao_platform.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["longhao_platform*", "modules*"]

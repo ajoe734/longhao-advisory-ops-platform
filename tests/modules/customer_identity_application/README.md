@@ -1,0 +1,11 @@
+# M01 驗收測試
+
+執行：
+
+```bash
+python -m pytest tests/modules/customer_identity_application -q
+```
+
+`test_uat.py` 逐一對應 UAT-M01-001～012；`test_contract_worker_http.py` 驗 13 個 route、RFC 7807/ETag/idempotency headers、五個 producer schema、三個 consumer 的 hash/duplicate/order、lease/retry 與 production fake gate；`test_ui_contract.py` 驗畫面入口與八種狀態。全部 fixture 為 `.invalid`／固定 UUID／local fake，不會傳訊、付款、退款或連外。
+
+PostgreSQL RLS 與 proposal 尚需 integration/data steward 配正式 migration 後，在非 superuser PostgreSQL 16 執行；本模組測試通過不能宣稱真 LegendFlow 或跨模組 provider 已接通。

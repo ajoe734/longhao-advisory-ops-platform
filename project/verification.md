@@ -39,3 +39,23 @@
 - 本平台的應用command handlers、UI、workers、正式provider adapters由十四HerdR任務實作；此文件包包含其完整契約與工作範圍。
 - Pantheon、LegendFlow、Agora只預留外部spec/mock/本平台adapter邊界；未修改其repo、PR或部署，真接線為NOT_CONNECTED。
 - 獎金率、衰減交互、Pool明確判定及公司正式條款等未定案參數以draft策略隔離，避免擅自啟用。這些不會把全部十四模組變成串行開發。
+
+## 2026-11-23 共用 runtime／UI／QA 實作
+
+基準 `4b9adeb09485386c04d6ce38d789e5058ebe2082` 的 integration worktree 已新增 FastAPI composition root、React/TypeScript 34-screen shell、module plugin discovery、authenticated principal、CAS/idempotency command bus、canonical event schema validation、audit/outbox/inbox reference semantics及 M07→M08→M09 跨模組測試。十四條 module implementation 尚未合併到本 checkout，`longhao-api --check` 因此正確顯示 `degraded`、`0/14 loaded`、`release_gate_passed=false`。
+
+本次實際結果：
+
+| 命令/驗證 | 結果 |
+|---|---|
+| `PYTHONPATH=apps/api/src python -m pytest -q qa/test_platform_runtime.py qa/test_cross_module_runtime.py qa/test_ui_registry.py` | 15 passed、1 skipped；skip 是 sandbox 無 DNS，無法安裝 FastAPI/httpx 以跑 TestClient，核心／event／UI registry 測試均通過 |
+| `PYTHONPATH=apps/api/src python -m longhao_platform.main --check` | PASS；47 event contracts、14 個 module 均為 `MODULE_NOT_INTEGRATED`、無 broken module |
+| `python scripts/validate_docs.py` | PASS；14 modules、142 operations、182 acceptance/trace rows |
+| `python scripts/validate_contracts.py` | PASS；190 schemas、47 events、289 positive、342 negative cases |
+| `python scripts/validate_sql.py` | PASS；7 files、2600 statements |
+| `python scripts/check_public_repository.py` | PASS；261 files 的 targeted checks |
+| `python -m pytest -q mocks/test_server.py ...` | 環境阻擋；sandbox 禁止建立 loopback socket，既有 8 個 mock HTTP tests 在 setup 出現 `PermissionError`；新增測試仍通過 |
+| `python database/tools/verify_database.py --standalone --report /tmp/longhao-database-verification.json` | 環境阻擋；缺 `pgserver`，且 sandbox DNS 不可用，不能安裝 `requirements-db-local.txt` |
+| `npm install --prefix apps/admin --ignore-scripts --no-audit --no-fund` | 環境阻擋；npm registry 無 DNS，已終止等待，未產生 lockfile、未執行 TypeScript/Vite build |
+
+上述環境阻擋不改寫為 PASS。CI 已加入 editable FastAPI package、共用／跨模組 tests、runtime check 與 React build；目前直接相依 exact pin，但應在可連 registry 的 integration run 產生並審查 `package-lock.json`，再把 `npm install` 收斂成 `npm ci`。外部 Pantheon、LegendFlow、Agora/Servant 仍為 NOT_CONNECTED，未讀寫或修改其 repository／production。

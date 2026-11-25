@@ -1,0 +1,105 @@
+"""FastAPI HTTP boundary for health, shared operations and module routers."""
+from __future__ import annotations
+
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi import Depends, FastAPI, Request as FastAPIRequest
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from longhao_platform.app import PlatformRuntime
+from longhao_platform.types import PlatformError, Principal, Request
+
+
+def create_app(runtime: PlatformRuntime | None = None) -> FastAPI:
+    runtime = runtime or PlatformRuntime.bootstrap()
+    app = FastAPI(
+        title="Longhao Advisory Operations Platform",
+        version="0.1.0",
+        docs_url=None if runtime.config.environment == "production" else "/docs",
+        redoc_url=None,
+    )
+    app.state.runtime = runtime
+
+    @app.middleware("http")
+    async def correlation_middleware(request: FastAPIRequest, call_next):
+        correlation_id = str(uuid4())
+        request.state.correlation_id = correlation_id
+        response = await call_next(request)
+        response.headers["X-Correlation-Id"] = correlation_id
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.exception_handler(PlatformError)
+    async def platform_error(request: FastAPIRequest, exc: PlatformError):
+        correlation_id = getattr(request.state, "correlation_id", str(uuid4()))
+        return JSONResponse(
+            status_code=exc.status,
+            content={
+                "type": f"https://example.invalid/problems/{exc.code.lower()}",
+                "title": exc.code,
+                "status": exc.status,
+                "code": exc.code,
+                "detail": exc.detail,
+                "correlation_id": correlation_id,
+                "retryable": exc.retryable,
+            },
+            media_type="application/problem+json",
+        )
+
+    def current_principal(request: FastAPIRequest) -> Principal:
+        headers = {key.lower(): value for key, value in request.headers.items()}
+        return runtime.authenticator.authenticate(Request(request.method, request.url.path, headers))
+
+    def operations_reader(principal: Principal = Depends(current_principal)) -> Principal:
+        runtime.require_roles(principal, frozenset({"platform_admin", "internal_auditor", "platform_worker"}))
+        return principal
+
+    @app.get("/health/live", include_in_schema=False)
+    async def live():
+        return {"status": "alive"}
+
+    @app.get("/health/ready", include_in_schema=False)
+    async def ready():
+        status, body = runtime.readiness(disclose_modules=runtime.config.environment != "production")
+        return JSONResponse(status_code=status, content=body)
+
+    @app.get("/internal/platform/modules", include_in_schema=False)
+    async def modules(_principal: Principal = Depends(operations_reader)):
+        status, body = runtime.readiness(disclose_modules=True)
+        return JSONResponse(status_code=status, content=body)
+
+    @app.get("/internal/platform/outbox", include_in_schema=False)
+    async def outbox(principal: Principal = Depends(operations_reader)):
+        return {
+            "items": [
+                {
+                    "event_id": str(row.event_id),
+                    "event_type": row.event_type,
+                    "producer": row.producer,
+                    "status": row.status,
+                    "attempt_count": row.attempt_count,
+                    "last_error_code": row.last_error_code,
+                }
+                for row in runtime.store.outbox(principal.tenant_id)
+            ]
+        }
+
+    for router in runtime.routers:
+        app.include_router(router, prefix="/api/v1")
+
+    admin_dist = runtime.config.admin_root
+    if admin_dist.is_dir() and (admin_dist / "index.html").is_file():
+        assets = admin_dist / "assets"
+        if assets.is_dir():
+            app.mount("/admin/assets", StaticFiles(directory=assets), name="admin-assets")
+
+        @app.get("/admin/{path:path}", include_in_schema=False)
+        async def admin_shell(path: str):
+            candidate = admin_dist / path
+            if path and candidate.is_file() and candidate.resolve().is_relative_to(admin_dist.resolve()):
+                return FileResponse(candidate)
+            return FileResponse(admin_dist / "index.html")
+
+    return app
