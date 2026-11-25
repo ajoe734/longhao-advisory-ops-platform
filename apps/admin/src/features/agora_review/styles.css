@@ -1,0 +1,12 @@
+.m06-stack { display: grid; gap: 1rem; }
+.m06-panel { background: var(--surface, #fff); border: 1px solid var(--border, #cbd5e1); border-radius: .5rem; padding: 1rem; }
+.m06-search-grid { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); }
+.m06-search-grid label { display: grid; gap: .25rem; }
+.m06-table-scroll { overflow-x: auto; }
+.m06-table-scroll table { border-collapse: collapse; width: 100%; }
+.m06-table-scroll th, .m06-table-scroll td { border-bottom: 1px solid var(--border, #cbd5e1); padding: .75rem; text-align: left; }
+.m06-table-scroll small { display: block; font-weight: normal; }
+.m06-eyebrow { letter-spacing: .08em; text-transform: uppercase; }
+.m06-stale-banner, .m06-diff-banner { border-inline-start: .3rem solid #b45309; background: #fffbeb; padding: .75rem; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid #0ea5e9; outline-offset: 2px; }
+@media (max-width: 48rem) { .m06-table-scroll table, .m06-table-scroll tbody, .m06-table-scroll tr, .m06-table-scroll td, .m06-table-scroll th { display: block; } .m06-table-scroll thead { position: absolute; clip: rect(0 0 0 0); } }
