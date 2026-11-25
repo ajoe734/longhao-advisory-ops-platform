@@ -208,7 +208,10 @@ def callback_body(
     if verification_result == "verified":
         body.update({
             "signed_asset_id": SIGNED_ASSET_ID, "signed_file_sha256": signed_file_sha256,
-            "signer_subject_ref": "subject:signer", "signed_at": "2026-11-23T01:30:00Z",
+            # Must land in [frozen_at, now] under the fixture's FixedClock (which does not
+            # advance between request_analyst_signature and receive_analyst_signature calls
+            # here); report.signature's PG CHECK requires verified_at (== now) >= signed_at.
+            "signer_subject_ref": "subject:signer", "signed_at": wire_time(NOW),
             "verification_evidence_asset_id": VERIFICATION_ASSET_ID,
         })
     return body

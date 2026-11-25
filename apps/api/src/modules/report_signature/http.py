@@ -55,6 +55,12 @@ class M07Controller:
                 response_headers["Idempotency-Replayed"] = str(response.idempotency_replayed).lower()
             result = ApiResponse(response.status, response.data, response_headers)
             self.telemetry.observe_request(operation_id, "success", perf_counter() - started)
+            # receive_analyst_signature never raises for a mismatched/invalid callback — it
+            # persists a 202 "quarantined" receipt instead (UAT-M07-009 requires the frozen
+            # package to survive, not a 4xx) — so the alert for a quarantined callback has to
+            # fire from this success path, not the DomainError branch below.
+            if operation_id == "receive_analyst_signature" and response.data.get("status") == "quarantined":
+                self.telemetry.alert("receive_analyst_signature_quarantined")
             return result
         except DomainError as exc:
             field_errors = []
@@ -78,8 +84,6 @@ class M07Controller:
             self.telemetry.observe_request(operation_id, exc.code, perf_counter() - started)
             if exc.status == 503:
                 self.telemetry.dependency_failure("signature_provider")
-            if exc.code in {"signature_payload_mismatch", "qualification_invalid_at_verification"}:
-                self.telemetry.alert(exc.code)
             return result
 
     def _dispatch(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from modules.report_signature.domain import ConflictError, ValidationError
+from modules.report_signature.domain import ConflictError, ValidationError, sha256_text
 from workers.tasks.report_signature.consumer import M07EventConsumer
 
 from conftest import (
@@ -44,6 +44,90 @@ def test_uat_m07_002_freeze_binds_report_recommendation_channel_and_audience_has
     assert version["valid_until"] > version["valid_from"]
     stored_hash = m07["assets"].sha256_of(TENANT, version["bundle_manifest_asset_id"])
     assert stored_hash == version["bundle_manifest_sha256"]
+
+
+def test_uat_m07_002b_bundle_manifest_hash_is_sensitive_to_report_content_and_expiry(m07, analyst):
+    """F5: bundle_manifest previously only bound channel_texts/audience_policy/
+    recommendation/evidence ids, so changing the report itself or its validity window
+    left bundle_manifest_sha256 unchanged."""
+    service = m07["service"]
+    report = service.create_report(analyst, report_create_body(), idempotency_key="f5-report").data
+    base = service.create_report_version(analyst, report["id"], report_version_body(), expected_version=1, idempotency_key="f5-base-version").data
+
+    report2 = service.create_report(analyst, report_create_body(), idempotency_key="f5-report-2").data
+    expiry_body = {**report_version_body(), "valid_until": "2027-01-23T00:00:00Z"}
+    expiry_changed = service.create_report_version(analyst, report2["id"], expiry_body, expected_version=1, idempotency_key="f5-expiry").data
+    assert expiry_changed["bundle_manifest_sha256"] != base["bundle_manifest_sha256"]
+
+    other_asset_id = "40000000-0000-0000-0000-000000000099"
+    other_content_sha256 = sha256_text("synthetic-report-v2-bytes")
+    m07["assets"].add(TENANT, other_asset_id, other_content_sha256)
+    report3 = service.create_report(analyst, report_create_body(), idempotency_key="f5-report-3").data
+    content_body = {**report_version_body(), "report_asset_id": other_asset_id, "report_content_sha256": other_content_sha256}
+    content_changed = service.create_report_version(analyst, report3["id"], content_body, expected_version=1, idempotency_key="f5-content").data
+    assert content_changed["bundle_manifest_sha256"] != base["bundle_manifest_sha256"]
+
+
+def test_uat_m07_001b_unresolved_rejection_blocks_freeze_even_with_cherry_picked_ids(m07, analyst, reviewer_pro, reviewer_compliance):
+    """Repro for the reopened F2 finding: comp approve -> comp reject -> pro approve must
+    not let freeze succeed by selecting the stale pre-rejection compliance approval."""
+    service = m07["service"]
+    report = service.create_report(analyst, report_create_body(), idempotency_key="f2-report").data
+    version = service.create_report_version(analyst, report["id"], report_version_body(), expected_version=1, idempotency_key="f2-version").data
+    comp_approve_1 = service.record_report_review(
+        reviewer_compliance, version["id"], review_body("compliance", version), expected_version=1, idempotency_key="f2-comp-approve-1",
+    ).data
+    service.record_report_review(
+        reviewer_compliance, version["id"], review_body("compliance", version, decision="reject"), expected_version=2, idempotency_key="f2-comp-reject",
+    )
+    pro_approve = service.record_report_review(
+        reviewer_pro, version["id"], review_body("professional", version), expected_version=3, idempotency_key="f2-pro-approve",
+    ).data
+    with pytest.raises(ConflictError) as blocked:
+        service.freeze_report_version(
+            analyst, version["id"], freeze_body(version, [pro_approve["id"], comp_approve_1["id"]]),
+            expected_version=4, idempotency_key="f2-freeze",
+        )
+    assert blocked.value.code == "unresolved_review_rejection"
+    snapshot = m07["repository"].snapshot()
+    assert snapshot.versions[(TENANT, version["id"])].status == "in_review"
+    assert len(snapshot.signature_requests) == 0 and len(snapshot.outbox) == 0
+
+    # The rejection resolves once a later compliance approval of the same content exists.
+    comp_approve_2 = service.record_report_review(
+        reviewer_compliance, version["id"], review_body("compliance", version), expected_version=4, idempotency_key="f2-comp-approve-2",
+    ).data
+    frozen = service.freeze_report_version(
+        analyst, version["id"], freeze_body(version, [pro_approve["id"], comp_approve_2["id"]]),
+        expected_version=5, idempotency_key="f2-freeze-2",
+    ).data
+    assert frozen["state"] == "ready_to_sign"
+
+
+def test_uat_m07_001c_freeze_rejects_duplicate_or_foreign_required_review_ids(m07, analyst, reviewer_pro, reviewer_compliance):
+    service = m07["service"]
+    report = service.create_report(analyst, report_create_body(), idempotency_key="f2b-report").data
+    version = service.create_report_version(analyst, report["id"], report_version_body(), expected_version=1, idempotency_key="f2b-version").data
+    pro_approve = service.record_report_review(reviewer_pro, version["id"], review_body("professional", version), expected_version=1, idempotency_key="f2b-pro-review").data
+    service.record_report_review(reviewer_compliance, version["id"], review_body("compliance", version), expected_version=2, idempotency_key="f2b-comp")
+    with pytest.raises(ValidationError) as duplicate:
+        service.freeze_report_version(
+            analyst, version["id"], freeze_body(version, [pro_approve["id"], pro_approve["id"]]),
+            expected_version=3, idempotency_key="f2b-freeze-dup",
+        )
+    assert duplicate.value.code == "duplicate_review_id"
+
+    other_report = service.create_report(analyst, report_create_body(), idempotency_key="f2b-other-report").data
+    other_version = service.create_report_version(analyst, other_report["id"], report_version_body(), expected_version=1, idempotency_key="f2b-other-version").data
+    foreign_review = service.record_report_review(
+        reviewer_pro, other_version["id"], review_body("professional", other_version), expected_version=1, idempotency_key="f2b-foreign",
+    ).data
+    with pytest.raises(ValidationError) as foreign:
+        service.freeze_report_version(
+            analyst, version["id"], freeze_body(version, [pro_approve["id"], foreign_review["id"]]),
+            expected_version=3, idempotency_key="f2b-freeze-foreign",
+        )
+    assert foreign.value.code == "missing_review"
 
 
 def test_uat_m07_003_unqualified_signer_is_denied_without_provider_request(m07, analyst, reviewer_pro, reviewer_compliance, signer):

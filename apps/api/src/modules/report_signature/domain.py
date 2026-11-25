@@ -268,6 +268,7 @@ class SignatureRequest:
     expires_at: datetime
     status: str = "pending"
     last_receipt_id: str | None = None
+    manual_review_flagged_at: datetime | None = None
     version: int = 1
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
@@ -444,3 +445,4 @@ class IdempotencyReceipt:
     response_value: Any
     error: DomainError | None
     completed_at: datetime
+    aggregate_version: int | None = None

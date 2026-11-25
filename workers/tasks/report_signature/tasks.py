@@ -4,7 +4,14 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Protocol
 
-from modules.report_signature.domain import ConflictError, utc_now
+from modules.report_signature.domain import (
+    AuditEvent,
+    ConflictError,
+    DependencyUnavailableError,
+    NotFoundError,
+    new_id,
+    utc_now,
+)
 from modules.report_signature.repository import InMemoryRepository, StoreState
 
 
@@ -92,14 +99,19 @@ class OutboxPublisher:
     def _lease(self, worker_id: str, limit: int) -> list[tuple[str, str]]:
         now = utc_now()
 
+        def eligible(event) -> bool:
+            if event.status in {"pending", "retry"}:
+                return event.next_attempt_at is None or event.next_attempt_at <= now
+            if event.status == "leased":
+                # A worker that crashed or was killed mid-publish never calls _complete/_fail,
+                # so without this branch an expired lease would be stuck "leased" forever and
+                # the event would never be reclaimed by any worker.
+                return event.lease_until is not None and event.lease_until <= now
+            return False
+
         def lease(state: StoreState) -> list[tuple[str, str]]:
             candidates = sorted(
-                (
-                    (key, event) for key, event in state.outbox.items()
-                    if event.status in {"pending", "retry"}
-                    and (event.next_attempt_at is None or event.next_attempt_at <= now)
-                    and (event.lease_until is None or event.lease_until <= now)
-                ),
+                ((key, event) for key, event in state.outbox.items() if eligible(event)),
                 key=lambda item: (item[1].emitted_at, item[1].sequence_no),
             )[:limit]
             keys: list[tuple[str, str]] = []
@@ -111,6 +123,35 @@ class OutboxPublisher:
             return keys
 
         return self.repository.atomic(lease)
+
+    def redrive(self, tenant_id: str, event_id: str, operator_id: str) -> None:
+        """Explicit, audited redrive of a dead-lettered event (packet §4 "安全重驅").
+
+        Dead-lettering is a deliberate stop after ``max_attempts`` unknown/retryable
+        publish failures; nothing re-queues a dead-lettered event automatically, so an
+        operator must take this action and it is audited like any other state change.
+        """
+        now = utc_now()
+
+        def transition(state: StoreState) -> None:
+            event = state.outbox.get((tenant_id, event_id))
+            if not event:
+                raise NotFoundError("outbox event was not found")
+            if event.status != "dead_letter":
+                raise ConflictError("only dead-lettered events can be redriven", code="outbox_event_not_dead_letter")
+            event.status = "retry"
+            event.attempt_count = 0
+            event.next_attempt_at = now
+            event.last_error_code = None
+            state.audit_events.append(
+                AuditEvent(
+                    id=new_id(), tenant_id=tenant_id, actor_id=operator_id, purpose="operations",
+                    action="m07.outbox.redrive", aggregate_type="outbox_event", aggregate_id=event_id,
+                    aggregate_version=event.sequence_no, correlation_id=new_id(), result="redriven", reason_code=None,
+                )
+            )
+
+        self.repository.atomic(transition)
 
     def _complete(self, tenant_id: str, event_id: str, worker_id: str) -> None:
         def complete(state: StoreState) -> None:
@@ -149,6 +190,7 @@ class OutboxPublisher:
 class ReconcileResult:
     expired: int
     manual_review: int
+    skipped: int = 0
 
 
 class SignatureExpiryReconciler:
@@ -175,17 +217,28 @@ class SignatureExpiryReconciler:
             return candidates
 
         due = self.repository.atomic(lease)
-        expired = manual = 0
+        expired = manual = skipped = 0
         for tenant_id, request_id in due:
-            transaction_id = self.repository.read(lambda state: state.signature_requests[(tenant_id, request_id)]).provider_transaction_id
-            lookup = self.provider.lookup(transaction_id)
+            request = self.repository.read(lambda state: state.signature_requests[(tenant_id, request_id)])
+            if request.manual_review_flagged_at is not None:
+                # Already parked for manual reconciliation; re-flagging on every poll
+                # would duplicate the audit trail without the human having acted yet.
+                continue
+            try:
+                lookup = self.provider.lookup(request.provider_transaction_id)
+            except DependencyUnavailableError:
+                # Provider lookup itself is unavailable — this is transient dependency
+                # failure, not evidence either way; leave the request pending and retry
+                # on the next poll rather than guessing expired or flagging manual review.
+                skipped += 1
+                continue
             if lookup not in {"pending", "not_found"}:
                 self._flag_manual_review(tenant_id, request_id, worker_id)
                 manual += 1
                 continue
             self._expire(tenant_id, request_id, worker_id)
             expired += 1
-        return ReconcileResult(expired, manual)
+        return ReconcileResult(expired, manual, skipped)
 
     def _expire(self, tenant_id: str, request_id: str, worker_id: str) -> None:
         now = utc_now()
@@ -206,10 +259,15 @@ class SignatureExpiryReconciler:
         self.repository.atomic(transition)
 
     def _flag_manual_review(self, tenant_id: str, request_id: str, worker_id: str) -> None:
-        from modules.report_signature.domain import AuditEvent, new_id
+        now = utc_now()
 
         def transition(state: StoreState) -> None:
             request = state.signature_requests[(tenant_id, request_id)]
+            if request.manual_review_flagged_at is not None:
+                return
+            request.manual_review_flagged_at = now
+            request.version += 1
+            request.updated_at = now
             state.audit_events.append(
                 AuditEvent(
                     id=new_id(), tenant_id=tenant_id, actor_id="00000000-0000-0000-0000-000000000002", purpose="operations",

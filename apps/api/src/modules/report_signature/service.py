@@ -209,6 +209,13 @@ class ReportSignatureService:
         now = self._clock()
 
         bundle_manifest = {
+            # REQ-M07-002/UAT-M07-002: the signable manifest must be sensitive to the report
+            # content and its publication window, not only channel text/audience rules, so a
+            # content or expiry change always yields a different bundle_manifest_sha256.
+            "report_asset_id": report_asset_id,
+            "report_content_sha256": report_content_sha256,
+            "valid_from": wire_time(valid_from),
+            "valid_until": wire_time(valid_until),
             "channel_texts": channel_texts,
             "audience_policy": audience_policy,
             "recommendation_version_ids": sorted(set(recommendation_ids)),
@@ -330,6 +337,8 @@ class ReportSignatureService:
         if not isinstance(required_review_ids, list) or not 1 <= len(required_review_ids) <= 10:
             raise ValidationError("required_review_ids must contain 1 to 10 items", field_name="required_review_ids")
         required_review_ids = [require_uuid(value, "required_review_ids") for value in required_review_ids]
+        if len(set(required_review_ids)) != len(required_review_ids):
+            raise ValidationError("required_review_ids must not contain duplicates", code="duplicate_review_id", field_name="required_review_ids")
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
 
@@ -345,17 +354,41 @@ class ReportSignatureService:
             reviews = [state.reviews[(context.tenant_id, review_id)] for review_id in required_review_ids if (context.tenant_id, review_id) in state.reviews]
             if len(reviews) != len(required_review_ids):
                 raise ValidationError("required_review_ids references a missing review", code="missing_review", field_name="required_review_ids")
+            if any(review.report_version_id != report_version_id for review in reviews):
+                raise ValidationError("required_review_ids references a review for a different version", code="missing_review", field_name="required_review_ids")
             valid_reviews = [
                 review for review in reviews
-                if review.report_version_id == report_version_id
-                and review.decision == "approve"
+                if review.decision == "approve"
                 and review.report_content_sha256 == report_content_sha256
                 and review.bundle_manifest_sha256 == bundle_manifest_sha256
             ]
+            if len(valid_reviews) != len(reviews):
+                raise ValidationError("required_review_ids references a review that is not an approval of the current content", code="missing_review", field_name="required_review_ids")
             covered_types = {review.review_type for review in valid_reviews}
             required_types = {"professional"} | ({"compliance"} if version.requires_compliance_review else set())
             if not required_types.issubset(covered_types):
                 raise ValidationError("a required review type is missing or not approved", code="missing_review")
+            # Mirror report.guard_signature's "unresolved review rejection" gate across the
+            # version's full review history (not just the caller-selected required_review_ids):
+            # a request_changes/reject on this exact content must have a strictly later approve
+            # of the same review_type and the same hashes, or freezing is blocked. Ordering uses
+            # record order (state.reviews preserves insertion order), not reviewed_at, because a
+            # deterministic test/replay clock can legitimately produce equal timestamps for two
+            # calls that are still strictly ordered in real sequence.
+            all_reviews = [
+                row for (tenant, _), row in state.reviews.items()
+                if tenant == context.tenant_id and row.report_version_id == report_version_id
+            ]
+            for index, review in enumerate(all_reviews):
+                if review.decision not in {"request_changes", "reject"}:
+                    continue
+                resolved = any(
+                    later.review_type == review.review_type and later.decision == "approve"
+                    and later.report_content_sha256 == report_content_sha256 and later.bundle_manifest_sha256 == bundle_manifest_sha256
+                    for later_index, later in enumerate(all_reviews) if later_index > index
+                )
+                if not resolved:
+                    raise ConflictError("an unresolved review rejection exists for this version", code="unresolved_review_rejection")
             version.status = "ready_to_sign"
             version.frozen_at = now
             version.required_review_ids = required_review_ids
@@ -402,9 +435,23 @@ class ReportSignatureService:
         required_review_ids = sorted(require_uuid(value, "required_review_ids") for value in required_review_ids)
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
+        request_payload = {"report_version_id": report_version_id, **body}
+
+        # Idempotent replay must win over every later precondition: a retried
+        # request_analyst_signature call with the same key+body has to return the
+        # original 202 even after the first call already moved the version on to
+        # signature_pending (otherwise the replay sees "not ready to sign" instead
+        # of the receipt). Checked before any CAS/provider/qualification side effect.
+        replay = self._idempotency_lookup(context, "request_analyst_signature", idempotency_key, request_payload)
+        if replay is not None:
+            return replay
 
         def check_signable(state: StoreState) -> ReportVersion:
             version = self._stored_version(state, context.tenant_id, report_version_id)
+            # CAS is part of the signability check itself: a stale/missing If-Match
+            # must fail here, before the qualification lookup or provider session
+            # creation below ever run, so a stale request cannot leak a provider session.
+            self._cas(version.version, expected_version)
             if (context.tenant_id, version.source_candidate_id) in state.superseded_candidates:
                 raise ConflictError("source candidate has been superseded", code="source_candidate_superseded")
             if version.status != "ready_to_sign":
@@ -427,7 +474,6 @@ class ReportSignatureService:
 
         def mutate(state: StoreState) -> _Outcome:
             version = check_signable(state)
-            self._cas(version.version, expected_version)
             request = SignatureRequest(
                 id=new_id(), tenant_id=context.tenant_id, report_version_id=report_version_id, signer_id=context.actor_id,
                 credential_id=credential_id, bundle_sha256=bundle_manifest_sha256, provider=handle.provider,
@@ -440,7 +486,7 @@ class ReportSignatureService:
             version.updated_at = now
             return _Outcome(request.to_api([]), 202, "signature_request", request.id, request.version)
 
-        return self._run_command(context, "request_analyst_signature", idempotency_key, {"report_version_id": report_version_id, **body}, correlation_id, mutate)
+        return self._run_command(context, "request_analyst_signature", idempotency_key, request_payload, correlation_id, mutate)
 
     def receive_analyst_signature(
         self,
@@ -458,8 +504,12 @@ class ReportSignatureService:
         }
         required = {"event_id", "signature_request_id", "provider_session_ref", "report_version_id", "report_content_sha256", "bundle_manifest_sha256", "verification_result"}
         self._body(body, allowed, required)
+        event_id = require_uuid(body["event_id"], "event_id")
         signature_request_id = require_uuid(body["signature_request_id"], "signature_request_id")
         report_version_id = require_uuid(body["report_version_id"], "report_version_id")
+        provider_session_ref = str(body["provider_session_ref"])
+        if not 1 <= len(provider_session_ref) <= 160:
+            raise ValidationError("provider_session_ref must contain 1 to 160 characters", field_name="provider_session_ref")
         verification_result = body["verification_result"]
         if verification_result not in {"verified", "failed"}:
             raise ValidationError("verification_result is not supported", field_name="verification_result")
@@ -467,10 +517,24 @@ class ReportSignatureService:
         bundle_manifest_sha256 = str(body["bundle_manifest_sha256"])
         if not _SHA_RE.fullmatch(report_content_sha256) or not _SHA_RE.fullmatch(bundle_manifest_sha256):
             raise ValidationError("content and bundle hashes must be lowercase SHA-256", field_name="report_content_sha256")
+        signed_asset_id = verification_evidence_asset_id = signed_file_sha256 = signer_subject_ref = None
+        certificate_chain_asset_id = trusted_timestamp_asset_id = None
         if verification_result == "verified":
             missing = _VERIFIED_CALLBACK_REQUIRED - set(body)
             if missing:
                 raise ValidationError(f"missing fields for a verified callback: {', '.join(sorted(missing))}", field_name=sorted(missing)[0])
+            signed_asset_id = require_uuid(body["signed_asset_id"], "signed_asset_id")
+            verification_evidence_asset_id = require_uuid(body["verification_evidence_asset_id"], "verification_evidence_asset_id")
+            signed_file_sha256 = str(body["signed_file_sha256"])
+            if not _SHA_RE.fullmatch(signed_file_sha256):
+                raise ValidationError("signed_file_sha256 must be lowercase SHA-256", field_name="signed_file_sha256")
+            signer_subject_ref = str(body["signer_subject_ref"])
+            if not 1 <= len(signer_subject_ref) <= 256:
+                raise ValidationError("signer_subject_ref must contain 1 to 256 characters", field_name="signer_subject_ref")
+            if body.get("certificate_chain_asset_id") is not None:
+                certificate_chain_asset_id = require_uuid(body["certificate_chain_asset_id"], "certificate_chain_asset_id")
+            if body.get("trusted_timestamp_asset_id") is not None:
+                trusted_timestamp_asset_id = require_uuid(body["trusted_timestamp_asset_id"], "trusted_timestamp_asset_id")
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
 
@@ -481,51 +545,75 @@ class ReportSignatureService:
             version = self._stored_version(state, context.tenant_id, report_version_id)
 
             if request.status == "verified":
-                receipt = {"receipt_id": request.last_receipt_id, "event_id": body["event_id"], "status": "duplicate", "received_at": wire_time(now), "correlation_id": correlation_id}
+                receipt = {"receipt_id": request.last_receipt_id, "event_id": event_id, "status": "duplicate", "received_at": wire_time(now), "correlation_id": correlation_id}
                 return _Outcome(receipt, 202, "signature_request", request.id, request.version)
             if request.status in {"failed", "expired"}:
-                receipt = {"receipt_id": new_id(), "event_id": body["event_id"], "status": "quarantined", "received_at": wire_time(now), "correlation_id": correlation_id}
+                receipt = {"receipt_id": new_id(), "event_id": event_id, "status": "quarantined", "received_at": wire_time(now), "correlation_id": correlation_id}
                 self._record_audit(state, context, "receive_analyst_signature", "signature_request", request.id, request.version, correlation_id, "rejected", "signature_request_already_closed")
                 return _Outcome(receipt, 202, "signature_request", request.id, request.version)
+            if request.manual_review_flagged_at is not None:
+                # Flagged for manual reconciliation after an unexplained provider state; a
+                # callback must not silently resolve it either way until a human clears it.
+                receipt = {"receipt_id": new_id(), "event_id": event_id, "status": "quarantined", "received_at": wire_time(now), "correlation_id": correlation_id}
+                self._record_audit(state, context, "receive_analyst_signature", "signature_request", request.id, request.version, correlation_id, "rejected", "signature_request_pending_manual_review")
+                return _Outcome(receipt, 202, "signature_request", request.id, request.version)
 
-            receipt_id = new_id()
+            def quarantine(reason_code: str) -> _Outcome:
+                self._reopen_for_retry(request, version, now)
+                self._record_audit(state, context, "receive_analyst_signature", "signature_request", request.id, request.version, correlation_id, "rejected", reason_code)
+                receipt = {"receipt_id": new_id(), "event_id": event_id, "status": "quarantined", "received_at": wire_time(now), "correlation_id": correlation_id}
+                return _Outcome(receipt, 202, "signature_request", request.id, request.version)
+
+            # The provider must be challenging back the exact session we opened for this
+            # request; otherwise an attacker (or a misrouted callback) could bind an
+            # unrelated provider session's result onto this signature_request_id.
+            if provider_session_ref != request.provider_transaction_id:
+                return quarantine("signature_provider_session_mismatch")
+            # A source candidate can be superseded after request_analyst_signature already
+            # opened a provider session; the frozen package must not auto-publish on stale
+            # source data just because the callback itself race-wins the supersede event.
+            if (context.tenant_id, version.source_candidate_id) in state.superseded_candidates:
+                return quarantine("source_candidate_superseded")
+
             hashes_match = (
                 version.report_content_sha256 == report_content_sha256
                 and version.bundle_manifest_sha256 == bundle_manifest_sha256
                 and request.bundle_sha256 == bundle_manifest_sha256
             )
             if not hashes_match:
-                self._reopen_for_retry(request, version, now)
-                self._record_audit(state, context, "receive_analyst_signature", "signature_request", request.id, request.version, correlation_id, "rejected", "signature_payload_mismatch")
-                receipt = {"receipt_id": receipt_id, "event_id": body["event_id"], "status": "quarantined", "received_at": wire_time(now), "correlation_id": correlation_id}
-                return _Outcome(receipt, 202, "signature_request", request.id, request.version)
+                return quarantine("signature_payload_mismatch")
             if verification_result == "failed":
                 self._reopen_for_retry(request, version, now)
                 self._record_audit(state, context, "receive_analyst_signature", "signature_request", request.id, request.version, correlation_id, "rejected", "provider_verification_failed")
-                receipt = {"receipt_id": receipt_id, "event_id": body["event_id"], "status": "accepted", "received_at": wire_time(now), "correlation_id": correlation_id}
+                receipt = {"receipt_id": new_id(), "event_id": event_id, "status": "accepted", "received_at": wire_time(now), "correlation_id": correlation_id}
                 return _Outcome(receipt, 202, "signature_request", request.id, request.version)
             signed_at = self._parse_time(body["signed_at"], "signed_at")
-            if signed_at < version.frozen_at or signed_at >= request.expires_at or signed_at >= version.valid_until:
-                self._reopen_for_retry(request, version, now)
-                self._record_audit(state, context, "receive_analyst_signature", "signature_request", request.id, request.version, correlation_id, "rejected", "signed_at_out_of_window")
-                receipt = {"receipt_id": receipt_id, "event_id": body["event_id"], "status": "quarantined", "received_at": wire_time(now), "correlation_id": correlation_id}
-                return _Outcome(receipt, 202, "signature_request", request.id, request.version)
+            if signed_at < version.frozen_at or signed_at > now or signed_at >= request.expires_at or signed_at >= version.valid_until:
+                return quarantine("signed_at_out_of_window")
             try:
-                self.qualifications.verify(context.tenant_id, request.signer_id, request.credential_id)
+                credential = self.qualifications.verify(context.tenant_id, request.signer_id, request.credential_id)
             except DomainError:
-                self._reopen_for_retry(request, version, now)
-                self._record_audit(state, context, "receive_analyst_signature", "signature_request", request.id, request.version, correlation_id, "rejected", "qualification_invalid_at_verification")
-                receipt = {"receipt_id": receipt_id, "event_id": body["event_id"], "status": "quarantined", "received_at": wire_time(now), "correlation_id": correlation_id}
-                return _Outcome(receipt, 202, "signature_request", request.id, request.version)
-            for asset_id in filter(None, [body.get("signed_asset_id"), body.get("verification_evidence_asset_id"), body.get("certificate_chain_asset_id"), body.get("trusted_timestamp_asset_id")]):
+                return quarantine("qualification_invalid_at_verification")
+            # The provider-asserted signer must be the same subject the credential registry
+            # knows for this request's signer_id/credential_id, not merely a well-formed ref.
+            if credential.subject_ref != signer_subject_ref:
+                return quarantine("signer_subject_mismatch")
+            for asset_id in filter(None, [signed_asset_id, verification_evidence_asset_id, certificate_chain_asset_id, trusted_timestamp_asset_id]):
                 if not self.assets.exists(context.tenant_id, asset_id):
                     raise ValidationError("signature evidence asset does not exist", code="evidence_not_found")
+            # content_hash != signed_file_hash by design (packaging adds the certificate), but
+            # when the asset store does record a digest for the signed container it must match
+            # the asserted signed_file_sha256 — this is not the same comparison as content_hash.
+            stored_signed_hash = self.assets.sha256_of(context.tenant_id, signed_asset_id)
+            if stored_signed_hash is not None and stored_signed_hash != signed_file_sha256:
+                return quarantine("signed_file_hash_mismatch")
 
+            receipt_id = new_id()
             signature = Signature(
                 id=new_id(), tenant_id=context.tenant_id, request_id=request.id, report_version_id=report_version_id,
                 signer_id=request.signer_id, credential_id=request.credential_id, content_sha256=report_content_sha256,
-                bundle_sha256=bundle_manifest_sha256, signed_file_sha256=body["signed_file_sha256"],
-                signed_asset_id=body["signed_asset_id"], verification_asset_id=body["verification_evidence_asset_id"],
+                bundle_sha256=bundle_manifest_sha256, signed_file_sha256=signed_file_sha256,
+                signed_asset_id=signed_asset_id, verification_asset_id=verification_evidence_asset_id,
                 signed_at=signed_at, verified_at=now, created_at=now, updated_at=now,
             )
             state.signatures[(context.tenant_id, signature.id)] = signature
@@ -534,7 +622,7 @@ class ReportSignatureService:
             request.version += 1
             request.updated_at = now
             version.status = "signed"
-            version.signed_at = now
+            version.signed_at = signed_at
             version.signature_id = signature.id
             version.signed_file_sha256 = signature.signed_file_sha256
             version.version += 1
@@ -551,7 +639,7 @@ class ReportSignatureService:
                 },
                 now=now,
             )
-            receipt = {"receipt_id": receipt_id, "event_id": body["event_id"], "status": "accepted", "received_at": wire_time(now), "correlation_id": correlation_id}
+            receipt = {"receipt_id": receipt_id, "event_id": event_id, "status": "accepted", "received_at": wire_time(now), "correlation_id": correlation_id}
             return _Outcome(receipt, 202, "signature_request", request.id, request.version)
 
         return self._run_command(context, "receive_analyst_signature", idempotency_key, body, correlation_id, mutate)
@@ -685,7 +773,7 @@ class ReportSignatureService:
             if receipt:
                 if receipt.request_sha256 != fingerprint:
                     raise ConflictError("Idempotency-Key was already used with a different payload", code="idempotency_conflict")
-                prior = _Outcome(receipt.response_value, receipt.response_status, "replay", None, None, receipt.error)
+                prior = _Outcome(receipt.response_value, receipt.response_status, "replay", None, receipt.aggregate_version, receipt.error)
                 return prior, True
             outcome = mutate(state)
             self._record_audit(
@@ -695,7 +783,7 @@ class ReportSignatureService:
             state.idempotency[receipt_key] = IdempotencyReceipt(
                 tenant_id=context.tenant_id, actor_id=context.actor_id, operation=operation, key=key,
                 request_sha256=fingerprint, response_status=outcome.status, response_value=outcome.value,
-                error=outcome.error, completed_at=self._clock(),
+                error=outcome.error, completed_at=self._clock(), aggregate_version=outcome.aggregate_version,
             )
             return outcome, False
 
@@ -708,6 +796,32 @@ class ReportSignatureService:
             raise outcome.error
         etag = self._etag(outcome.aggregate_version) if outcome.aggregate_version else None
         return ServiceResponse(outcome.value, outcome.status, etag, replayed)
+
+    def _idempotency_lookup(
+        self, context: ActorContext, operation: str, key: str, request: dict[str, Any],
+    ) -> ServiceResponse | None:
+        """Fast-path idempotent replay, checked before any CAS/provider side effect.
+
+        Mirrors the receipt lookup ``_run_command`` performs inside its atomic
+        transaction so a replay of an already-completed command still succeeds
+        even once the aggregate has since moved on to a state the command's
+        own preconditions would otherwise reject (e.g. ``ready_to_sign`` ->
+        ``signature_pending``). ``_run_command`` still re-checks the receipt
+        itself for race safety; this only short-circuits the external calls.
+        """
+        if not _KEY_RE.fullmatch(key):
+            raise PreconditionRequiredError("Idempotency-Key must match the published contract", code="idempotency_key_required")
+        fingerprint = canonical_hash(request)
+        receipt_key = (context.tenant_id, context.actor_id, operation, key)
+        receipt = self.repository.read(lambda state: state.idempotency.get(receipt_key))
+        if not receipt:
+            return None
+        if receipt.request_sha256 != fingerprint:
+            raise ConflictError("Idempotency-Key was already used with a different payload", code="idempotency_conflict")
+        if receipt.error:
+            raise receipt.error
+        etag = self._etag(receipt.aggregate_version) if receipt.aggregate_version else None
+        return ServiceResponse(receipt.response_value, receipt.response_status, etag, True)
 
     def _emit(
         self,

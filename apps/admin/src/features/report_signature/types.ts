@@ -10,6 +10,14 @@ export interface InstrumentRef {
   instrument_type: "equity" | "etf" | "fund" | "bond" | "other_approved";
 }
 
+export interface ExternalRef {
+  system: string;
+  external_id: string;
+  kind: string;
+  version?: string;
+  checksum_sha256?: string;
+}
+
 export interface ChannelText {
   channel: "legendflow" | "line" | "sms" | "email";
   locale: "zh-TW";
@@ -53,6 +61,7 @@ export interface ReportVersion {
   report_id: string;
   version_number: number;
   source_candidate_id: string;
+  source_artifact_ref: ExternalRef;
   report_asset_id: string;
   report_content_sha256: string;
   bundle_manifest_asset_id: string;
