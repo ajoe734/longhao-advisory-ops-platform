@@ -198,3 +198,21 @@ def run_jobs(fixtures, worker_id: str = "m12-test-worker") -> None:
         result = runner.run_once(worker_id)
         if result.processed == 0 and result.retried == 0:
             break
+
+
+PERIOD = {"period_start": "2026-01-01", "period_end": "2026-02-01", "revenue_cutoff_at": "2026-01-31T23:59:59.000000Z"}
+
+
+def run_request(policy_id: str, recognition_ids: list[str] | None = None) -> dict:
+    body = {"policy_id": policy_id, **PERIOD}
+    if recognition_ids is not None:
+        body["recognition_ids"] = recognition_ids
+    return body
+
+
+def entries_for_run(fixtures, run_id: str) -> list[dict]:
+    page = fixtures["service"].list_commission_entries(
+        ActorContext(TENANT, APPROVER, frozenset({"commission_approver"})),
+        limit=200,
+    ).data
+    return [item for item in page["items"] if item["run_id"] == run_id]

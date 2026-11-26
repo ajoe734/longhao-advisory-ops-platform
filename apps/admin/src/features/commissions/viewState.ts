@@ -7,8 +7,8 @@ export function failedState<T>(error: unknown, previous?: T): ViewState<T> {
     if (error.problem.status === 412 && previous && error.problem.current_version) {
       return { kind: "conflict", value: previous, currentVersion: error.problem.current_version, message: "資料已被其他人更新，請重載並檢視差異。" };
     }
-    if (error.problem.status === 503) {
-      return { kind: "stale", value: previous as T, message: "相依資料來源暫時失效，顯示的是最後成功結果。" };
+    if (error.problem.status === 503 && previous !== undefined) {
+      return { kind: "stale", value: previous, message: "相依資料來源暫時失效，顯示的是最後成功結果。" };
     }
     return { kind: "error", problem: error.problem };
   }

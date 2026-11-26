@@ -10,7 +10,7 @@
 .m12-table-scroll table { border-collapse: collapse; width: 100%; }
 .m12-table-scroll th, .m12-table-scroll td { border-bottom: 1px solid var(--border, #cbd5e1); padding: .75rem; text-align: left; }
 .m12-table-scroll small { display: block; font-weight: normal; }
-.m12-table-scroll tr[aria-current="row"] { background: #e0f2fe; }
+.m12-table-scroll tr[data-focused="true"] { background: #e0f2fe; }
 .m12-eyebrow { letter-spacing: .08em; text-transform: uppercase; }
 .m12-result { display: grid; gap: .5rem; }
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #0ea5e9; outline-offset: 2px; }

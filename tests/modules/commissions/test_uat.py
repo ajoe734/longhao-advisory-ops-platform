@@ -19,31 +19,15 @@ from conftest import (
     TENANT,
     approve_policy,
     create_policy,
+    entries_for_run,
     run_jobs,
+    run_request,
     sales_context,
     seed_cohort,
     seed_conversion,
     seed_recognition,
     seed_refund,
 )
-
-
-PERIOD = {"period_start": "2026-01-01", "period_end": "2026-02-01", "revenue_cutoff_at": "2026-01-31T23:59:59.000000Z"}
-
-
-def run_request(policy_id: str, recognition_ids: list[str] | None = None) -> dict:
-    body = {"policy_id": policy_id, **PERIOD}
-    if recognition_ids is not None:
-        body["recognition_ids"] = recognition_ids
-    return body
-
-
-def entries_for_run(m12, run_id: str) -> list[dict]:
-    page = m12["service"].list_commission_entries(
-        ActorContext(TENANT, APPROVER, frozenset({"commission_approver"})),
-        limit=200,
-    ).data
-    return [item for item in page["items"] if item["run_id"] == run_id]
 
 
 def test_uat_m12_001_unapproved_rate_blocks_live_but_allows_simulation(m12, operator):
@@ -255,6 +239,8 @@ def test_uat_m12_008_adjustment_amount_beyond_the_original_award_is_flagged_not_
         idempotency_key="m12-008-adjustment-beyond",
     ).data
     assert beyond_award["amount"]["amount"] == "-500"  # recorded in full, not clipped to -100
+    # Exceeding the original award is never auto-deducted from payroll, even though the entry has not been paid yet.
+    assert beyond_award["payroll_offset_allowed"] is False
 
 
 def test_uat_m12_009_resending_the_same_refund_only_creates_one_linked_adjustment(m12, operator, approver):
@@ -354,12 +340,14 @@ def test_uat_m12_011_maker_cannot_self_approve_and_payout_requires_a_deduped_rec
     ).data
     assert approved_batch["state"] == "approved"
 
+    marketing_entry = next(e for e in entries_for_run(m12, run["id"]) if e["recipient_type"] == "marketing")
+
     ack_body = {
         "event_id": "90000000-0000-0000-0000-000000000005",
         "external_batch_ref": "payroll-ref-001",
         "control_sha256": approved_batch["control_sha256"],
         "status": "accepted",
-        "accepted_entry_ids": [],
+        "accepted_entry_ids": [marketing_entry["id"]],
         "rejected_entry_ids": [],
         "acknowledgement_evidence_id": EVIDENCE_ACK,
     }

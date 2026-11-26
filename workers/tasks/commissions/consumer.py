@@ -39,6 +39,11 @@ _CONTRACTS: dict[str, tuple[str, str, set[str]]] = {
         "refund",
         {"refund_id", "contract_id", "original_payment_id", "allocation_snapshot_id", "confirmed_at"},
     ),
+    "commission.run_calculated": (
+        "M12",
+        "commission_run",
+        {"run_id", "policy_id", "entry_count", "calculation_manifest_sha256"},
+    ),
 }
 
 
@@ -49,7 +54,9 @@ class ConsumeResult:
 
 
 class CommissionEventConsumer:
-    """Consumes M10/M11/M14 projections M12 depends on but does not own.
+    """Consumes M10/M11/M14 projections M12 depends on but does not own, plus M12's
+    own ``commission.run_calculated`` self-loop (produced and consumed by M12 per
+    ``events/registry.json``).
 
     ``finance.refund_confirmed`` is the one event with a concrete local effect:
     it prepares a ``PendingAdjustmentDraft`` (service-actor maker) so the later
@@ -144,6 +151,8 @@ class CommissionEventConsumer:
             return f"assignment_projection_noted:{payload['state']}"
         if event_type == "finance.revenue_recognized":
             return "revenue_recognition_noted"
+        if event_type == "commission.run_calculated":
+            return f"run_calculated_noted:{payload['run_id']}"
         raise ValidationError("event type is not consumed by M12", code="unsupported_event_type")
 
     @staticmethod

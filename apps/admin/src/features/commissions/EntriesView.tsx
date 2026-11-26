@@ -77,7 +77,7 @@ function EntriesResult({ state, focusEntryId, onLoadMore }: {
           <th scope="col">id</th><th scope="col">狀態</th><th scope="col">受款類型</th><th scope="col">受款人</th>
           <th scope="col">金額</th><th scope="col">policy_id</th><th scope="col">規則軌跡</th>
         </tr></thead>
-        <tbody>{page.items.map(entry => <tr key={entry.id} aria-current={entry.id === focusEntryId ? "row" : undefined}>
+        <tbody>{page.items.map(entry => <tr key={entry.id} data-focused={entry.id === focusEntryId ? "true" : undefined}>
           <th scope="row">{entry.id}<small>run {entry.run_id}</small></th>
           <td>{entry.state}</td>
           <td>{entry.recipient_type}</td>

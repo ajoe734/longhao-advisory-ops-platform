@@ -629,6 +629,13 @@ class CommissionService:
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
 
+        accepted_set = set(accepted_ids)
+        rejected_set = set(rejected_ids)
+        if accepted_set & rejected_set:
+            raise ValidationError(
+                "accepted_entry_ids and rejected_entry_ids must be disjoint", code="accepted_rejected_overlap", field_name="accepted_entry_ids"
+            )
+
         def mutate(state: StoreState) -> _Outcome:
             batch = self._stored_batch(state, context.tenant_id, batch_id)
             if event_id in batch.ack_event_ids:
@@ -637,18 +644,37 @@ class CommissionService:
                 raise ConflictError("payout batch is not approved", code="batch_not_approved")
             if body["control_sha256"] != batch.control_sha256:
                 raise ValidationError("control_sha256 does not match the assembled batch", code="control_total_mismatch", field_name="control_sha256")
+            batch_lines = {
+                line.entry_id: line
+                for (tenant, _), line in state.payout_lines.items()
+                if tenant == context.tenant_id and line.batch_id == batch.id
+            }
+            if not accepted_set <= batch_lines.keys() or not rejected_set <= batch_lines.keys():
+                raise ValidationError(
+                    "accepted_entry_ids/rejected_entry_ids must reference entries in this payout batch",
+                    code="entry_not_in_batch",
+                    field_name="accepted_entry_ids",
+                )
+            if body["status"] == "accepted" and (accepted_set != batch_lines.keys() or rejected_set):
+                raise ValidationError(
+                    "status=accepted requires every payout line in this batch to be listed in accepted_entry_ids",
+                    code="incomplete_acceptance",
+                    field_name="accepted_entry_ids",
+                )
+            if body["status"] == "rejected" and (rejected_set != batch_lines.keys() or accepted_set):
+                raise ValidationError(
+                    "status=rejected requires every payout line in this batch to be listed in rejected_entry_ids",
+                    code="incomplete_rejection",
+                    field_name="rejected_entry_ids",
+                )
             batch.version += 1
             batch.updated_at = now
             batch.ack_event_ids = batch.ack_event_ids + (event_id,)
             batch.payroll_export_ref = str(body["external_batch_ref"])
-            for entry_id in accepted_ids:
-                line_id = state.payout_line_by_entry.get((context.tenant_id, entry_id))
-                if line_id:
-                    state.payout_lines[(context.tenant_id, line_id)].accepted = True
-            for entry_id in rejected_ids:
-                line_id = state.payout_line_by_entry.get((context.tenant_id, entry_id))
-                if line_id:
-                    state.payout_lines[(context.tenant_id, line_id)].accepted = False
+            for entry_id in accepted_set:
+                batch_lines[entry_id].accepted = True
+            for entry_id in rejected_set:
+                batch_lines[entry_id].accepted = False
             if body["status"] == "rejected":
                 batch.status = "reversed"
             else:
@@ -741,9 +767,7 @@ class CommissionService:
             for (tenant, entry_id), entry in state.entries.items():
                 if tenant != tenant_id or entry.run_id not in batch.run_ids or entry.beneficiary_type not in {"marketing", "sales"}:
                     continue
-                net_amount = entry.award_amount + sum(
-                    (adj.amount for adj in state.adjustments.values() if adj.original_entry_id == entry.id), Decimal("0")
-                )
+                net_amount = self._payable_entry_amount(state, entry)
                 if net_amount <= 0:
                     continue
                 adjustment_ids = tuple(
@@ -978,14 +1002,37 @@ class CommissionService:
                 exception_recognition_ids.add(entry.recognition_id)
         return totals, entry_count, len(exception_recognition_ids)
 
+    @staticmethod
+    def _payable_entry_amount(state: StoreState, entry: CommissionEntry) -> Decimal:
+        """Net amount owed for ``entry``: award plus only the adjustments payroll is
+        allowed to offset directly (``payroll_offset_allowed`` on the wire). Adjustments
+        under manual recovery (already-paid entries) or that exceed the original award
+        must stay a pending reconciliation item, never an automatic payroll deduction.
+        """
+
+        offsettable = sum(
+            (
+                adj.amount
+                for adj in state.adjustments.values()
+                if adj.tenant_id == entry.tenant_id
+                and adj.original_entry_id == entry.id
+                and adj.currency == entry.currency
+                and adj.recovery_method == "ledger_offset"
+                and not adj.exceeds_original_award
+            ),
+            Decimal("0"),
+        )
+        return entry.award_amount + offsettable
+
     def _payable_total(self, state: StoreState, tenant_id: str, run_ids: tuple[str, ...]) -> Decimal:
         total = Decimal("0")
         for (tenant, entry_id), entry in state.entries.items():
             if tenant != tenant_id or entry.run_id not in run_ids or entry.beneficiary_type not in {"marketing", "sales"}:
                 continue
-            total += entry.award_amount + sum(
-                (adj.amount for adj in state.adjustments.values() if adj.original_entry_id == entry.id), Decimal("0")
-            )
+            net_amount = self._payable_entry_amount(state, entry)
+            if net_amount <= 0:
+                continue
+            total += net_amount
         return total
 
     def _entry_state(self, state: StoreState, entry: CommissionEntry) -> str:
@@ -1007,16 +1054,20 @@ class CommissionService:
     def _entry_actions(_state: str) -> list[str]:
         return []
 
+    @staticmethod
+    def _can_approve(context: ActorContext, maker_id: str | None) -> bool:
+        return "commission_approver" in context.roles and maker_id != context.actor_id
+
     def _policy_outcome(self, policy: CommissionPolicy, context: ActorContext, status: int) -> _Outcome:
         actions: list[str] = []
-        if policy.state == "draft":
+        if policy.state == "draft" and self._can_approve(context, policy.proposed_by):
             actions.append("approve_commission_policy")
         return _Outcome(policy.to_api(actions), status, "commission_policy", policy.id, policy.version)
 
     def _run_outcome(self, state: StoreState, run: CommissionRun, context: ActorContext, status: int) -> _Outcome:
         totals, entry_count, exception_count = self._run_totals(state, run)
         actions: list[str] = []
-        if run.state == "calculated":
+        if run.state == "calculated" and self._can_approve(context, run.prepared_by):
             actions.append("approve_commission_run")
         return _Outcome(run.to_api(actions, totals, entry_count, exception_count), status, "commission_run", run.id, run.version)
 
@@ -1024,7 +1075,7 @@ class CommissionService:
         return _Outcome(adjustment.to_api([]), status, "commission_adjustment", adjustment.id, adjustment.version)
 
     def _payout_actions(self, batch: PayoutBatch, context: ActorContext) -> list[str]:
-        if batch.status == "approval_pending":
+        if batch.status == "approval_pending" and self._can_approve(context, batch.prepared_by):
             return ["approve_commission_payout_batch"]
         return []
 
