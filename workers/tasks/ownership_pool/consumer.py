@@ -37,29 +37,35 @@ from modules.ownership_pool.domain import (
     ValidationError,
     canonical_hash,
     new_id,
+    require_uuid,
     utc_now,
     wire_time,
 )
+from modules.ownership_pool.ports import RestrictionPort
 from modules.ownership_pool.repository import InMemoryRepository, StoreState
 from modules.ownership_pool.service import DEFAULT_POLICY_CODE
 
 
-_CONTRACTS: dict[str, tuple[str, str, set[str]]] = {
+_CONTRACTS: dict[str, tuple[str, str, set[str], str]] = {
     "contract.effective": (
         "M02", "contract",
         {"contract_id", "customer_id", "effective_at", "service_starts_at", "service_ends_at"},
+        "customer_confidential",
     ),
     "contract.terminated": (
         "M02", "contract",
         {"contract_id", "customer_id", "terminated_at", "refund_evaluation_required"},
+        "customer_confidential",
     ),
     "contract.service_ended": (
         "M02", "contract_service",
         {"contract_service_id", "contract_id", "customer_id", "ended_at"},
+        "customer_confidential",
     ),
     "ownership.employee_departed": (
         "M11", "employee",
         {"employee_id", "departure_id", "effective_at"},
+        "internal",
     ),
 }
 
@@ -71,8 +77,9 @@ class ConsumeResult:
 
 
 class M11EventConsumer:
-    def __init__(self, repository: InMemoryRepository, *, clock=utc_now) -> None:
+    def __init__(self, repository: InMemoryRepository, restriction: RestrictionPort, *, clock=utc_now) -> None:
         self.repository = repository
+        self.restriction = restriction
         self._clock = clock
 
     def consume(self, envelope: dict[str, Any]) -> ConsumeResult:
@@ -94,6 +101,7 @@ class M11EventConsumer:
                     receipt.sequence_no for receipt in state.inbox.values()
                     if receipt.tenant_id == tenant_id
                     and receipt.producer == envelope["producer"]
+                    and receipt.aggregate_type == envelope["aggregate_type"]
                     and receipt.aggregate_id == envelope["aggregate_id"]
                     and receipt.status == "applied"
                 ),
@@ -145,9 +153,12 @@ class M11EventConsumer:
             previous = state.contracts.get((tenant_id, contract_id))
             if previous is not None:
                 window.terminated_at = previous.terminated_at
-                window.service_ended_at = previous.service_ended_at
+                window.service_ended_ats = dict(previous.service_ended_ats)
             state.contracts[(tenant_id, contract_id)] = window
-            self._ensure_pool_baseline(state, tenant_id, payload["customer_id"])
+            self._ensure_pool_baseline(
+                state, tenant_id, payload["customer_id"],
+                correlation_id=envelope["correlation_id"], causation_id=envelope["event_id"],
+            )
             return "contract_window_recorded"
         if event_type == "contract.terminated":
             window = state.contracts.get((tenant_id, payload["contract_id"]))
@@ -156,12 +167,16 @@ class M11EventConsumer:
             window.terminated_at = self._time(payload["terminated_at"])
             return "contract_termination_recorded"
         if event_type == "contract.service_ended":
+            ended_at = self._time(payload["ended_at"])
             state.service_ends[(tenant_id, payload["contract_service_id"])] = (
-                payload["contract_id"], self._time(payload["ended_at"])
+                payload["contract_id"], ended_at
             )
             window = state.contracts.get((tenant_id, payload["contract_id"]))
             if window:
-                window.service_ended_at = self._time(payload["ended_at"])
+                # Keyed by contract_service_id so a later event for one child
+                # service can never overwrite/discard an earlier event for a
+                # different one under the same contract_id.
+                window.service_ended_ats[payload["contract_service_id"]] = ended_at
             return "service_end_recorded"
         if event_type == "ownership.employee_departed":
             # Synchronous side effects already ran inside record_employee_departure;
@@ -169,7 +184,9 @@ class M11EventConsumer:
             return "self_departure_confirmation_noop"
         raise ValidationError("event type is not consumed by M11", code="unsupported_event_type")
 
-    def _ensure_pool_baseline(self, state: StoreState, tenant_id: str, customer_id: str) -> None:
+    def _ensure_pool_baseline(
+        self, state: StoreState, tenant_id: str, customer_id: str, *, correlation_id: str, causation_id: str | None,
+    ) -> None:
         if (tenant_id, customer_id) in state.current_assignment:
             return
         policies = [
@@ -180,6 +197,11 @@ class M11EventConsumer:
             return
         policy = max(policies, key=lambda item: item.policy_version)
         now = self._clock()
+        # Re-check live compliance restriction the same way
+        # OwnershipPoolService._open_pool_entry does, so a customer who is
+        # already restricted before their first paid-service event is ever
+        # consumed does not materialize as an "available" pool entry.
+        restricted = self.restriction.is_restricted(tenant_id, customer_id)
         assignment = Assignment(
             id=new_id(),
             tenant_id=tenant_id,
@@ -206,25 +228,26 @@ class M11EventConsumer:
             policy_version=policy.wire_code,
             entered_at=now,
             evaluation_snapshot={"reason": "first_contract_without_owner"},
+            state="suppressed" if restricted else "available",
+            suppressed_reason="compliance_hold" if restricted else None,
         )
         state.pool_entries[(tenant_id, entry.id)] = entry
         state.pool_entry_by_assignment[(tenant_id, assignment.id)] = entry.id
 
-        correlation_id = new_id()
         M11EventConsumer._emit_outbox(
             state, tenant_id, "ownership.assignment_changed", "maintenance_assignment", assignment.id, 1,
-            correlation_id, now,
+            correlation_id, causation_id, now,
             {"assignment_id": assignment.id, "customer_id": customer_id, "salesperson_id": None, "effective_at": wire_time(now), "state": "active"},
         )
         M11EventConsumer._emit_outbox(
-            state, tenant_id, "ownership.pool_entered", "pool_entry", entry.id, 1, correlation_id, now,
+            state, tenant_id, "ownership.pool_entered", "pool_entry", entry.id, 1, correlation_id, causation_id, now,
             {"pool_entry_id": entry.id, "customer_id": customer_id, "entry_reason": "unassigned_web", "policy_version": policy.wire_code},
         )
 
     @staticmethod
     def _emit_outbox(
         state: StoreState, tenant_id: str, event_type: str, aggregate_type: str, aggregate_id: str,
-        aggregate_version: int, correlation_id: str, now, payload: dict[str, Any],
+        aggregate_version: int, correlation_id: str, causation_id: str | None, now, payload: dict[str, Any],
     ) -> None:
         event = OutboxEvent(
             event_id=new_id(),
@@ -235,7 +258,7 @@ class M11EventConsumer:
             aggregate_version=aggregate_version,
             sequence_no=1,
             correlation_id=correlation_id,
-            causation_id=None,
+            causation_id=causation_id,
             idempotency_key=f"{event_type}:{aggregate_id}:{aggregate_version}",
             classification="customer_confidential",
             payload=payload,
@@ -256,9 +279,23 @@ class M11EventConsumer:
         contract = _CONTRACTS.get(envelope["event_type"])
         if not contract:
             raise ValidationError("event type is not consumed by M11", code="unsupported_event_type")
-        producer, aggregate_type, payload_fields = contract
-        if envelope["schema_version"] != "1.0.0" or envelope["producer"] != producer or envelope["aggregate_type"] != aggregate_type:
+        producer, aggregate_type, payload_fields, classification = contract
+        if (
+            envelope["schema_version"] != "1.0.0"
+            or envelope["producer"] != producer
+            or envelope["aggregate_type"] != aggregate_type
+            or envelope["classification"] != classification
+        ):
             raise ValidationError("event contract metadata is invalid", code="event_schema_invalid")
+        try:
+            require_uuid(envelope["event_id"], "event_id")
+            require_uuid(envelope["tenant_id"], "tenant_id")
+            require_uuid(envelope["aggregate_id"], "aggregate_id")
+            require_uuid(envelope["correlation_id"], "correlation_id")
+            if envelope["causation_id"] is not None:
+                require_uuid(envelope["causation_id"], "causation_id")
+        except ValidationError as exc:
+            raise ValidationError("event envelope identifiers must be UUIDs", code="event_schema_invalid", field_name=exc.field_name) from exc
         if set(envelope["payload"]) != payload_fields:
             raise ValidationError("event payload fields do not match schema", code="event_schema_invalid")
         if canonical_hash(envelope["payload"]) != envelope["payload_sha256"]:
@@ -275,6 +312,7 @@ class M11EventConsumer:
             event_id=envelope["event_id"],
             event_type=envelope["event_type"],
             payload_sha256=envelope["payload_sha256"],
+            aggregate_type=envelope["aggregate_type"],
             aggregate_id=envelope["aggregate_id"],
             sequence_no=envelope["sequence_no"],
             status=status,

@@ -18,14 +18,32 @@ schema。`001_ownership_pool_reason_code_reconciliation.sql` 只補兩項既有�
    本提案將 DB CHECK 擴充對齊，而不是在應用層另造一套未經資料庫驗證的列舉
    （違反 AI_COLLABORATION_GUIDE §0.7「不能在本模組私增列舉」的精神——這裡是把 DB 補齊到契約，
    不是繞過契約）。`staff_departure`／`all_paid_services_lapsed` 兩個舊值保留相容，供既有
-   seed／測試資料沿用；新寫入一律使用四值列舉。
-2. **`ownership.assignment` 缺少「這段關係如何結束」的欄位。** 基線的 `reason_code` 語意是
-   「這段 assignment 為什�么建立」（`assignment`/`departure`/`service_lapse`/`redevelopment`），
+   seed／測試資料沿用；新寫入一律使用四值列舉。`ownership.pool_entry` 實際有**兩條**提到
+   `reason_code` 的 CHECK（列舉值清單，及「`all_paid_services_lapsed` 要求
+   `all_paid_services_ended_at` 非 null」），上一版用單一 `ILIKE '%reason_code%'` 判斷式只會
+   拿到其中一條（哪一條由 Postgres 系統目錄掃描順序決定，不保證穩定），導致另一條被漏改；
+   本版用兩條互斥的 `pg_get_constraintdef` 條件各自定位、找不到就直接 `RAISE EXCEPTION`
+   拒絕套用（不默默只改一半），並把「要求 `ended_at` 非 null」的條件同步擴到新值
+   `paid_service_lapse`（`pool_entry_lapse_requires_ended_at_check`）。
+2. **`ownership.guard_pool_entry()` 只認得舊列舉值，繞過新寫入路徑的業務防線。**
+   `database/migrations/0003_business_guards.sql` 的這個 trigger（核定政策、
+   `lapse_days` 期滿、未受限/未停權、期間內無其他有效服務）只在
+   `NEW.reason_code = 'all_paid_services_lapsed'` 時才執行；但應用層
+   `evaluate_company_pool` 實際寫入的是新值 `paid_service_lapse`。只擴 CHECK 而不
+   同步改這個 trigger，等於讓所有正式 lapse 寫入完全跳過 DB 層防線。本版用
+   `CREATE OR REPLACE FUNCTION` 把判斷條件改成
+   `NEW.reason_code IN ('all_paid_services_lapsed', 'paid_service_lapse')`，其餘邏輯不變。
+3. **`ownership.assignment` 缺少「這段關係如何結束」的欄位。** 基線的 `reason_code` 語意是
+   「這段 assignment 為什麼建立」（`assignment`/`departure`/`service_lapse`/`redevelopment`），
    但 `MaintenanceAssignment.state`（`active`/`released`/`departure`/`superseded`）描述的是
    「這段 assignment 如何結束」——兩者是同一列的不同維度，不能共用一個欄位又不互相覆蓋。
    本提案新增 `ownership.assignment.end_state`（nullable text，`valid_until IS NOT NULL` 時才
    允許非 null），應用層（`apps/api/src/modules/ownership_pool/domain.py::Assignment.wire_state`）
-   目前以記憶體欄位模擬這個欄位；正式接線時應改為直接讀寫這張新欄位。
+   目前以記憶體欄位模擬這個欄位；正式接線時應改為直接讀寫這張新欄位。新增 CHECK 前先
+   `UPDATE ... SET end_state='released' WHERE valid_until IS NOT NULL AND end_state IS NULL`
+   backfill 既有已結束列（否則任何既有歷史關閉列會立即違反新 CHECK）；`released` 是沿用應用層
+   同一個保守預設（無法從 `reason_code` 可靠反推原始關閉原因），data steward 若有 audit/outbox
+   證據可在併入基線前改用更精確的值。
 
 ## 整合步驟
 

@@ -7,7 +7,7 @@
 - `m11_outbox_oldest_age_seconds > 30`：先確認 lease 是否過期、worker clock offset，再看 `last_error_code`；不得更換 idempotency key 盲重送。
 - `m11_inbox_sequence_gap`（contract.effective/terminated/service_ended）：保留 retry receipt；在補齊前序事件前，`evaluate_company_pool` 看到的付費服務視窗可能不完整，寧可少判定「全部中斷」，不可假設缺的事件已結束。
 - `m11_policy_not_approved`：`evaluate_company_pool` 的 live（`dry_run=false`）呼叫被拒；確認是否誤排程到尚未核准的 policy_version，不要自動切換成另一個已核准政策。
-- dead letter：人工重驅必填非空原因；重驅前先確認該 outbox event 的業務效果（assignment/pool_entry 狀態）尚未被其他路徑完成。
+- dead letter：人工重驅必填非空原因；重驅前先確認該 outbox event 的業務效果（assignment/pool_entry 狀態）尚未被其他路徑完成。呼叫 `OutboxPublisher.redrive(tenant_id, event_id, reason)`（outbox）或 `TaskRunner.redrive(tenant_id, job_id, reason)`（job）；空白原因會直接拋 `ValueError`，非 dead-letter 狀態會拋 `ConflictError(code="outbox_not_dead_letter"/"job_not_dead_letter")`。`TaskRunner.lease()` 後，worker 必須呼叫 `complete()` 或 `fail()` 之一結束這次 lease；兩者都會在 lease owner 不符或狀態已非 `leased` 時拋 `ConflictError(code="worker_lease_lost")`。
 
 ## 合成故障恢復演練
 

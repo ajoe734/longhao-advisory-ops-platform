@@ -1,4 +1,5 @@
 .m11-stack { display: grid; gap: 1rem; }
+.m11-banner-stale { border: 1px solid #b45309; background: #fffbeb; color: #92400e; border-radius: .375rem; padding: .5rem .75rem; margin-bottom: .75rem; }
 .m11-panel { background: var(--surface, #fff); border: 1px solid var(--border, #cbd5e1); border-radius: .5rem; padding: 1rem; }
 .m11-table-scroll { overflow-x: auto; }
 .m11-table-scroll table { border-collapse: collapse; width: 100%; }

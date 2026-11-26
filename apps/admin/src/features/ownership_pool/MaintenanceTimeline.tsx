@@ -16,6 +16,7 @@ export function MaintenanceTimeline({ state, onRelease, onReload }: {
   const current = rows.find(row => row.state === "active");
   return <section className="m11-panel" aria-labelledby="ownership-history-title">
     <h1 id="ownership-history-title">維護責任時間軸</h1>
+    {state.kind === "stale" && <div role="status" className="m11-banner-stale"><p>{state.message}</p><button onClick={onReload}>重新整理</button></div>}
     {state.kind === "conflict" && <div role="alert"><p>{state.message}</p><button onClick={onReload}>重載與檢視差異</button></div>}
     <p>目前維護人：{current ? current.salesperson_id : "無（在公司Pool）"}</p>
     <ol className="m11-timeline">

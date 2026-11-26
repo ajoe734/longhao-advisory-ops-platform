@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Protocol
 
-from modules.ownership_pool.domain import ActorContext, ConflictError, Job, utc_now
+from modules.ownership_pool.domain import ActorContext, ConflictError, Job, OutboxEvent, utc_now
 from modules.ownership_pool.repository import InMemoryRepository, StoreState
 from modules.ownership_pool.service import OwnershipPoolService
 
@@ -159,15 +159,40 @@ class OutboxPublisher:
 
         return self.repository.atomic(fail)
 
+    def redrive(self, tenant_id: str, event_id: str, reason: str) -> OutboxEvent:
+        """Manually move one dead-lettered outbox event back to ``retry``.
+
+        RUNBOOK.md requires a non-empty reason and that the operator has
+        already confirmed the business effect (assignment/pool_entry state)
+        was not independently completed through another path before redriving
+        — this call only performs the mechanical state transition.
+        """
+        if not reason.strip():
+            raise ValueError("manual redrive requires a reason")
+
+        def redrive_event(state: StoreState) -> OutboxEvent:
+            event = state.outbox[(tenant_id, event_id)]
+            if event.status != "dead_letter":
+                raise ConflictError("only dead-letter events can be redriven", code="outbox_not_dead_letter")
+            event.status = "retry"
+            event.next_attempt_at = self._clock()
+            event.lease_owner = None
+            event.lease_until = None
+            event.redrive_reason = reason[:500]
+            return event
+
+        return self.repository.atomic(redrive_event)
+
 
 class TaskRunner:
     """Lease and run M11 operational jobs with bounded retry and safe redrive."""
 
-    def __init__(self, repository: InMemoryRepository) -> None:
+    def __init__(self, repository: InMemoryRepository, *, clock=utc_now) -> None:
         self.repository = repository
+        self._clock = clock
 
     def lease(self, worker_id: str, limit: int = 20) -> list[Job]:
-        now = utc_now()
+        now = self._clock()
 
         def lease_jobs(state: StoreState) -> list[Job]:
             selected = [
@@ -185,20 +210,58 @@ class TaskRunner:
 
         return self.repository.atomic(lease_jobs)
 
+    def complete(self, tenant_id: str, job_id: str, worker_id: str) -> Job:
+        now = self._clock()
+
+        def complete_job(state: StoreState) -> Job:
+            job = state.jobs[(tenant_id, job_id)]
+            if job.lease_owner != worker_id or job.status != "leased":
+                raise ConflictError("job lease was lost", code="worker_lease_lost")
+            job.status = "succeeded"
+            job.lease_owner = None
+            job.lease_until = None
+            job.last_error_code = None
+            job.updated_at = now
+            return job
+
+        return self.repository.atomic(complete_job)
+
+    def fail(self, tenant_id: str, job_id: str, worker_id: str, code: str) -> Job:
+        now = self._clock()
+
+        def fail_job(state: StoreState) -> Job:
+            job = state.jobs[(tenant_id, job_id)]
+            if job.lease_owner != worker_id or job.status != "leased":
+                raise ConflictError("job lease was lost", code="worker_lease_lost")
+            job.attempt_count += 1
+            job.last_error_code = code
+            job.lease_owner = None
+            job.lease_until = None
+            job.updated_at = now
+            if job.attempt_count >= job.max_attempts:
+                job.status = "dead_letter"
+            else:
+                job.status = "retry"
+                job.next_attempt_at = now + timedelta(seconds=min(300, 2 ** job.attempt_count))
+            return job
+
+        return self.repository.atomic(fail_job)
+
     def redrive(self, tenant_id: str, job_id: str, reason: str) -> Job:
         if not reason.strip():
             raise ValueError("manual redrive requires a reason")
+        now = self._clock()
 
         def redrive_job(state: StoreState) -> Job:
             job = state.jobs[(tenant_id, job_id)]
             if job.status != "dead_letter":
                 raise ConflictError("only dead-letter jobs can be redriven", code="job_not_dead_letter")
             job.status = "retry"
-            job.next_attempt_at = utc_now()
+            job.next_attempt_at = now
             job.lease_owner = None
             job.lease_until = None
             job.redrive_reason = reason[:500]
-            job.updated_at = utc_now()
+            job.updated_at = now
             return job
 
         return self.repository.atomic(redrive_job)

@@ -333,7 +333,21 @@ class ContractWindow:
     ``contract.service_ended`` purposefully does not let M11 conclude a full
     interruption on its own (events/registry.json's note on that event); M11 always
     recomputes every known paid-service window for the customer before deciding
-    ``all_paid_services_lapsed``.
+    ``all_paid_services_lapsed``. ``contract_service`` is a *child* of
+    ``contract`` (one ``contract_id`` can have several), so a single
+    ``contract.service_ended`` only tells us one child stopped — never that
+    every service under this ``contract_id`` has (M02 does not publish a
+    service count or an "all services ended" signal this consumer could use to
+    confirm that). ``service_ended_ats`` therefore keeps every known
+    ``contract_service_id -> ended_at`` it has observed, keyed so a later
+    event for one service can never silently discard an earlier event for a
+    different one (the historical bug: a single scalar field, last-write-wins,
+    overwritten on every event regardless of which ``contract_service_id`` it
+    was for). ``effective_end()`` uses the *latest* of those as its signal —
+    the most conservative approximation available from this event alone — and
+    callers (``_evaluate_customer``) still only decide "all paid services
+    lapsed" after aggregating every known contract for the customer, not from
+    any single contract's ``service_ended`` event in isolation.
     """
 
     tenant_id: str
@@ -342,14 +356,14 @@ class ContractWindow:
     service_starts_at: datetime
     service_ends_at: datetime
     terminated_at: datetime | None = None
-    service_ended_at: datetime | None = None
+    service_ended_ats: dict[str, datetime] = field(default_factory=dict)
 
     def effective_end(self) -> datetime:
         candidates = [self.service_ends_at]
         if self.terminated_at is not None:
             candidates.append(self.terminated_at)
-        if self.service_ended_at is not None:
-            candidates.append(self.service_ended_at)
+        if self.service_ended_ats:
+            candidates.append(max(self.service_ended_ats.values()))
         return min(candidates)
 
 
@@ -391,6 +405,7 @@ class OutboxEvent:
     lease_until: datetime | None = None
     next_attempt_at: datetime | None = None
     last_error_code: str | None = None
+    redrive_reason: str | None = None
 
     @property
     def payload_sha256(self) -> str:
@@ -426,6 +441,7 @@ class InboxReceipt:
     event_id: str
     event_type: str
     payload_sha256: str
+    aggregate_type: str
     aggregate_id: str
     sequence_no: int
     status: str
@@ -444,6 +460,7 @@ class IdempotencyReceipt:
     response_value: Any
     error: DomainError | None
     completed_at: datetime
+    aggregate_version: int | None = None
 
 
 @dataclass

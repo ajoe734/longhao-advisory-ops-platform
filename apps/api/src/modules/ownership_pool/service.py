@@ -184,12 +184,16 @@ class OwnershipPoolService:
         as_of: datetime | None = None,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize_staff(context, {"sales", "sales_supervisor"})
-        if not 1 <= limit <= 200:
-            raise ValidationError("limit must be between 1 and 200", field_name="limit")
-        if state_filter and state_filter not in POOL_ENTRY_STATES:
-            raise ValidationError("state filter is not supported", field_name="state")
         correlation_id = self._correlation(correlation_id)
+        try:
+            self._authorize_staff(context, {"sales", "sales_supervisor"})
+            if not 1 <= limit <= 200:
+                raise ValidationError("limit must be between 1 and 200", field_name="limit")
+            if state_filter and state_filter not in POOL_ENTRY_STATES:
+                raise ValidationError("state filter is not supported", field_name="state")
+        except DomainError as exc:
+            self._audit_failure(context, "list_company_pool", correlation_id, exc.code)
+            raise
         snapshot_at = as_of or self._clock()
 
         def query(store: StoreState) -> ServiceResponse:
@@ -198,7 +202,7 @@ class OwnershipPoolService:
                     item for (tenant, _), item in store.pool_entries.items()
                     if tenant == context.tenant_id
                     and item.created_at <= snapshot_at
-                    and (not state_filter or item.state == state_filter)
+                    and (not state_filter or self._pool_entry_live_state(context, item) == state_filter)
                     and (not cursor or item.id > cursor)
                 ),
                 key=lambda item: item.id,
@@ -207,7 +211,7 @@ class OwnershipPoolService:
             self._audit(store, context, "list_company_pool", "pool_entry", None, None, correlation_id, "succeeded")
             return ServiceResponse(
                 {
-                    "items": [item.to_api(self._pool_entry_actions(item, context)) for item in page],
+                    "items": [self._pool_entry_api(item, context) for item in page],
                     "next_cursor": page[-1].id if len(rows) > limit else None,
                     "as_of": wire_time(snapshot_at),
                     "total_estimate": len(rows),
@@ -227,13 +231,17 @@ class OwnershipPoolService:
         as_of: datetime | None = None,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize_staff(context, {"sales", "sales_supervisor"})
-        customer_id = require_uuid(customer_id, "customer_id")
-        if not 1 <= limit <= 200:
-            raise ValidationError("limit must be between 1 and 200", field_name="limit")
-        if state_filter and state_filter not in ASSIGNMENT_STATES:
-            raise ValidationError("state filter is not supported", field_name="state")
         correlation_id = self._correlation(correlation_id)
+        try:
+            self._authorize_staff(context, {"sales", "sales_supervisor"})
+            customer_id = require_uuid(customer_id, "customer_id")
+            if not 1 <= limit <= 200:
+                raise ValidationError("limit must be between 1 and 200", field_name="limit")
+            if state_filter and state_filter not in ASSIGNMENT_STATES:
+                raise ValidationError("state filter is not supported", field_name="state")
+        except DomainError as exc:
+            self._audit_failure(context, "get_ownership_history", correlation_id, exc.code)
+            raise
         snapshot_at = as_of or self._clock()
 
         def query(store: StoreState) -> ServiceResponse:
@@ -272,31 +280,43 @@ class OwnershipPoolService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        customer_id = require_uuid(customer_id, "customer_id")
-        self._authorize_staff(context, {"sales_supervisor"})
-        self._body(body, {"salesperson_id", "effective_from", "reason_code", "previous_assignment_id", "handoff_evidence_asset_id"}, {"salesperson_id", "effective_from", "reason_code"})
-        salesperson_id = require_uuid(body["salesperson_id"], "salesperson_id")
-        effective_from = self._parse_time(body["effective_from"], "effective_from")
-        reason_code = self._reason_code(body["reason_code"])
-        previous_assignment_id = require_uuid(body["previous_assignment_id"], "previous_assignment_id") if body.get("previous_assignment_id") else None
-        handoff_evidence_asset_id = require_uuid(body["handoff_evidence_asset_id"], "handoff_evidence_asset_id") if body.get("handoff_evidence_asset_id") else None
-        if handoff_evidence_asset_id and not self.evidence.exists(context.tenant_id, handoff_evidence_asset_id):
-            raise ValidationError("handoff evidence does not exist", code="evidence_not_found", field_name="handoff_evidence_asset_id")
         correlation_id = self._correlation(correlation_id)
+        try:
+            customer_id = require_uuid(customer_id, "customer_id")
+            self._authorize_staff(context, {"sales_supervisor"})
+            self._body(body, {"salesperson_id", "effective_from", "reason_code", "previous_assignment_id", "handoff_evidence_asset_id"}, {"salesperson_id", "effective_from", "reason_code"})
+            salesperson_id = require_uuid(body["salesperson_id"], "salesperson_id")
+            effective_from = self._parse_time(body["effective_from"], "effective_from")
+            reason_code = self._reason_code(body["reason_code"])
+            previous_assignment_id = require_uuid(body["previous_assignment_id"], "previous_assignment_id") if body.get("previous_assignment_id") else None
+            handoff_evidence_asset_id = require_uuid(body["handoff_evidence_asset_id"], "handoff_evidence_asset_id") if body.get("handoff_evidence_asset_id") else None
+            if handoff_evidence_asset_id and not self.evidence.exists(context.tenant_id, handoff_evidence_asset_id):
+                raise ValidationError("handoff evidence does not exist", code="evidence_not_found", field_name="handoff_evidence_asset_id")
+        except DomainError as exc:
+            self._audit_failure(context, "assign_maintenance_owner", correlation_id, exc.code)
+            raise
         now = self._clock()
 
         def mutate(state: StoreState) -> _Outcome:
+            self._reject_departed_actor(state, context, now)
+            if self._employee_departed(state, context.tenant_id, salesperson_id, now):
+                raise ValidationError("salesperson has departed and cannot receive new assignments", code="salesperson_departed", field_name="salesperson_id")
             current_id = state.current_assignment.get((context.tenant_id, customer_id))
             current = state.assignments.get((context.tenant_id, current_id)) if current_id else None
-            self._cas(current.version if current else 0, expected_version)
+            # No prior assignment ever existing is represented as the virtual
+            # pre-creation version 1 (every real Assignment row is minted at
+            # version 1, never 0 — see domain.py::Assignment.version), not 0:
+            # the shared If-Match parameter's wire pattern
+            # (api/openapi.yaml #/components/parameters/IfMatch) requires a
+            # positive integer, so "0" can never be sent by a compliant
+            # client. Treating the absent case as 0 made a customer's very
+            # first assignment permanently unreachable over HTTP.
+            self._cas(current.version if current else 1, expected_version)
             if previous_assignment_id and (not current or current.id != previous_assignment_id):
                 raise ValidationError("previous_assignment_id does not match the current assignment", field_name="previous_assignment_id")
             policy = self._require_tenant_policy(state, context.tenant_id)
             if current:
-                current.valid_until = effective_from
-                current.end_state = "superseded"
-                current.updated_at = now
-                current.version += 1
+                self._close_interval(current, effective_from, "superseded", now)
                 self._close_dangling_pool_entry(state, context.tenant_id, current.id, salesperson_id, effective_from)
                 self._emit_assignment_changed(state, context, current, correlation_id, now)
 
@@ -331,26 +351,35 @@ class OwnershipPoolService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        pool_entry_id = require_uuid(pool_entry_id, "pool_entry_id")
-        self._authorize_staff(context, {"sales"})
-        self._body(body, {"salesperson_id", "first_contact_due_at", "reason_code"}, {"salesperson_id", "first_contact_due_at", "reason_code"})
-        salesperson_id = require_uuid(body["salesperson_id"], "salesperson_id")
-        if salesperson_id != context.actor_id:
-            raise ForbiddenError("sales staff can only claim for themselves", code="claim_requires_self")
-        first_contact_due_at = self._parse_time(body["first_contact_due_at"], "first_contact_due_at")
-        reason_code = self._reason_code(body["reason_code"])
         correlation_id = self._correlation(correlation_id)
+        try:
+            pool_entry_id = require_uuid(pool_entry_id, "pool_entry_id")
+            self._authorize_staff(context, {"sales"})
+            self._body(body, {"salesperson_id", "first_contact_due_at", "reason_code"}, {"salesperson_id", "first_contact_due_at", "reason_code"})
+            salesperson_id = require_uuid(body["salesperson_id"], "salesperson_id")
+            if salesperson_id != context.actor_id:
+                raise ForbiddenError("sales staff can only claim for themselves", code="claim_requires_self")
+            first_contact_due_at = self._parse_time(body["first_contact_due_at"], "first_contact_due_at")
+            reason_code = self._reason_code(body["reason_code"])
+        except DomainError as exc:
+            self._audit_failure(context, "claim_pool_customer", correlation_id, exc.code)
+            raise
         now = self._clock()
 
         def mutate(state: StoreState) -> _Outcome:
+            self._reject_departed_actor(state, context, now)
             entry = self._stored_pool_entry(state, context.tenant_id, pool_entry_id)
             self._cas(entry.version, expected_version)
-            if entry.state != "available":
-                raise ConflictError(f"pool entry is not available ({entry.state})", code="pool_entry_not_available")
+            # Re-check live compliance restriction at claim time, not just at
+            # the point the entry was opened: a customer can become restricted
+            # after already sitting in the pool as "available". Reuses the
+            # same not-available code/message vocabulary as a genuinely
+            # claimed entry so the rejection never distinguishes "someone else
+            # already claimed it" from "compliance restricted" to the caller.
+            if entry.state != "available" or self.restriction.is_restricted(context.tenant_id, entry.customer_id):
+                raise ConflictError("pool entry is not available (suppressed)", code="pool_entry_not_available")
             predecessor = state.assignments[(context.tenant_id, entry.assignment_id)]
-            predecessor.valid_until = now
-            predecessor.updated_at = now
-            predecessor.version += 1
+            self._close_interval(predecessor, now, "superseded", now)
 
             assignment = Assignment(
                 id=new_id(),
@@ -392,16 +421,21 @@ class OwnershipPoolService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        assignment_id = require_uuid(assignment_id, "assignment_id")
-        self._authorize_staff(context, {"sales_supervisor"})
-        self._body(body, {"reason_code", "note", "evidence_asset_ids"}, {"reason_code"})
-        reason_code = self._reason_code(body["reason_code"])
-        note = self._note(body.get("note"))
-        evidence_asset_ids = self._evidence_ids(context.tenant_id, body.get("evidence_asset_ids"))
         correlation_id = self._correlation(correlation_id)
+        try:
+            assignment_id = require_uuid(assignment_id, "assignment_id")
+            self._authorize_staff(context, {"sales_supervisor"})
+            self._body(body, {"reason_code", "note", "evidence_asset_ids"}, {"reason_code"})
+            reason_code = self._reason_code(body["reason_code"])
+            note = self._note(body.get("note"))
+            evidence_asset_ids = self._evidence_ids(context.tenant_id, body.get("evidence_asset_ids"))
+        except DomainError as exc:
+            self._audit_failure(context, "release_maintenance_owner", correlation_id, exc.code)
+            raise
         now = self._clock()
 
         def mutate(state: StoreState) -> _Outcome:
+            self._reject_departed_actor(state, context, now)
             assignment = self._stored_assignment(state, context.tenant_id, assignment_id)
             self._cas(assignment.version, expected_version)
             if assignment.owner_type != "sales":
@@ -410,10 +444,7 @@ class OwnershipPoolService:
                 raise ConflictError("assignment has already ended", code="assignment_already_ended")
             policy = self._require_tenant_policy(state, context.tenant_id)
 
-            assignment.valid_until = now
-            assignment.end_state = "released"
-            assignment.updated_at = now
-            assignment.version += 1
+            self._close_interval(assignment, now, "released", now)
             self._emit_assignment_changed(state, context, assignment, correlation_id, now)
 
             entry = self._open_pool_entry(
@@ -433,15 +464,19 @@ class OwnershipPoolService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize_staff(context, {"hr_operator"})
-        self._body(body, {"employee_id", "effective_at", "hr_evidence_asset_id", "reason_code"}, {"employee_id", "effective_at", "hr_evidence_asset_id", "reason_code"})
-        employee_id = require_uuid(body["employee_id"], "employee_id")
-        effective_at = self._parse_time(body["effective_at"], "effective_at")
-        hr_evidence_asset_id = require_uuid(body["hr_evidence_asset_id"], "hr_evidence_asset_id")
-        if not self.evidence.exists(context.tenant_id, hr_evidence_asset_id):
-            raise ValidationError("HR departure evidence does not exist", code="evidence_not_found", field_name="hr_evidence_asset_id")
-        reason_code = self._reason_code(body["reason_code"])
         correlation_id = self._correlation(correlation_id)
+        try:
+            self._authorize_staff(context, {"hr_operator"})
+            self._body(body, {"employee_id", "effective_at", "hr_evidence_asset_id", "reason_code"}, {"employee_id", "effective_at", "hr_evidence_asset_id", "reason_code"})
+            employee_id = require_uuid(body["employee_id"], "employee_id")
+            effective_at = self._parse_time(body["effective_at"], "effective_at")
+            hr_evidence_asset_id = require_uuid(body["hr_evidence_asset_id"], "hr_evidence_asset_id")
+            if not self.evidence.exists(context.tenant_id, hr_evidence_asset_id):
+                raise ValidationError("HR departure evidence does not exist", code="evidence_not_found", field_name="hr_evidence_asset_id")
+            reason_code = self._reason_code(body["reason_code"])
+        except DomainError as exc:
+            self._audit_failure(context, "record_employee_departure", correlation_id, exc.code)
+            raise
         now = self._clock()
 
         def mutate(state: StoreState) -> _Outcome:
@@ -455,10 +490,7 @@ class OwnershipPoolService:
             policy = self._require_tenant_policy(state, context.tenant_id) if affected else None
             pool_entries_created = 0
             for assignment in sorted(affected, key=lambda item: item.id):
-                assignment.valid_until = effective_at
-                assignment.end_state = "departure"
-                assignment.updated_at = now
-                assignment.version += 1
+                self._close_interval(assignment, effective_at, "departure", now)
                 self._emit_assignment_changed(state, context, assignment, correlation_id, now)
                 self._open_pool_entry(
                     state, context, assignment, policy, "employee_departure", effective_at,
@@ -505,19 +537,23 @@ class OwnershipPoolService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize_service(context, {"ownership_service"})
-        self._body(body, {"as_of", "policy_version", "dry_run", "customer_ids"}, {"as_of", "policy_version", "dry_run"})
-        as_of = self._parse_time(body["as_of"], "as_of")
-        policy_version = str(body["policy_version"])
-        if not isinstance(body["dry_run"], bool):
-            raise ValidationError("dry_run must be a boolean", field_name="dry_run")
-        dry_run = body["dry_run"]
-        customer_ids = body.get("customer_ids")
-        if customer_ids is not None:
-            if not isinstance(customer_ids, list) or len(customer_ids) > 1000:
-                raise ValidationError("customer_ids must contain at most 1000 items", field_name="customer_ids")
-            customer_ids = [require_uuid(value, "customer_ids") for value in customer_ids]
         correlation_id = self._correlation(correlation_id)
+        try:
+            self._authorize_service(context, {"ownership_service"})
+            self._body(body, {"as_of", "policy_version", "dry_run", "customer_ids"}, {"as_of", "policy_version", "dry_run"})
+            as_of = self._parse_time(body["as_of"], "as_of")
+            policy_version = str(body["policy_version"])
+            if not isinstance(body["dry_run"], bool):
+                raise ValidationError("dry_run must be a boolean", field_name="dry_run")
+            dry_run = body["dry_run"]
+            customer_ids = body.get("customer_ids")
+            if customer_ids is not None:
+                if not isinstance(customer_ids, list) or len(customer_ids) > 1000:
+                    raise ValidationError("customer_ids must contain at most 1000 items", field_name="customer_ids")
+                customer_ids = [require_uuid(value, "customer_ids") for value in customer_ids]
+        except DomainError as exc:
+            self._audit_failure(context, "evaluate_company_pool", correlation_id, exc.code)
+            raise
         now = self._clock()
 
         def mutate(state: StoreState) -> _Outcome:
@@ -544,18 +580,19 @@ class OwnershipPoolService:
                     assignment_id = state.current_assignment.get((context.tenant_id, customer_id))
                     assignment = state.assignments.get((context.tenant_id, assignment_id)) if assignment_id else None
                     if assignment and assignment.owner_type == "sales" and assignment.valid_until is None:
-                        assignment.valid_until = now
+                        lapse_started_at = self._parse_time(outcome["lapse_started_at"], "lapse_started_at")
                         # MaintenanceAssignment.state has no dedicated "lapsed" value;
                         # "released" is the closest fit (the relationship ended, just
                         # automatically rather than by a supervisor's manual release).
-                        # The real reason survives as PoolEntry.entry_reason below.
-                        assignment.end_state = "released"
-                        assignment.updated_at = now
-                        assignment.version += 1
+                        # The real reason survives as PoolEntry.entry_reason below. The
+                        # transition timestamp is as_of — what the eligibility check
+                        # above actually validated against ownership.guard_pool_entry()'s
+                        # lapse_days window — not the sweep job's real wall-clock "now",
+                        # which may run later than the evaluation's reference point.
+                        self._close_interval(assignment, as_of, "released", now)
                         self._emit_assignment_changed(state, context, assignment, correlation_id, now)
-                        lapse_started_at = self._parse_time(outcome["lapse_started_at"], "lapse_started_at")
                         self._open_pool_entry(
-                            state, context, assignment, policy, "paid_service_lapse", now,
+                            state, context, assignment, policy, "paid_service_lapse", as_of,
                             evaluation_snapshot=outcome,
                             correlation_id=correlation_id,
                             all_paid_services_ended_at=lapse_started_at,
@@ -573,7 +610,10 @@ class OwnershipPoolService:
                 evaluated=evaluated,
             )
             state.evaluations[(context.tenant_id, evaluation.id)] = evaluation
-            self._audit(state, context, "evaluate_company_pool", "pool_evaluation", evaluation.id, 1, correlation_id, "succeeded")
+            # No explicit self._audit() here: _run_command's transaction()
+            # wrapper already writes exactly one audit row per call using this
+            # same aggregate_type/aggregate_id/aggregate_version once mutate()
+            # returns. Auditing here too produced two rows per evaluation.
             return _Outcome(evaluation.to_api(), 202, "pool_evaluation", evaluation.id, 1)
 
         return self._run_command(context, "evaluate_company_pool", idempotency_key, body, correlation_id, mutate)
@@ -585,14 +625,22 @@ class OwnershipPoolService:
         if not windows:
             return {"customer_id": customer_id, "outcome": "not_applicable", "reason": "no_known_paid_service"}
         ends = [window.effective_end() for window in windows]
-        if any(end > as_of for end in ends):
-            return {"customer_id": customer_id, "outcome": "ineligible", "reason": "active_paid_service_present", "all_paid_services_lapsed": False}
-        lapse_started_at = max(ends)
+        all_lapsed = all(end <= as_of for end in ends)
+        lapse_started_at = max(ends) if all_lapsed else None
+        # Compliance hold is checked before — and independently of — the lapse
+        # window so a restricted customer is never classified by lapse timing
+        # alone (REQ-M11-009): otherwise a customer restricted while their paid
+        # service is still nominally active never surfaces as "blocked" at all.
         if self.restriction.is_restricted(tenant_id, customer_id):
-            return {
+            result: dict[str, Any] = {
                 "customer_id": customer_id, "outcome": "blocked", "reason": "compliance_hold",
-                "all_paid_services_lapsed": True, "lapse_started_at": wire_time(lapse_started_at),
+                "all_paid_services_lapsed": all_lapsed,
             }
+            if lapse_started_at is not None:
+                result["lapse_started_at"] = wire_time(lapse_started_at)
+            return result
+        if not all_lapsed:
+            return {"customer_id": customer_id, "outcome": "ineligible", "reason": "active_paid_service_present", "all_paid_services_lapsed": False}
         if as_of - lapse_started_at < timedelta(days=policy.lapse_days):
             return {
                 "customer_id": customer_id, "outcome": "ineligible", "reason": "lapse_window_not_elapsed",
@@ -674,6 +722,50 @@ class OwnershipPoolService:
         )
         return entry
 
+    def _close_interval(self, assignment: Assignment, valid_until: datetime, end_state: str, now: datetime) -> None:
+        """Close one ``ownership.assignment`` interval, enforcing ``valid_until > valid_from``.
+
+        The shared migration's baseline CHECK (``database/migrations/0001_domains.sql``)
+        already enforces this at the DB layer; the in-memory fake repository does not
+        replicate CHECK constraints, so every closing call site routes through here
+        instead of setting ``valid_until``/``end_state`` directly, both to stay
+        consistent with the DB invariant in tests and to always set ``end_state``
+        (``ownership.assignment.end_state`` is NOT NULL whenever ``valid_until`` is
+        set — see ``database/proposals/M11/001_...sql``'s ``assignment_end_state_check``).
+        """
+        if valid_until < assignment.valid_from:
+            raise ValidationError(
+                "effective time cannot precede the interval's valid_from",
+                code="invalid_interval_order", field_name="effective_from",
+            )
+        assignment.valid_until = valid_until
+        assignment.end_state = end_state
+        assignment.updated_at = now
+        assignment.version += 1
+
+    @staticmethod
+    def _employee_departed(state: StoreState, tenant_id: str, employee_id: str, now: datetime) -> bool:
+        return any(
+            departure.effective_at <= now
+            for (tenant, _), departure in state.departures.items()
+            if tenant == tenant_id and departure.employee_id == employee_id
+        )
+
+    def _reject_departed_actor(self, state: StoreState, context: ActorContext, now: datetime) -> None:
+        if self._employee_departed(state, context.tenant_id, context.actor_id, now):
+            raise ForbiddenError("actor has departed and may not perform ownership operations", code="actor_departed")
+
+    def _pool_entry_live_state(self, context: ActorContext, entry: PoolEntry) -> str:
+        if entry.state == "available" and self.restriction.is_restricted(context.tenant_id, entry.customer_id):
+            return "suppressed"
+        return entry.state
+
+    def _pool_entry_api(self, entry: PoolEntry, context: ActorContext) -> dict[str, Any]:
+        live_state = self._pool_entry_live_state(context, entry)
+        data = entry.to_api(self._pool_entry_actions(entry, context, live_state=live_state))
+        data["state"] = live_state
+        return data
+
     def _close_dangling_pool_entry(self, state: StoreState, tenant_id: str, assignment_id: str, claimed_by: str, claimed_at: datetime) -> None:
         entry_id = state.pool_entry_by_assignment.get((tenant_id, assignment_id))
         if not entry_id:
@@ -707,6 +799,7 @@ class OwnershipPoolService:
         mutate: Callable[[StoreState], _Outcome],
     ) -> ServiceResponse:
         if not _KEY_RE.fullmatch(key):
+            self._audit_failure(context, operation, correlation_id, "validation_failed")
             raise ValidationError("Idempotency-Key must match the published contract", field_name="Idempotency-Key")
         fingerprint = canonical_hash(request)
         receipt_key = (context.tenant_id, context.actor_id, operation, key)
@@ -716,7 +809,7 @@ class OwnershipPoolService:
             if receipt:
                 if receipt.request_sha256 != fingerprint:
                     raise ConflictError("Idempotency-Key was already used with a different payload", code="idempotency_conflict")
-                return _Outcome(receipt.response_value, receipt.response_status, "replay", None, None, receipt.error), True
+                return _Outcome(receipt.response_value, receipt.response_status, "replay", None, receipt.aggregate_version, receipt.error), True
             outcome = mutate(state)
             self._audit(
                 state, context, operation, outcome.aggregate_type, outcome.aggregate_id, outcome.aggregate_version,
@@ -732,6 +825,7 @@ class OwnershipPoolService:
                 response_value=outcome.value,
                 error=outcome.error,
                 completed_at=self._clock(),
+                aggregate_version=outcome.aggregate_version,
             )
             return outcome, False
 
@@ -901,8 +995,9 @@ class OwnershipPoolService:
             raise NotFoundError("pool entry was not found")
         return entry
 
-    def _pool_entry_actions(self, entry: PoolEntry, context: ActorContext) -> list[str]:
-        if entry.state == "available" and self._staff(context, {"sales"}):
+    def _pool_entry_actions(self, entry: PoolEntry, context: ActorContext, *, live_state: str | None = None) -> list[str]:
+        state = entry.state if live_state is None else live_state
+        if state == "available" and self._staff(context, {"sales"}):
             return ["claim_pool_customer"]
         return []
 
@@ -915,7 +1010,7 @@ class OwnershipPoolService:
         return _Outcome(assignment.to_api(self._assignment_actions(assignment, context)), status, "maintenance_assignment", assignment.id, assignment.version)
 
     def _pool_entry_outcome(self, entry: PoolEntry, context: ActorContext, status: int) -> _Outcome:
-        return _Outcome(entry.to_api(self._pool_entry_actions(entry, context)), status, "pool_entry", entry.id, entry.version)
+        return _Outcome(self._pool_entry_api(entry, context), status, "pool_entry", entry.id, entry.version)
 
     def _audit(
         self,

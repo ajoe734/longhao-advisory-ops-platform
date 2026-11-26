@@ -27,10 +27,14 @@ function Result({ state }: { state: ViewState<PoolEvaluationResult> }) {
   if (state.kind === "empty") return <p>{state.message}</p>;
   if (state.kind === "processing") return <p role="status">處理中，收據：{state.receiptId}</p>;
   const result = state.value;
-  return <dl>
-    <dt>規則狀態</dt><dd>{result.rule_status === "approved" ? "已核准" : "待核定（僅供預演）"}</dd>
-    <dt>評估人數</dt><dd>{result.evaluated_count}</dd>
-    <dt>符合候選</dt><dd>{result.eligible_count}</dd>
-    <dt>受限（不列入促銷）</dt><dd>{result.blocked_count}</dd>
-  </dl>;
+  return <>
+    {state.kind === "stale" && <div role="status" className="m11-banner-stale"><p>{state.message}</p></div>}
+    {state.kind === "conflict" && <div role="alert"><p>{state.message}</p></div>}
+    <dl>
+      <dt>規則狀態</dt><dd>{result.rule_status === "approved" ? "已核准" : "待核定（僅供預演）"}</dd>
+      <dt>評估人數</dt><dd>{result.evaluated_count}</dd>
+      <dt>符合候選</dt><dd>{result.eligible_count}</dd>
+      <dt>受限（不列入促銷）</dt><dd>{result.blocked_count}</dd>
+    </dl>
+  </>;
 }

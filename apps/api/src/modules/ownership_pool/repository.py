@@ -42,6 +42,12 @@ class StoreState:
     idempotency: dict[tuple[str, str, str, str], IdempotencyReceipt] = field(default_factory=dict)
     jobs: dict[tuple[str, str], Job] = field(default_factory=dict)
 
+    # untrusted LLM handoff-assistant drafts and their human review record
+    # (apps/api/src/modules/ownership_pool/automation.py) — never read or
+    # written by OwnershipPoolService itself.
+    automation_runs: dict[tuple[str, str], Any] = field(default_factory=dict)
+    automation_reviews: dict[tuple[str, str], Any] = field(default_factory=dict)
+
 
 T = TypeVar("T")
 

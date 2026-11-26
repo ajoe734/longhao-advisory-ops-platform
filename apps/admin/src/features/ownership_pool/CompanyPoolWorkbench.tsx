@@ -15,6 +15,7 @@ export function CompanyPoolWorkbench({ state, onClaim, onReload }: {
   const rows = state.value;
   return <section className="m11-panel" aria-labelledby="company-pool-title">
     <h1 id="company-pool-title">公司Pool工作台</h1>
+    {state.kind === "stale" && <div role="status" className="m11-banner-stale"><p>{state.message}</p><button onClick={onReload}>重新整理</button></div>}
     {state.kind === "conflict" && <div role="alert"><p>{state.message}</p><button onClick={onReload}>重載與檢視差異</button></div>}
     <p id="company-pool-help">同時認領以版本鎖保證只有一位新維護人；先點不代表先得獎金。</p>
     <div className="m11-table-scroll"><table aria-describedby="company-pool-help">

@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import pytest
 
-from modules.ownership_pool.domain import StaleVersionError, ValidationError
+from modules.ownership_pool.domain import ConflictError, ForbiddenError, StaleVersionError, ValidationError
 
 from conftest import (
     HANDOFF_EVIDENCE,
@@ -70,6 +70,18 @@ def test_uat_m11_002_departure_returns_to_pool_immediately(m11, supervisor, hr_o
     outbox = [e for e in snapshot.outbox.values() if e.event_id == departure.data["access_revocation_event_id"]]
     assert outbox and outbox[0].event_type == "ownership.employee_departed"
 
+    # "撤銷離職者未來操作權" is not just a read-only history label — SALES_A
+    # must actually be rejected from claiming the pool entry their own
+    # departure just opened.
+    entry = next(entry for entry in snapshot.pool_entries.values() if entry.customer_id == CUSTOMER_A)
+    with pytest.raises(ForbiddenError) as excinfo:
+        service.claim_pool_customer(
+            sales_a, entry.id,
+            {"salesperson_id": SALES_A, "first_contact_due_at": _t(NOW + timedelta(days=1)), "reason_code": "redevelopment"},
+            expected_version=entry.version, idempotency_key="claim-after-own-departure-001",
+        )
+    assert excinfo.value.code == "actor_departed"
+
 
 def test_uat_m11_003_direct_assignment_grants_no_commission(m11, supervisor, sales_a):
     service = m11["service"]
@@ -128,8 +140,11 @@ def test_uat_m11_006_only_full_168_hour_interruption_is_a_candidate(m11, supervi
     seed_customer_with_contract(m11["consumer"], CUSTOMER_A, CONTRACT_A, starts_at=NOW - timedelta(days=30), ends_at=ends_at)
     pool_version = current_version(m11, CUSTOMER_A)
     service.assign_maintenance_owner(
+        # The company-pool baseline (_ensure_pool_baseline) always starts at
+        # consumer processing time (NOW under the fixed test clock), not the
+        # historical contract start — effective_from must not precede it.
         supervisor, CUSTOMER_A,
-        {"salesperson_id": SALES_A, "effective_from": _t(NOW - timedelta(days=30)), "reason_code": "assignment"},
+        {"salesperson_id": SALES_A, "effective_from": _t(NOW), "reason_code": "assignment"},
         expected_version=pool_version, idempotency_key="assign-006",
     )
 
@@ -219,6 +234,62 @@ def test_uat_m11_009_compliance_restricted_customer_is_never_a_sales_worklist_ca
     assert row["outcome"] == "blocked"
     assert row["reason"] == "compliance_hold"
     assert "aml" not in str(row).lower()
+
+
+def test_uat_m11_009b_customer_restricted_after_entering_pool_is_live_suppressed(m11, supervisor, sales_a):
+    service = m11["service"]
+    seed_policy(service, supervisor, supervisor)
+    seed_customer_with_contract(m11["consumer"], CUSTOMER_A, CONTRACT_A, starts_at=NOW, ends_at=NOW + timedelta(days=365))
+    snapshot = m11["repository"].snapshot()
+    entry = next(entry for entry in snapshot.pool_entries.values() if entry.customer_id == CUSTOMER_A)
+    assert entry.state == "available"  # unrestricted when it entered the pool
+
+    # Restriction lands *after* the pool entry already exists as "available" —
+    # both list and claim must re-check RestrictionPort live, not just at the
+    # moment the entry was created.
+    m11["restriction"].restrict(TENANT, CUSTOMER_A)
+
+    pool = service.list_company_pool(sales_a)
+    row = next(item for item in pool.data["items"] if item["customer_id"] == CUSTOMER_A)
+    assert row["state"] == "suppressed"
+    assert row["allowed_actions"] == []
+
+    with pytest.raises(ConflictError) as excinfo:
+        service.claim_pool_customer(
+            sales_a, entry.id,
+            {"salesperson_id": SALES_A, "first_contact_due_at": _t(NOW + timedelta(days=1)), "reason_code": "redevelopment"},
+            expected_version=entry.version, idempotency_key="claim-restricted-001",
+        )
+    assert excinfo.value.code == "pool_entry_not_available"
+    assert "aml" not in str(excinfo.value.detail).lower()
+
+
+def test_uat_m11_009c_restricted_customer_with_still_active_service_is_blocked_not_silently_ineligible(m11, supervisor, sales_a, ownership_service):
+    service = m11["service"]
+    wire_code = seed_policy(service, supervisor, supervisor)
+    # Service is still active (ends well after as_of) — before the F1 fix,
+    # _evaluate_customer returned "ineligible/active_paid_service_present"
+    # without ever consulting RestrictionPort in this branch at all.
+    seed_customer_with_contract(m11["consumer"], CUSTOMER_A, CONTRACT_A, starts_at=NOW, ends_at=NOW + timedelta(days=365))
+    pool_version = current_version(m11, CUSTOMER_A)
+    service.assign_maintenance_owner(
+        supervisor, CUSTOMER_A,
+        {"salesperson_id": SALES_A, "effective_from": _t(NOW), "reason_code": "assignment"},
+        expected_version=pool_version, idempotency_key="assign-009c",
+    )
+    m11["restriction"].restrict(TENANT, CUSTOMER_A)
+
+    service.evaluate_company_pool(
+        ownership_service,
+        {"as_of": _t(NOW), "policy_version": wire_code, "dry_run": True, "customer_ids": [CUSTOMER_A]},
+        idempotency_key="evaluate-009c",
+    )
+    evaluation = next(iter(m11["repository"].snapshot().evaluations.values()))
+    row = next(item for item in evaluation.evaluated if item["customer_id"] == CUSTOMER_A)
+    assert row["outcome"] == "blocked"
+    assert row["reason"] == "compliance_hold"
+    assert row["all_paid_services_lapsed"] is False
+    assert "lapse_started_at" not in row
 
 
 def test_uat_m11_010_only_one_concurrent_claim_succeeds(m11, supervisor, sales_a, sales_b):

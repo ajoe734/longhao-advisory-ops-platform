@@ -20,6 +20,7 @@ from workers.tasks.ownership_pool.consumer import M11EventConsumer
 
 
 TENANT = "10000000-0000-0000-0000-000000000001"
+OTHER_TENANT = "10000000-0000-0000-0000-000000000002"
 SUPERVISOR = "20000000-0000-0000-0000-000000000001"
 SUPERVISOR_B = "20000000-0000-0000-0000-000000000006"
 SALES_A = "20000000-0000-0000-0000-000000000002"
@@ -51,7 +52,7 @@ def m11():
     restriction = FakeRestrictionPort()
     clock = FixedClock()
     service = OwnershipPoolService(repository, evidence, restriction, clock=clock)
-    consumer = M11EventConsumer(repository, clock=clock)
+    consumer = M11EventConsumer(repository, restriction, clock=clock)
     return {
         "service": service,
         "repository": repository,
@@ -90,6 +91,16 @@ def hr_operator() -> ActorContext:
 @pytest.fixture
 def ownership_service() -> ActorContext:
     return ActorContext(TENANT, SERVICE_ACTOR, frozenset({"ownership_service"}), principal_type="service")
+
+
+@pytest.fixture
+def other_tenant_sales() -> ActorContext:
+    return ActorContext(OTHER_TENANT, "20000000-0000-0000-0000-000000000007", frozenset({"sales"}), principal_type="staff")
+
+
+@pytest.fixture
+def other_tenant_supervisor() -> ActorContext:
+    return ActorContext(OTHER_TENANT, "20000000-0000-0000-0000-000000000008", frozenset({"sales_supervisor"}), principal_type="staff")
 
 
 def seed_policy(service: OwnershipPoolService, supervisor_ctx: ActorContext, supervisor_b_ctx: ActorContext | None = None, *, lapse_days: int = 7, approve: bool = True) -> str:
@@ -164,6 +175,26 @@ def contract_terminated_envelope(customer_id: str, contract_id: str, *, terminat
             "refund_evaluation_required": False,
         },
         occurred_at=terminated_at,
+    )
+
+
+def contract_service_ended_envelope(
+    customer_id: str, contract_id: str, contract_service_id: str, *, ended_at: datetime, sequence_no: int = 1,
+) -> dict:
+    return _envelope(
+        event_type="contract.service_ended",
+        producer="M02",
+        aggregate_type="contract_service",
+        aggregate_id=contract_service_id,
+        aggregate_version=1,
+        sequence_no=sequence_no,
+        payload={
+            "contract_service_id": contract_service_id,
+            "contract_id": contract_id,
+            "customer_id": customer_id,
+            "ended_at": wire_time(ended_at),
+        },
+        occurred_at=ended_at,
     )
 
 
