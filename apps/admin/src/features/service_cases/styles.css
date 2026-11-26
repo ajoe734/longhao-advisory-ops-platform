@@ -1,0 +1,14 @@
+.m13-stack { display: grid; gap: 1rem; }
+.m13-panel { background: var(--surface, #fff); border: 1px solid var(--border, #cbd5e1); border-radius: .5rem; padding: 1rem; }
+.m13-eyebrow { letter-spacing: .08em; text-transform: uppercase; }
+.m13-actions { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .5rem; }
+.m13-table { border-collapse: collapse; width: 100%; }
+.m13-table th, .m13-table td { border-bottom: 1px solid var(--border, #cbd5e1); padding: .75rem; text-align: left; }
+.m13-pill { margin-inline-start: .5rem; padding: .1rem .5rem; border-radius: 1rem; background: #fef3c7; }
+.m13-timeline { display: grid; gap: .5rem; list-style: none; padding: 0; }
+.m13-timeline li { border-inline-start: .3rem solid #64748b; padding: .75rem; }
+.m13-timeline li[data-direction="internal"] { border-inline-start-color: #7c3aed; background: #f5f3ff; }
+.m13-timeline li[data-direction="outbound"] { border-inline-start-color: #075985; background: #e0f2fe; }
+.m13-warning { color: #9a3412; font-weight: 600; }
+button:focus-visible, input:focus-visible { outline: 3px solid #0ea5e9; outline-offset: 2px; }
+@media (max-width: 48rem) { .m13-table, .m13-table tbody, .m13-table tr, .m13-table td, .m13-table th { display: block; } .m13-table thead { position: absolute; clip: rect(0 0 0 0); } }
