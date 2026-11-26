@@ -85,8 +85,8 @@ class CrmAutomationService:
     """
 
     def __init__(self, repository: InMemoryRepository, assistant: ContactDraftAssistantPort, *, environment: str = "test") -> None:
-        if environment == "production" and getattr(assistant, "is_fake", False):
-            raise RuntimeError("fake M10 automation adapter is forbidden in production")
+        if environment == "production" and any(getattr(adapter, "is_fake", False) for adapter in (repository, assistant)):
+            raise RuntimeError("fake M10 adapters are forbidden in production")
         self.repository = repository
         self.assistant = assistant
 

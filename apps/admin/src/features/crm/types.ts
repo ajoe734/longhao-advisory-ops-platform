@@ -154,7 +154,7 @@ export interface SuppressionRequest {
   scope: SuppressionScope;
   reason_category: SuppressionReasonCategory;
   reason_ref: string;
-  expires_at?: string | null;
+  expires_at: string | null;
 }
 
 export type FunnelStage =

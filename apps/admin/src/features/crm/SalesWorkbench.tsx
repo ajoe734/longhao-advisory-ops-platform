@@ -28,10 +28,13 @@ function formatTime(value: string | null): string {
 
 export function SalesWorkbench({
   state,
+  currentActorId,
   onReload,
   onAssign,
 }: {
   state: ViewState<Page<CrmWorkItem>>;
+  /** The signed-in actor claiming an unassigned item claims it for themselves. */
+  currentActorId: string;
   onReload: () => void;
   onAssign: (item: CrmWorkItem, body: NextActionRequest) => Promise<void>;
 }) {
@@ -49,7 +52,9 @@ export function SalesWorkbench({
     setPendingId(item.id);
     try {
       await onAssign(item, {
-        owner_id: item.owner_id ?? "",
+        // An unassigned item ("認領") is claimed by the current actor, not
+        // sent as an empty string -- owner_id must be a UUID (422 otherwise).
+        owner_id: item.owner_id ?? currentActorId,
         action_type: item.action_type as NextActionRequest["action_type"],
         due_at: item.due_at,
         reason_code: "claimed_from_workbench",
@@ -90,7 +95,12 @@ export function SalesWorkbench({
             </thead>
             <tbody>
               {page.items.map((item) => {
-                const canAssign = isAllowed(item.allowed_actions, "set_next_action");
+                // set_next_action is published under
+                // /crm/opportunities/{opportunity_id}/next-actions -- a
+                // rule-generated work item with no linked opportunity
+                // (opportunity_id is null) has no path to call it through.
+                const hasOpportunity = item.opportunity_id !== null;
+                const canAssign = hasOpportunity && isAllowed(item.allowed_actions, "set_next_action");
                 return (
                   <tr key={item.id}>
                     <td>{WORKLIST_LABELS[item.worklist]}</td>
@@ -108,7 +118,13 @@ export function SalesWorkbench({
                     <td>
                       <button
                         disabled={!canAssign || pendingId === item.id}
-                        title={!canAssign ? "目前狀態或角色不允許指派下一步" : undefined}
+                        title={
+                          !hasOpportunity
+                            ? "此待辦未關聯業務機會，請先建立機會後再指派"
+                            : !canAssign
+                              ? "目前狀態或角色不允許指派下一步"
+                              : undefined
+                        }
                         onClick={() => claim(item)}
                       >
                         {pendingId === item.id ? "處理中…" : item.owner_id ? "更新下一步" : "認領"}

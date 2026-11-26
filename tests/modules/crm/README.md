@@ -13,31 +13,40 @@ editable 時多一層保險。）
 
 - `conftest.py`：`repository`／`evidence`／`service`／`consumer`／
   `event_bus`／`outbox_publisher`／`sweep_worker` fixtures；`Actors` 提供
-  固定的 sales/sales_2/supervisor/service_agent/marketing 身分；
-  `make_envelope` 產生符合 canonical envelope 形狀、`payload_sha256` 正確
-  計算的合成事件（不是真實上游系統）。
-- `test_uat.py`：[逐案驗收](../../../docs/modules/M10-crm.md#14-逐案驗收)
+  固定的 sales/sales_2/supervisor/service_agent/marketing 身分。
+- `envelope.py`：`make_envelope` 產生符合 canonical envelope 形狀、
+  `payload_sha256` 正確計算的合成事件（不是真實上游系統）。獨立於
+  `conftest.py`、使用本目錄唯一的 basename：一個裸的
+  `from conftest import ...` 在同一 pytest session 內收集多個
+  `tests/modules/*` 套件時，解析到的不保證是本目錄自己的
+  `conftest.py`（取決於哪個同名 `conftest` 模組最後被載入進
+  `sys.modules`），所以共用的小工具改放在不叫 `conftest` 的模組。
+- `test_crm_uat.py`：[逐案驗收](../../../docs/modules/M10-crm.md#14-逐案驗收)
   UAT-M10-001 ~ 012，見 `traceability.md`。
-- `test_contract_worker_http.py`：idempotency replay/conflict、CAS
+- `test_crm_contract_worker_http.py`：idempotency replay/conflict、CAS
   412/428、`M10Controller` 的 problem+json 映射、consumer 的
   payload-hash-mismatch／sequence-gap／不支援事件型別、
   `OutboxPublisher` 的 unknown-result-via-lookup 與 dead-letter 演練。
-- `test_security_automation.py`：角色 SoD 邊界（跨人機會存取、自我認領
+- `test_crm_security_automation.py`：角色 SoD 邊界（跨人機會存取、自我認領
   禁止、maker-checker）與 `daily_contact_draft` 自動化能力的輸入最小化、
   角色限制及審閱流程。
-- `test_ui_contract.py`：`allowed_actions` 由伺服器計算、suppression 投影
-  對 UI 可見狀態的影響、`list_crm_worklists`／`get_funnel_metrics` 回應
+- `test_crm_ui_contract.py`：`allowed_actions` 由伺服器計算、suppression
+  投影對 UI 可見狀態的影響、`list_crm_worklists`／`get_funnel_metrics` 回應
   形狀。
+
+檔名刻意加上 `crm_` 前綴（而非沿用 `test_uat.py` 等泛用名）：本 repo 的
+`tests/modules/*` 目錄彼此沒有 `__init__.py`，pytest 在沒有套件結構時以
+檔案 basename 當作全域 module 名稱；與其他模組（例如
+`tests/modules/customer_identity_application`）同名的測試檔案會在
+`pytest tests/`（跨模組一次收集）時產生 `import file mismatch` 收集錯誤。
 
 ## 已知限制
 
 - 全部測試直接呼叫 `CrmService`／`M10EventConsumer`，不經過
-  `longhao_platform.http` 的 FastAPI router；HTTP 層已透過
-  `apps/api/src/modules/crm/plugin.py` 掛載並手動以
-  `fastapi.testclient.TestClient` 驗證過一次掛載正確（見本任務 PR
-  描述），但該驗證不在本自動化測試套件內，因為
-  `longhao_platform.app.SyntheticAuthenticator` 目前只提供
-  `platform_admin`/`internal_auditor`/`platform_worker`，沒有
+  `longhao_platform.http` 的 FastAPI router；本模組尚未提供
+  `plugin.py`／`register(runtime)`（見
+  `apps/api/src/modules/crm/README.md`），`longhao_platform.app.SyntheticAuthenticator`
+  目前也只提供 `platform_admin`/`internal_auditor`/`platform_worker`，沒有
   `sales`/`sales_supervisor`/`marketing`/`service_agent` 的測試
   principal，無法端到端走完整授權路徑。
 - `core.object_asset` 存在性以 `FakeEvidencePort` 模擬；

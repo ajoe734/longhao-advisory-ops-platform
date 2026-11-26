@@ -96,42 +96,9 @@ def actors(tenant_id: str) -> Actors:
     return Actors(tenant_id)
 
 
-def make_envelope(
-    *,
-    event_type: str,
-    schema_version: str = "1.0.0",
-    tenant_id: str,
-    producer: str,
-    aggregate_type: str,
-    aggregate_id: str,
-    aggregate_version: int = 1,
-    sequence_no: int = 1,
-    occurred_at: str = "2026-11-20T00:00:00.000000Z",
-    emitted_at: str = "2026-11-20T00:00:00.000000Z",
-    correlation_id: str | None = None,
-    causation_id: str | None = None,
-    idempotency_key: str | None = None,
-    classification: str = "customer_confidential",
-    payload: dict,
-) -> dict:
-    from modules.crm.domain import canonical_hash
-
-    return {
-        "event_id": new_id(),
-        "event_type": event_type,
-        "schema_version": schema_version,
-        "tenant_id": tenant_id,
-        "producer": producer,
-        "aggregate_type": aggregate_type,
-        "aggregate_id": aggregate_id,
-        "aggregate_version": aggregate_version,
-        "sequence_no": sequence_no,
-        "occurred_at": occurred_at,
-        "emitted_at": emitted_at,
-        "correlation_id": correlation_id or new_id(),
-        "causation_id": causation_id,
-        "idempotency_key": idempotency_key or f"{event_type}:{new_id()}",
-        "classification": classification,
-        "payload_sha256": canonical_hash(payload),
-        "payload": payload,
-    }
+# ``make_envelope`` lives in ``envelope.py``, not here: a plain
+# ``from conftest import make_envelope`` inside a test function is resolved
+# against whichever sibling test package's ``conftest`` module last claimed
+# the bare ``conftest`` name in ``sys.modules`` during this pytest session,
+# which is not guaranteed to be this directory's own conftest once more than
+# one ``tests/modules/*`` package is collected together.

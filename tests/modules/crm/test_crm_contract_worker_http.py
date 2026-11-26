@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import pytest
 
-from conftest import make_envelope
+from envelope import make_envelope
 
 from modules.crm.domain import (
     ConflictError,
@@ -206,7 +206,25 @@ def test_consumer_rejects_unsupported_event_type(consumer, actors):
     assert excinfo.value.code == "unsupported_event_type"
 
 
-# ---- outbox publisher (lease / retry / dead-letter) ------------------------
+def test_consumer_applies_every_officially_registered_m10_subscribed_event(consumer):
+    """F2: ``events/registry.json`` lists M10 as a consumer of 20 event
+    types; every one of them must be handled by ``M10EventConsumer._apply``
+    using the real published example from ``events/examples``, not just the
+    18/20 this once silently fell short of (missing
+    ``crm.opportunity_changed``/``crm.suppression_changed``, M10's own
+    self-consumed events)."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    registry = json.loads((root / "events" / "registry.json").read_text(encoding="utf-8"))
+    consumed_types = [row["event_type"] for row in registry if "M10" in (row.get("consumers") or [])]
+    assert len(consumed_types) == 20, "this test's own premise (20 M10-subscribed event types) drifted from the registry"
+
+    for event_type in consumed_types:
+        example = json.loads((root / "events" / "examples" / f"{event_type}.v1.json").read_text(encoding="utf-8"))
+        result = consumer.consume(example)
+        assert result.status == "applied", f"{event_type}: {result.result_code}"
 
 
 def test_outbox_publisher_resolves_unknown_result_via_lookup(repository, service, actors):

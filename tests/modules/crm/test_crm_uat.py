@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 
-from conftest import make_envelope
+from envelope import make_envelope
 
 from modules.crm.domain import ActorContext, ConflictError, ValidationError
 
@@ -222,13 +222,15 @@ def test_uat_005_unread_report_alone_never_implies_churn(consumer, service, acto
 # ---- UAT-M10-006: 禁止聯絡或未結抱怨抑制銷售 ------------------------------
 
 
-def test_uat_006_suppression_blocks_sales_push_but_keeps_service_followup(service, actors):
+def test_uat_006_suppression_blocks_sales_push_but_keeps_service_followup(service, actors, evidence):
     customer_id = _uuid()
     opp_id = _create_opportunity_for(service, actors, customer_id, "upgrade")
+    reason_ref = _uuid()
+    evidence.register(actors.tenant_id, reason_ref)
     service.create_crm_suppression(
         actors.service_agent(), {
             "customer_id": customer_id, "scope": "sales_contact", "reason_category": "open_complaint",
-            "reason_ref": _uuid(), "expires_at": None,
+            "reason_ref": reason_ref, "expires_at": None,
         }, idempotency_key="uat006-suppress-00000001",
     )
     with pytest.raises(ConflictError) as excinfo:
@@ -248,6 +250,122 @@ def test_uat_006_suppression_blocks_sales_push_but_keeps_service_followup(servic
     )
     assert allowed.status == 201
     assert allowed.data["suppression_applied"] is True
+
+
+def test_uat_006_marketing_optout_blocks_sales_push_until_regranted(consumer, service, actors):
+    """``customer.consent_changed(purpose=marketing, granted=False)`` must
+    suppress sales push (not just ``sales_contact``/``all_nonessential_contact``
+    scopes), emit ``crm.suppression_changed(active=True)``, and a later
+    re-grant must lift it (and emit ``active=False``) rather than leave it
+    suppressed forever."""
+    customer_id = _uuid()
+    opp_id = _create_opportunity_for(service, actors, customer_id, "renewal")
+    consent_id = _uuid()
+    optout = make_envelope(
+        event_type="customer.consent_changed", tenant_id=actors.tenant_id, producer="M01", aggregate_type="customer",
+        aggregate_id=customer_id, payload={"customer_id": customer_id, "consent_id": consent_id, "purpose": "marketing", "granted": False},
+    )
+    assert consumer.consume(optout).status == "applied"
+    outbox_after_optout = service.repository.snapshot().outbox
+    assert any(
+        event.event_type == "crm.suppression_changed" and event.payload["customer_id"] == customer_id and event.payload["active"] is True
+        for event in outbox_after_optout.values()
+    )
+
+    with pytest.raises(ConflictError) as excinfo:
+        service.set_next_action(
+            actors.sales(), opp_id, {
+                "owner_id": actors.sales_id, "action_type": "renewal_offer", "due_at": _iso(_now() + timedelta(days=1)),
+                "reason_code": "upsell_push",
+            }, expected_version=1, idempotency_key="uat006-optout-blocked-00000001",
+        )
+    assert excinfo.value.code.startswith("suppression_blocks_action")
+
+    regrant = make_envelope(
+        event_type="customer.consent_changed", tenant_id=actors.tenant_id, producer="M01", aggregate_type="customer",
+        aggregate_id=customer_id, sequence_no=2, payload={"customer_id": customer_id, "consent_id": _uuid(), "purpose": "marketing", "granted": True},
+    )
+    assert consumer.consume(regrant).status == "applied"
+    outbox_after_regrant = service.repository.snapshot().outbox
+    assert any(
+        event.event_type == "crm.suppression_changed" and event.payload["customer_id"] == customer_id and event.payload["active"] is False
+        for event in outbox_after_regrant.values()
+    )
+
+    allowed_again = service.set_next_action(
+        actors.sales(), opp_id, {
+            "owner_id": actors.sales_id, "action_type": "renewal_offer", "due_at": _iso(_now() + timedelta(days=1)),
+            "reason_code": "upsell_push",
+        }, expected_version=1, idempotency_key="uat006-regranted-allowed-00000001",
+    )
+    assert allowed_again.status == 201
+    assert allowed_again.data["suppression_applied"] is False
+
+
+def test_uat_006_major_open_complaint_auto_suppresses_sales_and_lifts_on_resolution(consumer, service, actors):
+    customer_id = _uuid()
+    opp_id = _create_opportunity_for(service, actors, customer_id, "renewal")
+    case_id = _uuid()
+    opened = make_envelope(
+        event_type="support.case_opened", tenant_id=actors.tenant_id, producer="M13", aggregate_type="service_case",
+        aggregate_id=case_id, payload={"case_id": case_id, "customer_id": customer_id, "category": "complaint", "priority": "urgent"},
+    )
+    assert consumer.consume(opened).status == "applied"
+    outbox_after_open = service.repository.snapshot().outbox
+    assert any(
+        event.event_type == "crm.suppression_changed" and event.payload["customer_id"] == customer_id and event.payload["active"] is True
+        for event in outbox_after_open.values()
+    )
+
+    with pytest.raises(ConflictError) as excinfo:
+        service.set_next_action(
+            actors.sales(), opp_id, {
+                "owner_id": actors.sales_id, "action_type": "renewal_offer", "due_at": _iso(_now() + timedelta(days=1)),
+                "reason_code": "upsell_push",
+            }, expected_version=1, idempotency_key="uat006-complaint-blocked-00000001",
+        )
+    assert excinfo.value.code.startswith("suppression_blocks_action")
+
+    resolved = make_envelope(
+        event_type="support.case_resolved", tenant_id=actors.tenant_id, producer="M13", aggregate_type="service_case",
+        aggregate_id=case_id, sequence_no=2, payload={"case_id": case_id, "customer_id": customer_id, "resolution_record_id": _uuid()},
+    )
+    assert consumer.consume(resolved).status == "applied"
+    outbox_after_resolved = service.repository.snapshot().outbox
+    assert any(
+        event.event_type == "crm.suppression_changed" and event.payload["customer_id"] == customer_id and event.payload["active"] is False
+        for event in outbox_after_resolved.values()
+    )
+
+    allowed = service.set_next_action(
+        actors.sales(), opp_id, {
+            "owner_id": actors.sales_id, "action_type": "renewal_offer", "due_at": _iso(_now() + timedelta(days=1)),
+            "reason_code": "upsell_push",
+        }, expected_version=1, idempotency_key="uat006-complaint-resolved-allowed-00000001",
+    )
+    assert allowed.status == 201
+    assert allowed.data["suppression_applied"] is False
+
+
+def test_uat_006_minor_complaint_does_not_auto_suppress_sales(consumer, service, actors):
+    """Only "major" (high/urgent-priority) open complaints auto-suppress;
+    a routine/normal-priority complaint must not block sales outreach."""
+    customer_id = _uuid()
+    opp_id = _create_opportunity_for(service, actors, customer_id, "renewal")
+    opened = make_envelope(
+        event_type="support.case_opened", tenant_id=actors.tenant_id, producer="M13", aggregate_type="service_case",
+        aggregate_id=_uuid(), payload={"case_id": _uuid(), "customer_id": customer_id, "category": "complaint", "priority": "normal"},
+    )
+    assert consumer.consume(opened).status == "applied"
+
+    allowed = service.set_next_action(
+        actors.sales(), opp_id, {
+            "owner_id": actors.sales_id, "action_type": "renewal_offer", "due_at": _iso(_now() + timedelta(days=1)),
+            "reason_code": "upsell_push",
+        }, expected_version=1, idempotency_key="uat006-minor-complaint-allowed-00000001",
+    )
+    assert allowed.status == 201
+    assert allowed.data["suppression_applied"] is False
 
 
 # ---- UAT-M10-007: 升級機會須服務適合度允許 --------------------------------
@@ -505,7 +623,55 @@ def test_uat_011_funnel_replay_dedupes_and_tracks_withdrawal_separately(consumer
     funnel_after_churn = service.get_funnel_metrics(actors.supervisor())
     churn = next(item for item in funnel_after_churn.data["items"] if item["stage"] == "churn")
     assert churn["count"] == 1
-    assert all(item["stage"] != "active" or item["count"] == 0 for item in funnel_after_churn.data["items"])
+
+
+def test_uat_011_lost_and_cancelled_opportunities_are_excluded_from_renewal_and_upgrade(consumer, service, actors):
+    """A suitability-blocked (cancelled/"suppressed") upgrade opportunity
+    must not be counted in the "upgrade" funnel stage -- it is not a
+    contactable upgrade-pipeline member (REQ-M10-007), it is parked pending
+    reassessment."""
+    suspended = make_envelope(
+        event_type="entitlement.changed", tenant_id=actors.tenant_id, producer="M02", aggregate_type="entitlement",
+        aggregate_id=_uuid(),
+        payload={"entitlement_id": _uuid(), "customer_id": _uuid(), "contract_id": _uuid(), "state": "suspended", "decision_id": _uuid(), "valid_until": _iso(_now() + timedelta(days=30))},
+    )
+    consumer.consume(suspended)
+    cancelled_upgrade = service.create_opportunity(
+        actors.sales(), {
+            "customer_id": suspended["payload"]["customer_id"], "type": "upgrade", "service_code": "advisory-pro",
+            "reason_code": "x", "owner_id": actors.sales_id, "due_at": _iso(_now() + timedelta(days=5)),
+        }, idempotency_key="uat011-cancelled-upgrade-00000001",
+    )
+    assert cancelled_upgrade.data["state"] == "suppressed"
+
+    open_upgrade = _create_opportunity_for(service, actors, _uuid(), "upgrade")
+
+    funnel = service.get_funnel_metrics(actors.supervisor())
+    upgrade = next((item for item in funnel.data["items"] if item["stage"] == "upgrade"), {"count": 0})
+    assert upgrade["count"] == 1, "only the still-open upgrade opportunity counts, not the suitability-blocked one"
+
+
+def test_uat_011_active_excludes_entitlements_on_a_terminated_contract(consumer, service, actors):
+    customer_id = _uuid()
+    contract_id = _uuid()
+    active_envelope = make_envelope(
+        event_type="entitlement.changed", tenant_id=actors.tenant_id, producer="M02", aggregate_type="entitlement",
+        aggregate_id=_uuid(),
+        payload={"entitlement_id": _uuid(), "customer_id": customer_id, "contract_id": contract_id, "state": "active", "decision_id": _uuid(), "valid_until": _iso(_now() + timedelta(days=365))},
+    )
+    consumer.consume(active_envelope)
+    funnel_while_active = service.get_funnel_metrics(actors.supervisor())
+    active_before = next((item for item in funnel_while_active.data["items"] if item["stage"] == "active"), {"count": 0})
+    assert active_before["count"] == 1
+
+    terminated_envelope = make_envelope(
+        event_type="contract.terminated", tenant_id=actors.tenant_id, producer="M02", aggregate_type="contract",
+        aggregate_id=contract_id, payload={"contract_id": contract_id, "customer_id": customer_id, "terminated_at": _iso(_now()), "refund_evaluation_required": False},
+    )
+    consumer.consume(terminated_envelope)
+    funnel_after_termination = service.get_funnel_metrics(actors.supervisor())
+    active_after = next((item for item in funnel_after_termination.data["items"] if item["stage"] == "active"), {"count": 0})
+    assert active_after["count"] == 0, "a terminated contract's entitlement must not still read as active"
 
 
 # ---- UAT-M10-012: 同一待辦不因日批次無限重複 ------------------------------

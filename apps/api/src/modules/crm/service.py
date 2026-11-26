@@ -26,6 +26,7 @@ from .domain import (
     Opportunity,
     OPPORTUNITY_KIND_FROM_DB,
     OPPORTUNITY_KIND_TO_DB,
+    OPPORTUNITY_OPEN_STATES,
     OPPORTUNITY_STATE_FROM_DB,
     OPPORTUNITY_STATE_TO_DB,
     OutboxEvent,
@@ -55,7 +56,10 @@ from .repository import InMemoryRepository, StoreState
 _KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 #: suppression scopes that block a new *sales-initiated* outreach action;
 #: a service-necessary follow-up (``resolve_issue``) is never blocked.
-_SALES_PUSH_BLOCKING_SCOPES = {"sales_contact", "all_nonessential_contact"}
+#: ``marketing_contact`` (REQ-M10-006's marketing opt-out) is included:
+#: the requirement text blocks "行銷／升級催促" outreach on opt-out, not
+#: only the narrower ``sales_contact``/``all_nonessential_contact`` scopes.
+_SALES_PUSH_BLOCKING_SCOPES = {"marketing_contact", "sales_contact", "all_nonessential_contact"}
 _RENEWAL_WINDOW = timedelta(days=30)
 _PENDING_REVIEW_GRACE = timedelta(days=2)
 
@@ -103,8 +107,8 @@ class CrmService:
         clock: Callable[[], datetime] = utc_now,
         environment: str = "test",
     ) -> None:
-        if environment == "production" and getattr(evidence, "is_fake", False):
-            raise RuntimeError("fake M10 evidence adapter is forbidden in production")
+        if environment == "production" and any(getattr(adapter, "is_fake", False) for adapter in (repository, evidence)):
+            raise RuntimeError("fake M10 adapters are forbidden in production")
         self.repository = repository
         self.evidence = evidence
         self._clock = clock
@@ -114,7 +118,7 @@ class CrmService:
     def create_opportunity(
         self, context: ActorContext, body: dict[str, Any], *, idempotency_key: str, correlation_id: str | None = None
     ) -> ServiceResponse:
-        self._authorize(context, {"sales"})
+        self._authorize(context, {"sales"}, operation="create_opportunity", correlation_id=correlation_id)
         self._body(body, {"customer_id", "type", "service_code", "contract_id", "reason_code", "owner_id", "due_at"}, {"customer_id", "type", "service_code", "reason_code", "owner_id", "due_at"})
         customer_id = require_uuid(body["customer_id"], "customer_id")
         if body["type"] not in OPPORTUNITY_KIND_TO_DB:
@@ -171,7 +175,7 @@ class CrmService:
         as_of: datetime | None,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize(context, {"sales", "sales_supervisor"})
+        self._authorize(context, {"sales", "sales_supervisor"}, operation="list_opportunities", correlation_id=correlation_id)
         if not 1 <= limit <= 200:
             raise ValidationError("limit must be between 1 and 200", field_name="limit")
         correlation_id = self._correlation(correlation_id)
@@ -200,7 +204,7 @@ class CrmService:
         return self.repository.atomic(query)
 
     def get_opportunity(self, context: ActorContext, opportunity_id: str, *, correlation_id: str | None = None) -> ServiceResponse:
-        self._authorize(context, {"sales", "sales_supervisor"})
+        self._authorize(context, {"sales", "sales_supervisor"}, operation="get_opportunity", correlation_id=correlation_id)
         opportunity_id = require_uuid(opportunity_id, "opportunity_id")
         correlation_id = self._correlation(correlation_id)
 
@@ -210,7 +214,16 @@ class CrmService:
             self._audit(state, context, "get_opportunity", "opportunity", opportunity.id, opportunity.version, correlation_id, "succeeded")
             return ServiceResponse(opportunity.to_api(self._opportunity_actions(opportunity, context)), etag=self._etag(opportunity.version))
 
-        return self.repository.atomic(query)
+        try:
+            return self.repository.atomic(query)
+        except ForbiddenError as exc:
+            # Unlike record_sales_activity/set_next_action (routed through
+            # _run_command, which already audits a DomainError raised inside
+            # its own transaction), this plain query has no such wrapper of
+            # its own -- the ownership denial would otherwise leave no audit
+            # trail at all.
+            self._audit_failure(context, "get_opportunity", correlation_id, exc.code)
+            raise
 
     # ---- record_sales_activity --------------------------------------------
 
@@ -224,7 +237,7 @@ class CrmService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize(context, {"sales"})
+        self._authorize(context, {"sales"}, operation="record_sales_activity", correlation_id=correlation_id)
         opportunity_id = require_uuid(opportunity_id, "opportunity_id")
         self._body(
             body,
@@ -257,7 +270,7 @@ class CrmService:
             self._authorize_opportunity_owner(context, opportunity)
             self._cas(opportunity.version, expected_version)
             two_way = body["activity_type"] not in {"proposal", "follow_up"} and customer_response_evidence_id is not None
-            late_entry = self._has_approved_conversion(state, context.tenant_id, opportunity.id)
+            late_entry = self._has_claimed_conversion(state, context.tenant_id, opportunity.id)
             qualifies = two_way and not late_entry
             activity = SalesActivity(
                 id=new_id(),
@@ -304,9 +317,14 @@ class CrmService:
         return self._run_command(context, "record_sales_activity", idempotency_key, {"opportunity_id": opportunity_id, **body}, correlation_id, mutate)
 
     @staticmethod
-    def _has_approved_conversion(state: StoreState, tenant_id: str, opportunity_id: str) -> bool:
+    def _has_claimed_conversion(state: StoreState, tenant_id: str, opportunity_id: str) -> bool:
+        """REQ-M10-010: a transaction is "already known" from the moment any
+        conversion claim exists for this opportunity, not only once a
+        supervisor has approved it -- a backdated activity submitted while a
+        claim is still ``proposed`` (pre-decision) is exactly the
+        "post-transaction, pre-decision backfill" case this flags."""
         return any(
-            tenant == tenant_id and conversion.opportunity_id == opportunity_id and conversion.decision_status == "approved"
+            tenant == tenant_id and conversion.opportunity_id == opportunity_id
             for (tenant, _), conversion in state.conversions.items()
         )
 
@@ -322,7 +340,7 @@ class CrmService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize(context, {"sales", "sales_supervisor"})
+        self._authorize(context, {"sales", "sales_supervisor"}, operation="set_next_action", correlation_id=correlation_id)
         opportunity_id = require_uuid(opportunity_id, "opportunity_id")
         self._body(body, {"owner_id", "action_type", "due_at", "reason_code", "note"}, {"owner_id", "action_type", "due_at", "reason_code"})
         owner_id = require_uuid(body["owner_id"], "owner_id")
@@ -361,7 +379,7 @@ class CrmService:
                 note=note,
                 force_status="assigned",
             )
-            suppression_applied = self._customer_suppressed(state, context.tenant_id, opportunity.customer_id, {"sales_contact", "all_nonessential_contact"}, now)
+            suppression_applied = self._customer_suppressed(state, context.tenant_id, opportunity.customer_id, _SALES_PUSH_BLOCKING_SCOPES, now)
             # Bump the path's CAS'd aggregate (the opportunity) so a
             # subsequent CAS'd command on the same opportunity_id must
             # observe this write.
@@ -383,7 +401,7 @@ class CrmService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize(context, {"sales"})
+        self._authorize(context, {"sales"}, operation="claim_conversion", correlation_id=correlation_id)
         opportunity_id = require_uuid(opportunity_id, "opportunity_id")
         self._body(
             body,
@@ -415,19 +433,35 @@ class CrmService:
                     raise ValidationError("sales_activity_ids must reference this opportunity's own activities", field_name="sales_activity_ids")
             existing_id = state.conversion_by_contract_service.get((context.tenant_id, contract_service_id))
             claim = ClaimRecord(claimed_salesperson_id, tuple(activity_ids), now, reason_code)
+            # The path's CAS'd aggregate is the opportunity; bump its version
+            # so a subsequent CAS'd command on the same opportunity_id must
+            # observe this write (same pattern as record_sales_activity/
+            # set_next_action).
+            opportunity.version += 1
+            opportunity.updated_at = now
             if existing_id:
                 conversion = state.conversions[(context.tenant_id, existing_id)]
-                if conversion.decision_status in {"approved", "reversed"}:
+                # Any decision already made here (approved/rejected/disputed/
+                # reversed) is a supervisor's considered call; a re-claim must
+                # never silently reset it back to "proposed" and wipe
+                # decided_by/decision_at -- only an undecided ("proposed")
+                # claim can still accept a competing claim (UAT-M10-009).
+                if conversion.decision_status != "proposed":
                     error = ConflictError("this transaction's conversion has already been decided", code="conversion_already_decided")
                     return _Outcome({}, error.status, "conversion", conversion.id, conversion.version, error)
                 conversion.claim_history = (*conversion.claim_history, claim)
                 conversion.evidence_activity_ids = tuple(sorted(set(conversion.evidence_activity_ids) | set(activity_ids)))
-                conversion.decision_status = "proposed"
-                conversion.decided_by = None
-                conversion.decision_at = None
                 conversion.version += 1
                 conversion.updated_at = now
                 return self._conversion_outcome(conversion, context, 201)
+            if opportunity.status in {"converted", "lost", "cancelled"}:
+                # A brand-new conversion attempt (a different
+                # contract_service_id) against an opportunity already closed
+                # out by a prior transaction -- unlike the existing_id branch
+                # above, there is no decided conversion row to carry the more
+                # specific "already decided" code.
+                error = ConflictError("opportunity is already in a terminal state", code="opportunity_terminal")
+                return _Outcome({}, error.status, "opportunity", opportunity.id, opportunity.version, error)
             conversion = Conversion(
                 id=new_id(),
                 tenant_id=context.tenant_id,
@@ -462,7 +496,7 @@ class CrmService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize(context, {"sales_supervisor"})
+        self._authorize(context, {"sales_supervisor"}, operation="decide_conversion", correlation_id=correlation_id)
         conversion_id = require_uuid(conversion_id, "conversion_id")
         self._body(body, {"decision", "reason_code", "approved_salesperson_id", "qualifying_activity_ids", "causality_evidence_asset_id"}, {"decision", "reason_code", "causality_evidence_asset_id"})
         if body["decision"] not in {"approve", "reject", "dispute"}:
@@ -509,11 +543,18 @@ class CrmService:
                 return self._conversion_outcome(conversion, context, 200)
 
             candidate_ids = requested_activity_ids or list(conversion.evidence_activity_ids)
+            # Independent temporal-causality check (REQ-M10-010): never trust
+            # the ``qualifies_for_claim``/``late_entry`` flags alone at
+            # decision time -- require that the cited activity's own
+            # ``occurred_at`` actually precedes the point this transaction
+            # was first claimed (``conversion.created_at``, the earliest
+            # record this module has of the transaction).
             qualifying_ids = [
                 activity_id for activity_id in candidate_ids
                 if (activity := state.activities.get((context.tenant_id, activity_id))) is not None
                 and activity.opportunity_id == conversion.opportunity_id
                 and activity.qualifies_for_claim
+                and activity.occurred_at < conversion.created_at
             ]
             if approved_salesperson_id is not None and not qualifying_ids:
                 error = ValidationError(
@@ -544,7 +585,7 @@ class CrmService:
     def create_crm_suppression(
         self, context: ActorContext, body: dict[str, Any], *, idempotency_key: str, correlation_id: str | None = None
     ) -> ServiceResponse:
-        self._authorize(context, {"service_agent", "sales_supervisor"})
+        self._authorize(context, {"service_agent", "sales_supervisor"}, operation="create_crm_suppression", correlation_id=correlation_id)
         self._body(body, {"customer_id", "scope", "reason_category", "reason_ref", "expires_at"}, {"customer_id", "scope", "reason_category", "reason_ref", "expires_at"})
         customer_id = require_uuid(body["customer_id"], "customer_id")
         if body["scope"] not in SUPPRESSION_SCOPES:
@@ -552,6 +593,8 @@ class CrmService:
         if body["reason_category"] not in SUPPRESSION_REASON_CATEGORIES:
             raise ValidationError("reason_category is not supported", field_name="reason_category")
         reason_ref = require_uuid(body["reason_ref"], "reason_ref")
+        if not self.evidence.exists(context.tenant_id, reason_ref):
+            raise ValidationError("suppression reason reference does not exist", code="evidence_not_found", field_name="reason_ref")
         expires_at = self._parse_time(body["expires_at"], "expires_at") if body.get("expires_at") else None
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
@@ -580,7 +623,7 @@ class CrmService:
     # ---- get_funnel_metrics ----------------------------------------------------
 
     def get_funnel_metrics(self, context: ActorContext, *, correlation_id: str | None = None) -> ServiceResponse:
-        self._authorize(context, {"sales_supervisor", "marketing"})
+        self._authorize(context, {"sales_supervisor", "marketing"}, operation="get_funnel_metrics", correlation_id=correlation_id)
         correlation_id = self._correlation(correlation_id)
         snapshot_at = self._clock()
 
@@ -610,10 +653,11 @@ class CrmService:
             for (tenant, _), entitlement in state.entitlements.items():
                 if tenant != context.tenant_id:
                     continue
-                if entitlement.state == "active":
+                contract = state.contracts.get((tenant, entitlement.contract_id))
+                if entitlement.state == "active" and (contract is None or contract.terminated_at is None):
                     mark("active", entitlement.contract_id, entitlement.customer_id, snapshot_at)
             for (tenant, _), opportunity in state.opportunities.items():
-                if tenant != context.tenant_id:
+                if tenant != context.tenant_id or opportunity.status not in OPPORTUNITY_OPEN_STATES:
                     continue
                 if opportunity.kind == "renewal":
                     mark("renewal", opportunity.target_service_code, opportunity.customer_id, snapshot_at)
@@ -662,7 +706,7 @@ class CrmService:
         as_of: datetime | None,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize(context, {"sales", "sales_supervisor", "marketing"})
+        self._authorize(context, {"sales", "sales_supervisor", "marketing"}, operation="list_crm_worklists", correlation_id=correlation_id)
         if not 1 <= limit <= 200:
             raise ValidationError("limit must be between 1 and 200", field_name="limit")
         correlation_id = self._correlation(correlation_id)
@@ -675,21 +719,28 @@ class CrmService:
             elif "sales" in context.roles and "sales_supervisor" not in context.roles:
                 rows = [item for item in rows if item.owner_actor_id == context.actor_id or item.owner_actor_id is None]
             suppressed_map = {
-                item.id: self._customer_suppressed(state, context.tenant_id, item.customer_id, {"sales_contact", "all_nonessential_contact"}, snapshot_at)
+                item.id: self._customer_suppressed(state, context.tenant_id, item.customer_id, _SALES_PUSH_BLOCKING_SCOPES, snapshot_at)
                 for item in rows
             }
             projected = [(item, item.to_api(self._work_item_actions(item, context), suppression_applied=suppressed_map[item.id])) for item in rows]
             if state_filter:
                 projected = [(item, api) for item, api in projected if api["state"] == state_filter]
             projected.sort(key=lambda pair: pair[0].id)
-            page = [api for _, api in projected if not cursor or api["id"] > cursor][:limit]
+            total_estimate = len(projected)
+            # Filter by cursor before slicing to the page limit (as
+            # list_opportunities does); checking the *unfiltered* projected
+            # length against limit here previously produced a spurious
+            # next_cursor on the last page, which then crashed the
+            # following page's ``page[-1]["id"]`` with an IndexError.
+            filtered = [api for item, api in projected if not cursor or item.id > cursor]
+            page = filtered[:limit]
             self._audit(state, context, "list_crm_worklists", "work_item", None, None, correlation_id, "succeeded")
             return ServiceResponse(
                 {
                     "items": page,
-                    "next_cursor": page[-1]["id"] if len(projected) > limit else None,
+                    "next_cursor": page[-1]["id"] if len(filtered) > limit else None,
                     "as_of": wire_time(snapshot_at),
-                    "total_estimate": len(projected),
+                    "total_estimate": total_estimate,
                 }
             )
 
@@ -811,13 +862,35 @@ class CrmService:
             owner_actor_id=None, suggestion_origin="rule", now=now,
         )
 
-    def record_support_case_opened(self, state: StoreState, tenant_id: str, case_id: str, customer_id: str, category: str, priority: str) -> None:
-        state.support_cases[(tenant_id, case_id)] = SupportCaseProjection(tenant_id=tenant_id, case_id=case_id, customer_id=customer_id, category=category, priority=priority, open=True)
+    #: support.case_opened categories/priorities that count as an "unresolved
+    #: major complaint" for REQ-M10-006 (customer must not be pushed sales
+    #: outreach while this is open).
+    _MAJOR_COMPLAINT_PRIORITIES = {"high", "urgent"}
 
-    def record_support_case_resolved(self, state: StoreState, tenant_id: str, case_id: str) -> None:
+    def record_support_case_opened(
+        self, state: StoreState, tenant_id: str, case_id: str, customer_id: str, category: str, priority: str,
+        now: datetime, correlation_id: str,
+    ) -> None:
+        state.support_cases[(tenant_id, case_id)] = SupportCaseProjection(tenant_id=tenant_id, case_id=case_id, customer_id=customer_id, category=category, priority=priority, open=True)
+        if category == "complaint" and priority in self._MAJOR_COMPLAINT_PRIORITIES:
+            suppression = Suppression(
+                id=new_id(), tenant_id=tenant_id, version=1, created_at=now, updated_at=now, customer_id=customer_id,
+                scope="sales_contact", reason_code="open_complaint", actor_id="00000000-0000-0000-0000-000000000001",
+                valid_from=now, reason_ref=case_id,
+            )
+            state.suppressions[(tenant_id, suppression.id)] = suppression
+            self._emit_suppression_changed(state, suppression, correlation_id, active=True)
+
+    def record_support_case_resolved(self, state: StoreState, tenant_id: str, case_id: str, now: datetime, correlation_id: str) -> None:
         case = state.support_cases.get((tenant_id, case_id))
         if case is not None:
             case.open = False
+        for (tenant, _), suppression in state.suppressions.items():
+            if tenant == tenant_id and suppression.scope == "sales_contact" and suppression.reason_ref == case_id and suppression.active(now):
+                suppression.valid_until = now
+                suppression.version += 1
+                suppression.updated_at = now
+                self._emit_suppression_changed(state, suppression, correlation_id, active=False)
 
     def record_payment_confirmed(self, state: StoreState, tenant_id: str, application_id: str) -> None:
         payment = state.payments.get((tenant_id, application_id))
@@ -840,15 +913,31 @@ class CrmService:
             due_at=due_at, reason_codes=["kyc_refresh_required"], evidence_refs=[refresh_case_id], owner_actor_id=None, suggestion_origin="rule", now=now,
         )
 
-    def record_consent_changed(self, state: StoreState, tenant_id: str, customer_id: str, consent_id: str, purpose: str, granted: bool) -> None:
+    def record_consent_changed(
+        self, state: StoreState, tenant_id: str, customer_id: str, consent_id: str, purpose: str, granted: bool,
+        *, correlation_id: str,
+    ) -> None:
         state.consents[(tenant_id, consent_id)] = {"customer_id": customer_id, "purpose": purpose, "granted": granted}
-        if purpose == "marketing" and not granted:
-            now = self._clock()
+        if purpose != "marketing":
+            return
+        now = self._clock()
+        if not granted:
             suppression = Suppression(
                 id=new_id(), tenant_id=tenant_id, version=1, created_at=now, updated_at=now, customer_id=customer_id,
                 scope="marketing_contact", reason_code="opt_out", actor_id="00000000-0000-0000-0000-000000000001", valid_from=now, reason_ref=consent_id,
             )
             state.suppressions[(tenant_id, suppression.id)] = suppression
+            self._emit_suppression_changed(state, suppression, correlation_id, active=True)
+            return
+        # Re-grant (``granted=True``): lift any still-active marketing_contact
+        # suppression for this customer -- it must not keep blocking sales
+        # push forever once the customer has opted back in.
+        for (tenant, _), suppression in state.suppressions.items():
+            if tenant == tenant_id and suppression.customer_id == customer_id and suppression.scope == "marketing_contact" and suppression.active(now):
+                suppression.valid_until = now
+                suppression.version += 1
+                suppression.updated_at = now
+                self._emit_suppression_changed(state, suppression, correlation_id, active=False)
 
     def record_contract_service_ended(self, state: StoreState, tenant_id: str, contract_service_id: str, contract_id: str) -> None:
         state.contract_service_to_contract[(tenant_id, contract_service_id)] = contract_id
@@ -1063,12 +1152,16 @@ class CrmService:
 
     # ---- authorization, mapping and validation ----------------------------
 
-    @staticmethod
-    def _authorize(context: ActorContext, roles: set[str]) -> None:
+    def _authorize(self, context: ActorContext, roles: set[str], *, operation: str, correlation_id: str | None) -> None:
         if context.principal_type == "staff" and context.roles & roles:
             return
         if context.principal_type == "service" and ({"m10:*"} & context.scopes or roles & context.scopes):
             return
+        # A pre-command role denial happens before ``_run_command`` runs (it
+        # is every public method's first statement), so without this it
+        # would never reach ``_run_command``'s own DomainError audit catch
+        # and the rejection would leave no audit trail at all.
+        self._audit_failure(context, operation, correlation_id, "forbidden")
         raise ForbiddenError("actor cannot perform this operation")
 
     @staticmethod
@@ -1138,19 +1231,36 @@ class CrmService:
         return conversion
 
     def _opportunity_actions(self, opportunity: Opportunity, context: ActorContext) -> list[str]:
+        """Mirror each command's real ``_authorize``/``_authorize_opportunity_owner``
+        gate exactly, per-action -- not one blanket "owns" predicate for all
+        three actions. ``record_sales_activity``/``claim_conversion`` are
+        ``_authorize(context, {"sales"})`` only (``sales_supervisor`` always
+        gets 403 from them); ``set_next_action`` is
+        ``_authorize(context, {"sales", "sales_supervisor"})``."""
+        owner_sales = "sales" in context.roles and opportunity.owner_actor_id == context.actor_id
+        supervisor = "sales_supervisor" in context.roles
+        if opportunity.status in {"converted", "lost"}:
+            return []
+        if opportunity.status == "cancelled":
+            # Suitability-blocked upgrade (REQ-M10-007/UAT-M10-007): the only
+            # permitted path forward is a reassessment via set_next_action's
+            # upgrade_assessment action, never a direct sales push.
+            return ["set_next_action"] if owner_sales or supervisor else []
         actions: list[str] = []
-        owns = "sales_supervisor" in context.roles or opportunity.owner_actor_id == context.actor_id
-        if not owns or opportunity.status in {"converted", "lost", "cancelled"}:
-            return actions
-        actions.extend(["record_sales_activity", "set_next_action", "claim_conversion"])
+        if owner_sales:
+            actions.extend(["record_sales_activity", "claim_conversion"])
+        if owner_sales or supervisor:
+            actions.append("set_next_action")
         return sorted(actions)
 
     @staticmethod
     def _work_item_actions(item: CrmWorkItem, context: ActorContext) -> list[str]:
-        if "sales_supervisor" in context.roles or item.owner_actor_id == context.actor_id or item.owner_actor_id is None:
-            if item.status not in {"done", "cancelled"}:
-                return ["set_next_action"]
-        return []
+        if item.status in {"done", "cancelled"}:
+            return []
+        can_set_next_action = "sales_supervisor" in context.roles or (
+            "sales" in context.roles and (item.owner_actor_id == context.actor_id or item.owner_actor_id is None)
+        )
+        return ["set_next_action"] if can_set_next_action else []
 
     def _opportunity_outcome(self, opportunity: Opportunity, context: ActorContext, status: int) -> _Outcome:
         return _Outcome(opportunity.to_api(self._opportunity_actions(opportunity, context)), status, "opportunity", opportunity.id, opportunity.version)
@@ -1159,7 +1269,14 @@ class CrmService:
         return _Outcome(activity.to_api([]), status, "opportunity", opportunity.id, opportunity.version)
 
     def _conversion_outcome(self, conversion: Conversion, context: ActorContext, status: int) -> _Outcome:
-        actions = ["decide_conversion"] if "sales_supervisor" in context.roles and conversion.decision_status in {"proposed", "disputed"} else []
+        claimants = {claim.salesperson_id for claim in conversion.claim_history}
+        actions = (
+            ["decide_conversion"]
+            if "sales_supervisor" in context.roles
+            and conversion.decision_status in {"proposed", "disputed"}
+            and context.actor_id not in claimants
+            else []
+        )
         return _Outcome(conversion.to_api(actions), status, "conversion", conversion.id, conversion.version)
 
     def _work_item_outcome(self, item: CrmWorkItem, opportunity: Opportunity, context: ActorContext, status: int, suppression_applied: bool) -> _Outcome:

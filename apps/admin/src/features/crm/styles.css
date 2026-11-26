@@ -31,13 +31,13 @@
   color: #475467;
 }
 
-table {
+.m10-stack table {
   width: 100%;
   border-collapse: collapse;
 }
 
-th,
-td {
+.m10-stack th,
+.m10-stack td {
   text-align: left;
   padding: 0.5rem;
   border-bottom: 1px solid #e4e7ec;
@@ -73,11 +73,11 @@ td {
   background: #f9fafb;
 }
 
-a:focus-visible,
-button:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible {
+.m10-stack a:focus-visible,
+.m10-stack button:focus-visible,
+.m10-stack input:focus-visible,
+.m10-stack select:focus-visible,
+.m10-stack textarea:focus-visible {
   outline: 3px solid #1570ef;
   outline-offset: 2px;
 }

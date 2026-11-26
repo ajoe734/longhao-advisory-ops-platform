@@ -41,6 +41,8 @@ _CONTRACTS: dict[str, tuple[str, str, set[str]]] = {
     "finance.payment_failed": ("M14", "payment", {"payment_id", "application_id", "customer_id", "retry_allowed", "customer_safe_reason_code"}),
     "finance.refund_confirmed": ("M14", "refund", {"refund_id", "contract_id", "original_payment_id", "allocation_snapshot_id", "confirmed_at"}),
     "kyc.refresh_required": ("M03", "kyc_submission", {"customer_id", "submission_id", "refresh_case_id", "due_at"}),
+    "crm.opportunity_changed": ("M10", "opportunity", {"opportunity_id", "customer_id", "state", "owner_id"}),
+    "crm.suppression_changed": ("M10", "suppression", {"suppression_id", "customer_id", "scope", "active"}),
 }
 
 _ROOT = Path(__file__).resolve().parents[3]
@@ -162,7 +164,10 @@ class M10EventConsumer:
             return "marketing_attribution_recorded"
 
         if event_type == "customer.consent_changed":
-            self.service.record_consent_changed(state, tenant_id, payload["customer_id"], payload["consent_id"], payload["purpose"], payload["granted"])
+            self.service.record_consent_changed(
+                state, tenant_id, payload["customer_id"], payload["consent_id"], payload["purpose"], payload["granted"],
+                correlation_id=envelope["correlation_id"],
+            )
             return "consent_recorded"
 
         if event_type == "application.created":
@@ -214,11 +219,14 @@ class M10EventConsumer:
         if event_type == "support.case_opened":
             if payload["customer_id"] is None:
                 return "support_case_ignored_no_customer"
-            self.service.record_support_case_opened(state, tenant_id, payload["case_id"], payload["customer_id"], payload["category"], payload["priority"])
+            self.service.record_support_case_opened(
+                state, tenant_id, payload["case_id"], payload["customer_id"], payload["category"], payload["priority"],
+                now, envelope["correlation_id"],
+            )
             return "support_case_recorded"
 
         if event_type == "support.case_resolved":
-            self.service.record_support_case_resolved(state, tenant_id, payload["case_id"])
+            self.service.record_support_case_resolved(state, tenant_id, payload["case_id"], now, envelope["correlation_id"])
             return "support_case_resolution_recorded"
 
         if event_type == "finance.payment_confirmed":
@@ -235,6 +243,19 @@ class M10EventConsumer:
         if event_type == "kyc.refresh_required":
             self.service.record_kyc_refresh_required(state, tenant_id, payload["customer_id"], payload["refresh_case_id"], self._time(payload["due_at"]), now)
             return "incomplete_application_worklist_updated"
+
+        if event_type == "crm.opportunity_changed":
+            # M10 both produces and consumes this event (events/registry.json
+            # lists M10 as its own consumer); the producing command already
+            # wrote the opportunity row synchronously in the same
+            # transaction that emitted it, so there is nothing left to
+            # project here -- this consumption only exists for inbox/audit
+            # continuity on deployments where the command path and this
+            # worker are separate processes sharing one durable store.
+            return "opportunity_change_acknowledged"
+
+        if event_type == "crm.suppression_changed":
+            return "suppression_change_acknowledged"
 
         raise ValidationError("event type is not consumed by M10", code="unsupported_event_type")
 
