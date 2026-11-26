@@ -227,7 +227,14 @@ def test_manifest_discovery_reports_missing_modules_without_breaking_startup():
         PlatformConfig(environment="test", synthetic_providers=True, allow_missing_modules=True)
     )
     assert len(runtime.module_statuses) == 14
-    assert {row.status for row in runtime.module_statuses} == {"missing"}
+    # M09 is the first module to ship apps/api/src/modules/<slug>/plugin.py;
+    # modules flip from "missing" to "loaded" one at a time as their own
+    # plugin.py lands in parallel, so this must not assume every other
+    # module is still "missing" -- only that nothing is "broken" and M09
+    # itself loaded successfully.
+    by_id = {row.module_id: row.status for row in runtime.module_statuses}
+    assert by_id["M09"] == "loaded"
+    assert set(by_id.values()) <= {"loaded", "missing"}
     assert runtime.readiness()[0] == 200
 
 

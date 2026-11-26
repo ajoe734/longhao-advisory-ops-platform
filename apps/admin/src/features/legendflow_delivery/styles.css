@@ -1,0 +1,65 @@
+.m09-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.m09-panel {
+  border: 1px solid #d0d5dd;
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+.m09-eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.75rem;
+  color: #475467;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.5rem;
+  border-bottom: 1px solid #e4e7ec;
+}
+
+/* Status is conveyed by text, not only by color, so a left border accent is
+   purely decorative reinforcement for sighted users with normal color vision. */
+.m09-state {
+  font-weight: 600;
+}
+
+.m09-state-failed,
+.m09-state-expired {
+  border-left: 3px solid #b42318;
+  padding-left: 0.4rem;
+}
+
+.m09-state-suppressed,
+.m09-state-unknown {
+  border-left: 3px solid #b54708;
+  padding-left: 0.4rem;
+}
+
+.m09-state-delivered {
+  border-left: 3px solid #067647;
+  padding-left: 0.4rem;
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: 3px solid #1570ef;
+  outline-offset: 2px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
