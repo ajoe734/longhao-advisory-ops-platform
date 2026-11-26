@@ -35,6 +35,7 @@
 | EXT-01 | Pantheon/Agora提供的實際介面與payload | 對接窗口 | 僅本repoadapter/mock/contract | 可取得時本平台sandbox驗證 |
 | EXT-02 | LegendFlow身份/session/feed整合 | 對接窗口 | 同上，不改其repo | 可取得時接線驗證 |
 | EXT-03 | 金流/訊息/銀行/會計/IdP實際供應商 | 對接窗口 | ports/fakes與mapping | 正式keys和契約確認 |
+| ENG-COM-01 | `create_commission_adjustment` 只有一個API命令，OpenAPI未定義獨立覆核端點，無法要求兩位staff強制maker/checker | 契約/財會主管 | 事件(`finance.refund_confirmed`)先建立service-prepared草稿、人工呼叫視為覆核；無草稿時單一operator等同prepared=approved(見`apps/api/src/modules/commissions/README.md`) | 契約補上獨立覆核端點或正式核准目前簡化規則 |
 
 這些未定案不要求使用者現在逐項回答才繼續開發；本文件把邊界和影響具體化，使十四模組都能實作。正式支付/公司承諾/監管決策等動作在對應設定未核定時fail closed。
 
