@@ -401,6 +401,12 @@ class FinanceControlService:
                     now=now,
                 )
             elif incoming_status == "failed":
+                if payment.status == "failed":
+                    # the same business fact redelivered under a new event_id; already
+                    # applied, must not bump the version or re-emit finance.payment_failed
+                    state.webhook_receipts[receipt_key] = {"payload_sha256": fingerprint, "status": "accepted", "payment_id": payment.id}
+                    receipt = {"receipt_id": new_id(), "event_id": event_id, "status": "duplicate", "received_at": now, "correlation_id": correlation_id}
+                    return _Outcome(self._callback_receipt_api(receipt), 202, "payment", payment.id, payment.version, classification="customer_confidential")
                 payment.version += 1
                 payment.updated_at = now
                 payment.status = "failed"
@@ -424,6 +430,11 @@ class FinanceControlService:
                     now=now,
                 )
             else:  # authorized / disputed: idempotent status sync, no dedicated side effects yet
+                if payment.status == incoming_status:
+                    # the same business fact redelivered under a new event_id; no-op
+                    state.webhook_receipts[receipt_key] = {"payload_sha256": fingerprint, "status": "accepted", "payment_id": payment.id}
+                    receipt = {"receipt_id": new_id(), "event_id": event_id, "status": "duplicate", "received_at": now, "correlation_id": correlation_id}
+                    return _Outcome(self._callback_receipt_api(receipt), 202, "payment", payment.id, payment.version, classification="customer_confidential")
                 payment.version += 1
                 payment.updated_at = now
                 payment.status = incoming_status
@@ -1088,14 +1099,18 @@ class FinanceControlService:
         # Phase 3: commit the provider result.
         def finalize(state: StoreState) -> _Outcome:
             refund = self._stored_refund(state, context.tenant_id, refund_id)
-            refund.version += 1
-            refund.updated_at = now
-            if result.status == "confirmed":
-                self._finalize_refund_confirmed(state, refund, result.provider_refund_ref or new_id(), result.occurred_at or now, correlation_id, idempotency_key, now)
-            elif result.status == "failed":
-                refund.status = "failed"
-            else:
-                refund.status = "reconciliation_required"
+            # a concurrent receive_refund_webhook may already have finalized this
+            # refund while the provider call above was in flight (Phase 2 holds no
+            # lock); do not re-finalize or double-emit in that case.
+            if refund.status not in {"confirmed", "accounting_adjusted", "closed", "rejected"}:
+                refund.version += 1
+                refund.updated_at = now
+                if result.status == "confirmed":
+                    self._finalize_refund_confirmed(state, refund, result.provider_refund_ref or new_id(), result.occurred_at or now, correlation_id, idempotency_key, now)
+                elif result.status == "failed":
+                    refund.status = "failed"
+                else:
+                    refund.status = "reconciliation_required"
             outcome = _Outcome(refund.to_api(self._refund_actions(refund, context)), 202, "refund", refund.id, refund.version, classification="customer_confidential")
             self._audit(state, context, "execute_refund", outcome.aggregate_type, outcome.aggregate_id, correlation_id, "success", outcome.classification)
             state.idempotency[receipt_key] = IdempotencyReceipt(
@@ -1455,10 +1470,16 @@ class FinanceControlService:
             export = state.evidence_exports.get((context.tenant_id, export_id))
             if export is None:
                 raise NotFoundError("evidence export was not found")
+            if export.include_restricted_aml and context.roles.isdisjoint({COMPLIANCE_REVIEWER, COMPLIANCE_SUPERVISOR}):
+                raise ForbiddenError("restricted evidence requires compliance clearance", code="restricted_evidence_forbidden")
             self._audit(state, context, "get_evidence_export", "evidence_export", export.id, correlation_id, "success", "aml_restricted" if export.include_restricted_aml else "internal")
             return ServiceResponse(export.to_api([]), etag=self._etag(export.version))
 
-        return self.repository.atomic(query)
+        try:
+            return self.repository.atomic(query)
+        except ForbiddenError as exc:
+            self._audit_failure(context, "get_evidence_export", correlation_id, exc.code)
+            raise
 
     def create_legal_hold(self, context: ActorContext, body: dict[str, Any], *, idempotency_key: str, correlation_id: str | None = None) -> ServiceResponse:
         self._authorize(context, {COMPLIANCE_SUPERVISOR})

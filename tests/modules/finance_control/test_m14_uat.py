@@ -11,8 +11,13 @@ from uuid import uuid4
 
 import pytest
 
-from modules.finance_control.domain import ConflictError, DependencyUnavailableError, ForbiddenError, Payment, utc_now
+from modules.finance_control.domain import ConflictError, DependencyUnavailableError, ForbiddenError, Payment, canonical_hash, utc_now, wire_time
 from modules.finance_control.ports import RefundProviderResult, SettlementLine
+from modules.finance_control.repository import InMemoryRepository
+from modules.finance_control.service import FinanceControlService
+
+from workers.tasks.finance_control.consumer import M14EventConsumer
+from workers.tasks.finance_control.tasks import LocalEventBus, OutboxPublisher
 
 from conftest import (
     RECOGNITION_POLICY_VERSION,
@@ -98,25 +103,25 @@ def test_uat_m14_001b_payment_webhook_rejects_new_event_id_double_credit_downgra
         idempotency_key="idem-pi-001b",
     ).data
 
-    def callback(event_id: str, *, status: str, amount: str) -> dict:
+    def callback(payment_intent_id: str, event_id: str, *, status: str, amount: str) -> dict:
         return {
-            "event_id": event_id, "provider_transaction_ref": "ptx-uat-001b", "payment_intent_id": intent["id"],
+            "event_id": event_id, "provider_transaction_ref": "ptx-uat-001b", "payment_intent_id": payment_intent_id,
             "status": status, "amount": money(amount), "provider_occurred_at": "2026-01-02T00:00:00Z", "evidence_asset_id": EV5,
         }
 
-    first = service.receive_payment_webhook(payment_adapter_ctx, callback(str(uuid4()), status="paid", amount="1050"), idempotency_key="idem-wh-001b-1")
+    first = service.receive_payment_webhook(payment_adapter_ctx, callback(intent["id"], str(uuid4()), status="paid", amount="1050"), idempotency_key="idem-wh-001b-1")
     assert first.data["status"] == "accepted"
 
     # a brand-new event_id reporting the *same* fact must be a no-op, not a second credit
-    second = service.receive_payment_webhook(payment_adapter_ctx, callback(str(uuid4()), status="paid", amount="1050"), idempotency_key="idem-wh-001b-2")
+    second = service.receive_payment_webhook(payment_adapter_ctx, callback(intent["id"], str(uuid4()), status="paid", amount="1050"), idempotency_key="idem-wh-001b-2")
     assert second.data["status"] == "duplicate"
 
     # a stale/out-of-order downgrade must never move a paid payment backwards
-    third = service.receive_payment_webhook(payment_adapter_ctx, callback(str(uuid4()), status="authorized", amount="1050"), idempotency_key="idem-wh-001b-3")
+    third = service.receive_payment_webhook(payment_adapter_ctx, callback(intent["id"], str(uuid4()), status="authorized", amount="1050"), idempotency_key="idem-wh-001b-3")
     assert third.data["status"] == "quarantined"
 
     # an amount mismatch against the already-settled payment must raise an exception, not credit blindly
-    fourth = service.receive_payment_webhook(payment_adapter_ctx, callback(str(uuid4()), status="paid", amount="999"), idempotency_key="idem-wh-001b-4")
+    fourth = service.receive_payment_webhook(payment_adapter_ctx, callback(intent["id"], str(uuid4()), status="paid", amount="999"), idempotency_key="idem-wh-001b-4")
     assert fourth.data["status"] == "quarantined"
 
     state = m14["repository"].snapshot()
@@ -130,6 +135,34 @@ def test_uat_m14_001b_payment_webhook_rejects_new_event_id_double_credit_downgra
     mismatches = [item for item in state.reconciliation_items.values() if item.payment_id == intent["id"] and item.difference_type == "amount_mismatch"]
     assert len(mismatches) == 1
     assert mismatches[0].expected_amount == Decimal("1050") and mismatches[0].actual_amount == Decimal("999")
+
+    # a duplicate 'failed' webhook (new event_id, already-failed payment) must not
+    # bump the version or re-emit finance.payment_failed a second time (R4/F3 regression)
+    intent2 = service.create_payment_intent(
+        operator, {"application_id": str(uuid4()), "amount": money("200"), "method": "card", "return_route": "application_progress"}, idempotency_key="idem-pi-001b-2",
+    ).data
+    failed_once = service.receive_payment_webhook(payment_adapter_ctx, callback(intent2["id"], str(uuid4()), status="failed", amount="200"), idempotency_key="idem-wh-001b-failed-1")
+    assert failed_once.data["status"] == "accepted"
+    failed_twice = service.receive_payment_webhook(payment_adapter_ctx, callback(intent2["id"], str(uuid4()), status="failed", amount="200"), idempotency_key="idem-wh-001b-failed-2")
+    assert failed_twice.data["status"] == "duplicate"
+    state2 = m14["repository"].snapshot()
+    payment2 = state2.payments[(TENANT, intent2["id"])]
+    assert payment2.status == "failed"
+    assert payment2.version == 2  # only the first 'failed' webhook ever mutated the payment
+    failed_events = [e for e in state2.outbox.values() if e.aggregate_id == intent2["id"] and e.event_type == "finance.payment_failed"]
+    assert len(failed_events) == 1  # not re-emitted on the duplicate
+
+    # the same applies to a same-state 'authorized' redelivery under a new event_id
+    intent3 = service.create_payment_intent(
+        operator, {"application_id": str(uuid4()), "amount": money("300"), "method": "card", "return_route": "application_progress"}, idempotency_key="idem-pi-001b-3",
+    ).data
+    authorized_once = service.receive_payment_webhook(payment_adapter_ctx, callback(intent3["id"], str(uuid4()), status="authorized", amount="300"), idempotency_key="idem-wh-001b-auth-1")
+    assert authorized_once.data["status"] == "accepted"
+    authorized_twice = service.receive_payment_webhook(payment_adapter_ctx, callback(intent3["id"], str(uuid4()), status="authorized", amount="300"), idempotency_key="idem-wh-001b-auth-2")
+    assert authorized_twice.data["status"] == "duplicate"
+    payment3 = m14["repository"].snapshot().payments[(TENANT, intent3["id"])]
+    assert payment3.status == "authorized"
+    assert payment3.version == 2  # only the first 'authorized' webhook ever mutated the payment
 
 
 def test_uat_m14_002_prepayment_separated_from_recognized_revenue(m14, operator, checker, payment_adapter_ctx):
@@ -439,6 +472,60 @@ def test_uat_m14_006b_refund_timeout_retry_with_a_new_provider_key_is_rejected(m
     assert m14["refund_provider"].submit_calls == ["prov-timeout-key-1"]  # exactly one external submission, ever
 
 
+def test_execute_refund_does_not_double_finalize_when_webhook_confirms_during_provider_submit(m14, operator, checker, executor, payment_adapter_ctx):
+    """A finance.refund_confirmed webhook racing in while execute_refund's
+    Phase 2 provider call is still in flight must not let Phase 3 re-finalize
+    the refund: that would double-reverse the GL and double-emit
+    finance.refund_confirmed (F1/R2 regression)."""
+    service = m14["service"]
+    _evidence(m14["evidence"], EV3)
+    customer_id, payment_id = str(uuid4()), str(uuid4())
+    seed_paid_payment(m14["repository"], tenant=TENANT, payment_id=payment_id, customer_id=customer_id, amount=Decimal("400"), provider_transaction_id="ptx-uat-race-001")
+    refund = service.request_refund(
+        operator,
+        {
+            "customer_id": customer_id, "contract_id": str(uuid4()), "original_payment_id": payment_id, "reason_code": "service_cancelled",
+            "requested_amount": money("400"),
+            "allocations": [{"invoice_line_ref": str(uuid4()), "recognition_id": None, "unearned_amount": money("400"), "earned_reversal_amount": money("0"), "tax_adjustment_amount": money("0")}],
+            "calculation_policy_version": "v1", "customer_request_evidence_id": EV3,
+        },
+        idempotency_key="idem-refund-race-001",
+    ).data
+    approved = service.approve_refund(checker, refund["id"], {"decision": "approve", "reason_code": "ok"}, expected_version=1, idempotency_key="idem-approve-race-001").data
+
+    class RacingRefundProvider:
+        is_fake = True
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def submit(self, idempotency_key, amount, currency, reference):
+            result = self._inner.submit(idempotency_key, amount, currency, reference)
+            # the provider's own webhook beats execute_refund's Phase 3 commit back to the service
+            webhook = {
+                "event_id": str(uuid4()), "refund_id": refund["id"], "provider_refund_ref": result.provider_refund_ref,
+                "status": "confirmed", "amount": money("400"), "provider_occurred_at": "2026-01-02T00:00:00Z", "evidence_asset_id": EV3,
+            }
+            response = service.receive_refund_webhook(payment_adapter_ctx, webhook, idempotency_key="idem-refund-webhook-race-001")
+            assert response.data["status"] == "accepted"
+            return result
+
+        def query(self, idempotency_key):
+            return self._inner.query(idempotency_key)
+
+    m14["refund_provider"].register("prov-key-race-001", RefundProviderResult("confirmed", "provref-race-001", None))
+    service.refund_provider = RacingRefundProvider(m14["refund_provider"])
+    exec_body = {"approval_record_id": refund["id"], "original_payment_id": payment_id, "provider_idempotency_key": "prov-key-race-001", "last_provider_status": "not_submitted"}
+    executed = service.execute_refund(executor, refund["id"], exec_body, expected_version=approved["version"], idempotency_key="idem-exec-race-001").data
+    assert executed["state"] == "accounting_adjusted"
+
+    state = m14["repository"].snapshot()
+    journals = [j for j in state.journals.values() if j.source_id == refund["id"]]
+    assert len(journals) == 1  # exactly one GL reversal, not two
+    confirmed_events = [e for e in state.outbox.values() if e.aggregate_id == refund["id"] and e.event_type == "finance.refund_confirmed"]
+    assert len(confirmed_events) == 1  # exactly one finance.refund_confirmed, not two
+
+
 def test_uat_m14_007_refund_splits_unearned_and_earned_reversal(m14, operator):
     service = m14["service"]
     _evidence(m14["evidence"], EV2)
@@ -635,29 +722,124 @@ def test_uat_m14_011_legal_hold_blocks_purge_until_independent_release(m14, comp
     assert eligible == {"action": "eligible_for_delete", "reason_code": "no_active_hold"}
 
 
-def test_uat_m14_012_control_exception_restore_drill_requires_independent_closure(m14, remediation_owner, auditor):
+def test_uat_m14_012_control_exception_restore_drill_requires_independent_closure(
+    m14, clock, operator, checker, executor, auditor, remediation_owner, payment_adapter_ctx,
+):
+    """A genuine restore drill: snapshot the live repository into a brand new
+    InMemoryRepository plus brand new FinanceControlService/OutboxPublisher/
+    M14EventConsumer instances -- as a restarted worker fleet would run
+    against a database restored from backup -- then replay the same payment
+    webhook, consumer event and execute_refund request. Idempotency state
+    (webhook receipts, inbox receipts, the execute_refund receipt) must
+    survive the restore so none of the replays double-charge, double-refund
+    or double-journal, while outbox rows still pending at snapshot time must
+    resume and drain exactly once."""
     service = m14["service"]
-    _evidence(m14["evidence"], EV2)
+    repository = m14["repository"]
+    evidence_pay, evidence_refund, evidence_ce = str(uuid4()), str(uuid4()), str(uuid4())
+    _evidence(m14["evidence"], evidence_pay, evidence_refund, evidence_ce)
+
+    customer_id, contract_id, contract_service_id = str(uuid4()), str(uuid4()), str(uuid4())
+    invoice = service.create_invoice(operator, invoice_body(customer_id=customer_id, contract_id=contract_id, contract_service_id=contract_service_id), idempotency_key="idem-inv-012").data
+    intent = service.create_payment_intent(
+        operator,
+        {"application_id": str(uuid4()), "invoice_id": invoice["id"], "amount": money("1050"), "method": "card", "return_route": "application_progress"},
+        idempotency_key="idem-pi-012",
+    ).data
+    webhook_body = {
+        "event_id": str(uuid4()), "provider_transaction_ref": "ptx-uat-012", "payment_intent_id": intent["id"],
+        "status": "paid", "amount": money("1050"), "provider_occurred_at": "2026-01-02T00:00:00Z", "evidence_asset_id": evidence_pay,
+    }
+    first_webhook = service.receive_payment_webhook(payment_adapter_ctx, webhook_body, idempotency_key="idem-wh-012-1")
+    assert first_webhook.data["status"] == "accepted"
+
+    refund = service.request_refund(
+        operator,
+        {
+            "customer_id": customer_id, "contract_id": contract_id, "original_payment_id": intent["id"], "reason_code": "service_cancelled",
+            "requested_amount": money("1050"),
+            "allocations": [{"invoice_line_ref": str(uuid4()), "recognition_id": None, "unearned_amount": money("1050"), "earned_reversal_amount": money("0"), "tax_adjustment_amount": money("0")}],
+            "calculation_policy_version": "v1", "customer_request_evidence_id": evidence_refund,
+        },
+        idempotency_key="idem-refund-012",
+    ).data
+    approved = service.approve_refund(checker, refund["id"], {"decision": "approve", "reason_code": "ok"}, expected_version=1, idempotency_key="idem-approve-012").data
+    m14["refund_provider"].register("prov-key-012", RefundProviderResult("confirmed", "provref-012", None))
+    exec_body = {"approval_record_id": refund["id"], "original_payment_id": intent["id"], "provider_idempotency_key": "prov-key-012", "last_provider_status": "not_submitted"}
+    executed = service.execute_refund(executor, refund["id"], exec_body, expected_version=approved["version"], idempotency_key="idem-exec-012").data
+    assert executed["state"] == "accounting_adjusted"
+    assert m14["refund_provider"].submit_calls == ["prov-key-012"]
+
+    contract_payload = {
+        "contract_id": contract_id, "customer_id": customer_id, "effective_at": "2026-01-01T00:00:00Z",
+        "service_starts_at": "2026-01-01T00:00:00Z", "service_ends_at": "2027-01-01T00:00:00Z",
+    }
+    contract_envelope = {
+        "event_id": str(uuid4()), "event_type": "contract.effective", "schema_version": "1.0.0", "tenant_id": TENANT,
+        "producer": "M02", "aggregate_type": "contract", "aggregate_id": contract_id,
+        "aggregate_version": 1, "sequence_no": 1, "occurred_at": wire_time(clock()), "emitted_at": wire_time(clock()),
+        "correlation_id": str(uuid4()), "causation_id": None, "idempotency_key": "idem-contract-012",
+        "classification": "customer_confidential", "payload_sha256": canonical_hash(contract_payload), "payload": contract_payload,
+    }
+    assert M14EventConsumer(service).consume(contract_envelope).status == "applied"
+
     exception = service.record_control_exception(
         auditor,
-        {"control_code": "restore_drill", "severity": "high", "description": "quarterly restore drill", "evidence_asset_ids": [EV2], "remediation_owner_id": remediation_owner.actor_id, "due_at": "2026-03-01T00:00:00Z"},
+        {"control_code": "restore_drill", "severity": "high", "description": "quarterly restore drill", "evidence_asset_ids": [evidence_ce], "remediation_owner_id": remediation_owner.actor_id, "due_at": "2026-03-01T00:00:00Z"},
         idempotency_key="idem-ce-012",
     ).data
     assert exception["state"] == "open"
-
     requested = service.act_on_control_exception(
-        remediation_owner, exception["id"], {"action": "request_closure", "reason_code": "drill_rerun_complete", "evidence_asset_ids": [EV2]}, expected_version=1, idempotency_key="idem-ce-012-req",
+        remediation_owner, exception["id"], {"action": "request_closure", "reason_code": "drill_rerun_complete", "evidence_asset_ids": [evidence_ce]}, expected_version=1, idempotency_key="idem-ce-012-req",
     ).data
     assert requested["state"] == "ready_for_review"
 
-    # the remediation owner cannot approve their own closure
+    pre_restore = repository.snapshot()
+    pending_before = [e for e in pre_restore.outbox.values() if e.status == "pending"]
+    assert len(pending_before) == 2  # finance.payment_confirmed + finance.refund_confirmed, never published yet
+    journal_count_before = len(pre_restore.journals)
+    paid_amount_before = pre_restore.invoices[(TENANT, invoice["id"])].paid_amount
+    submit_calls_before = list(m14["refund_provider"].submit_calls)
+
+    # --- restore drill: brand new repository + service + worker instances loaded from the backup ---
+    restored_repository = InMemoryRepository()
+    restored_repository.replace_for_test(pre_restore)
+    restored_service = FinanceControlService(restored_repository, m14["refund_provider"], m14["statements"], m14["evidence"], m14["tax_mappings"], clock=clock)
+    restored_bus = LocalEventBus()
+    restored_publisher = OutboxPublisher(restored_repository, restored_bus, clock=clock)
+
+    # replay the same payment webhook delivery (new Idempotency-Key, same provider event_id): must dedup, not double-credit
+    replay_webhook = restored_service.receive_payment_webhook(payment_adapter_ctx, webhook_body, idempotency_key="idem-wh-012-replay")
+    assert replay_webhook.data["status"] == "duplicate"
+
+    # replay the same consumer envelope against a fresh consumer: inbox dedup must survive the restore
+    assert M14EventConsumer(restored_service).consume(contract_envelope).status == "duplicate"
+
+    # replay the same execute_refund request: the idempotency receipt must short-circuit before ever touching the provider
+    replay_exec = restored_service.execute_refund(executor, refund["id"], exec_body, expected_version=approved["version"], idempotency_key="idem-exec-012").data
+    assert replay_exec["state"] == "accounting_adjusted"
+    assert m14["refund_provider"].submit_calls == submit_calls_before  # zero duplicate submits
+
+    after_replay = restored_repository.snapshot()
+    assert after_replay.invoices[(TENANT, invoice["id"])].paid_amount == paid_amount_before  # zero duplicate credits
+    assert len(after_replay.journals) == journal_count_before  # zero duplicate journals
+
+    # pending outbox rows resume and drain exactly once
+    first_drain = restored_publisher.run_once("restore-worker-a")
+    assert first_drain.processed == 2
+    assert len(restored_bus.envelopes) == 2
+    second_drain = restored_publisher.run_once("restore-worker-a")
+    assert second_drain.processed == 0
+    assert len(restored_bus.envelopes) == 2
+
+    # the restore drill's own control exception still requires an independent closer after the restore
     with pytest.raises(ForbiddenError):
-        service.act_on_control_exception(
-            remediation_owner, exception["id"], {"action": "approve_closure", "reason_code": "self", "evidence_asset_ids": [EV2]}, expected_version=2, idempotency_key="idem-ce-012-self",
+        restored_service.act_on_control_exception(
+            remediation_owner, exception["id"], {"action": "approve_closure", "reason_code": "self", "evidence_asset_ids": [evidence_ce]}, expected_version=2, idempotency_key="idem-ce-012-self",
         )
 
-    closed = service.act_on_control_exception(
-        auditor, exception["id"], {"action": "approve_closure", "reason_code": "verified", "evidence_asset_ids": [EV2]}, expected_version=2, idempotency_key="idem-ce-012-approve",
+    closed = restored_service.act_on_control_exception(
+        auditor, exception["id"], {"action": "approve_closure", "reason_code": "verified", "evidence_asset_ids": [evidence_ce]}, expected_version=2, idempotency_key="idem-ce-012-approve",
     ).data
     assert closed["state"] == "closed"
     assert closed["closed_by"] == auditor.actor_id

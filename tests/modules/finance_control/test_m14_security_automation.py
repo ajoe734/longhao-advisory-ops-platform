@@ -93,7 +93,11 @@ def test_restricted_audit_events_mask_for_auditor_but_not_compliance_reviewer(m1
         {"scope": "customer", "subject_id": str(uuid4()), "purpose": "regulatory_exam", "include_restricted_aml": True, "approval_record_id": "00000000-0000-0000-0000-00000000c003", "expires_at": "2027-01-01T00:00:00Z"},
         idempotency_key="rbac-ee-restricted-001",
     ).data
-    service.get_evidence_export(auditor, export["id"])  # records an aml_restricted audit event
+    # a plain internal_auditor without compliance clearance may not fetch a restricted export
+    with pytest.raises(ForbiddenError) as excinfo:
+        service.get_evidence_export(auditor, export["id"])
+    assert excinfo.value.code == "restricted_evidence_forbidden"
+    service.get_evidence_export(cleared_auditor, export["id"])  # records an aml_restricted audit event
 
     masked = service.list_audit_events(auditor).data
     restricted_entries = [item for item in masked["items"] if item["aggregate_type"] == "evidence_export" and item.get("action") == "restricted"]
