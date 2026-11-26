@@ -22,6 +22,49 @@ ALTER TABLE customer.application
       OR (status <> 'withdrawn' AND withdrawn_at IS NULL AND withdrawal_reason_code IS NULL)
     ) NOT VALID;
 
+-- OpenAPI's Application response bundles M02 signing/acceptance facts plus
+-- M03/M04/M14 status codes into the one M01-owned row. customer_signed_at,
+-- company_accepted_at and contract_id are kept current by the already
+-- consumed application.customer_signed/application.company_decided events
+-- (see workers/tasks/customer_identity_application/consumer.py). kyc_status,
+-- suitability_status, business_clearance and payment_status stay at their
+-- published defaults because M01 is not yet listed as a consumer of the
+-- already-registered kyc.decision_recorded/kyc.refresh_required/
+-- suitability.assessed/business_clearance.changed/finance.payment_confirmed/
+-- finance.refund_confirmed events (see database/proposals/M01/contract-changes.md
+-- item 4). Defaults match the OpenAPI Application schema defaults so existing
+-- rows remain contract-valid.
+ALTER TABLE customer.application
+  ADD COLUMN IF NOT EXISTS customer_signed_at timestamptz,
+  ADD COLUMN IF NOT EXISTS company_accepted_at timestamptz,
+  ADD COLUMN IF NOT EXISTS contract_id uuid,
+  ADD COLUMN IF NOT EXISTS kyc_status text NOT NULL DEFAULT 'not_started',
+  ADD COLUMN IF NOT EXISTS suitability_status text NOT NULL DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS business_clearance text NOT NULL DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS payment_status text NOT NULL DEFAULT 'not_required',
+  ADD CONSTRAINT m01_application_kyc_status_ck
+    CHECK (kyc_status IN ('not_started', 'pending', 'approved', 'rejected', 'refresh_required')) NOT VALID,
+  ADD CONSTRAINT m01_application_suitability_status_ck
+    CHECK (suitability_status IN ('pending', 'suitable', 'conditional', 'not_suitable')) NOT VALID,
+  ADD CONSTRAINT m01_application_business_clearance_ck
+    CHECK (business_clearance IN ('pending', 'approved', 'denied', 'expired')) NOT VALID,
+  ADD CONSTRAINT m01_application_payment_status_ck
+    CHECK (payment_status IN ('not_required', 'pending', 'authorized', 'paid', 'refunded', 'disputed')) NOT VALID,
+  ADD CONSTRAINT m01_application_contract_id_fk
+    FOREIGN KEY (tenant_id, contract_id) REFERENCES contract.contract (tenant_id, id) NOT VALID;
+
+-- The OpenAPI Customer response exposes maintenance_owner_id and
+-- original_marketing_attribution_id; both were previously derivable only from
+-- application code, with nowhere to persist them.
+ALTER TABLE customer.customer
+  ADD COLUMN IF NOT EXISTS maintenance_owner_id uuid,
+  ADD COLUMN IF NOT EXISTS original_marketing_attribution_id uuid,
+  ADD COLUMN IF NOT EXISTS original_marketing_source_ref text,
+  ADD CONSTRAINT m01_customer_maintenance_owner_fk
+    FOREIGN KEY (tenant_id, maintenance_owner_id) REFERENCES core.actor (tenant_id, id) NOT VALID,
+  ADD CONSTRAINT m01_customer_marketing_source_ref_ck
+    CHECK (original_marketing_source_ref IS NULL OR length(original_marketing_source_ref) <= 160) NOT VALID;
+
 -- OpenAPI Consent requires the exact displayed document digest. This starts
 -- nullable for a steward-controlled backfill of existing synthetic rows; new
 -- M01 writes require it in application code.
@@ -203,6 +246,28 @@ DROP TRIGGER IF EXISTS m01_guard_application_origin ON customer.application;
 CREATE TRIGGER m01_guard_application_origin
 BEFORE UPDATE ON customer.application
 FOR EACH ROW EXECUTE FUNCTION customer.m01_guard_application_origin();
+
+CREATE OR REPLACE FUNCTION customer.m01_guard_customer_origin()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF OLD.original_marketing_attribution_id IS DISTINCT FROM NEW.original_marketing_attribution_id
+     AND OLD.original_marketing_attribution_id IS NOT NULL THEN
+    RAISE EXCEPTION 'original marketing attribution is immutable' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.original_marketing_source_ref IS DISTINCT FROM NEW.original_marketing_source_ref
+     AND OLD.original_marketing_source_ref IS NOT NULL THEN
+    RAISE EXCEPTION 'original marketing source ref is immutable' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS m01_guard_customer_origin ON customer.customer;
+CREATE TRIGGER m01_guard_customer_origin
+BEFORE UPDATE ON customer.customer
+FOR EACH ROW EXECUTE FUNCTION customer.m01_guard_customer_origin();
 
 DO $m01_rls$
 DECLARE

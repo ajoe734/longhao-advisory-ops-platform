@@ -15,4 +15,4 @@
 | REQ-M01-011 / UAT-M01-011 | no assisted consent/effectiveness impersonation | `test_uat_m01_011_assisted_draft_cannot_impersonate_consent_or_acceptance` |
 | REQ-M01-012 / UAT-M01-012 | source degraded vs available-empty | `test_uat_m01_012_degraded_source_is_not_rendered_as_empty` |
 
-額外控制由 `test_contract_worker_http.py` 驗 OpenAPI/event schema、inbox hash/tenant/order、outbox lease/retry；`test_security_automation.py` 驗 tenant isolation、identity correction 與最小化 automation；`test_ui_contract.py` 驗八種 UI 狀態及可及性標記。
+額外控制由 `test_contract_worker_http.py` 驗 OpenAPI/event schema 預設值、inbox hash/tenant/order、`application.company_decided` 未簽署拒絕、`ownership.employee_departed` aggregate_id 檢查、outbox lease/retry/dead-letter/unknown-result lookup、`TaskRunner` lease/redrive guardrails 及 FastAPI router prefix／輸入驗證；`test_security_automation.py` 驗 tenant isolation、identity correction 與最小化 automation；`test_ui_contract.py` 驗八種 UI 狀態及可及性標記。

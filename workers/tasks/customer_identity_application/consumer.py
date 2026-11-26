@@ -126,6 +126,11 @@ class M01EventConsumer:
                 raise ValidationError("company decision is invalid", field_name="payload.decision")
             if app.state == "withdrawn":
                 return "withdrawn_application_ignored"
+            if decision == "accept" and (app.state == "draft" or app.customer_signed_at is None):
+                raise ConflictError(
+                    "company cannot accept an application the customer has not signed",
+                    code="application_unsigned",
+                )
             app.state = {"accept": "accepted", "reject": "rejected", "request_changes": "review_in_progress"}[decision]
             app.company_accepted_at = self._time(envelope["occurred_at"]) if decision == "accept" else None
             app.contract_id = payload["contract_id"] if decision == "accept" else None
@@ -162,8 +167,12 @@ class M01EventConsumer:
             raise ValidationError("event payload fields do not match schema", code="event_schema_invalid")
         if canonical_hash(envelope["payload"]) != envelope["payload_sha256"]:
             raise ConflictError("event payload hash is invalid", code="event_payload_hash_invalid")
-        if envelope["aggregate_id"] != envelope["payload"].get("application_id", envelope["aggregate_id"]) and envelope["event_type"].startswith("application."):
-            raise ValidationError("aggregate_id does not match application_id", code="event_aggregate_mismatch")
+        if envelope["event_type"].startswith("application."):
+            if envelope["aggregate_id"] != envelope["payload"]["application_id"]:
+                raise ValidationError("aggregate_id does not match application_id", code="event_aggregate_mismatch")
+        elif envelope["event_type"] == "ownership.employee_departed":
+            if envelope["aggregate_id"] != envelope["payload"]["employee_id"]:
+                raise ValidationError("aggregate_id does not match employee_id", code="event_aggregate_mismatch")
         if not isinstance(envelope["sequence_no"], int) or envelope["sequence_no"] < 1:
             raise ValidationError("sequence_no must be positive", field_name="sequence_no")
 
