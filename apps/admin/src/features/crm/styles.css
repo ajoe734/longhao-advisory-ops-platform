@@ -1,0 +1,83 @@
+.m10-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.m10-panel {
+  border: 1px solid #d0d5dd;
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+.m10-panel form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 32rem;
+}
+
+.m10-panel form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.875rem;
+}
+
+.m10-eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.75rem;
+  color: #475467;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.5rem;
+  border-bottom: 1px solid #e4e7ec;
+}
+
+/* Status is conveyed by text, not only by color; the left border accent is
+   purely decorative reinforcement for sighted users with normal color vision. */
+.m10-state {
+  font-weight: 600;
+}
+
+.m10-state-suppressed,
+.m10-state-cancelled,
+.m10-state-lost {
+  border-left: 3px solid #b42318;
+  padding-left: 0.4rem;
+}
+
+.m10-state-open,
+.m10-state-awaiting_customer {
+  border-left: 3px solid #b54708;
+  padding-left: 0.4rem;
+}
+
+.m10-state-converted,
+.m10-state-completed,
+.m10-state-in_progress {
+  border-left: 3px solid #067647;
+  padding-left: 0.4rem;
+}
+
+.m10-panel.notice {
+  background: #f9fafb;
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid #1570ef;
+  outline-offset: 2px;
+}
