@@ -270,7 +270,8 @@ class CrmService:
             self._authorize_opportunity_owner(context, opportunity)
             self._cas(opportunity.version, expected_version)
             two_way = body["activity_type"] not in {"proposal", "follow_up"} and customer_response_evidence_id is not None
-            late_entry = self._has_claimed_conversion(state, context.tenant_id, opportunity.id)
+            upstream_tx_at = self._earliest_confirmed_transaction_at(state, context.tenant_id, opportunity.customer_id, opportunity.created_at)
+            late_entry = self._has_claimed_conversion(state, context.tenant_id, opportunity.id) or (upstream_tx_at is not None and upstream_tx_at <= now)
             qualifies = two_way and not late_entry
             activity = SalesActivity(
                 id=new_id(),
@@ -327,6 +328,26 @@ class CrmService:
             tenant == tenant_id and conversion.opportunity_id == opportunity_id
             for (tenant, _), conversion in state.conversions.items()
         )
+
+    @staticmethod
+    def _earliest_confirmed_transaction_at(state: StoreState, tenant_id: str, customer_id: str, since: datetime) -> datetime | None:
+        """REQ-M10-010: the earliest moment this customer's contract became
+        effective or a payment was confirmed, considered only from the
+        opportunity's own ``created_at`` onward -- an unrelated transaction
+        that predates this opportunity must never retroactively flag it.
+        A sales activity recorded at or after this moment is a post-transaction
+        backfill, whatever ``occurred_at`` the salesperson claims for it."""
+        candidates = [
+            contract.effective_at
+            for (tenant, _), contract in state.contracts.items()
+            if tenant == tenant_id and contract.customer_id == customer_id and contract.effective_at is not None and contract.effective_at >= since
+        ]
+        candidates += [
+            payment.confirmed_at
+            for (tenant, _), payment in state.payments.items()
+            if tenant == tenant_id and payment.customer_id == customer_id and payment.confirmed_at is not None and payment.confirmed_at >= since
+        ]
+        return min(candidates) if candidates else None
 
     # ---- set_next_action ----------------------------------------------------
 
@@ -433,12 +454,6 @@ class CrmService:
                     raise ValidationError("sales_activity_ids must reference this opportunity's own activities", field_name="sales_activity_ids")
             existing_id = state.conversion_by_contract_service.get((context.tenant_id, contract_service_id))
             claim = ClaimRecord(claimed_salesperson_id, tuple(activity_ids), now, reason_code)
-            # The path's CAS'd aggregate is the opportunity; bump its version
-            # so a subsequent CAS'd command on the same opportunity_id must
-            # observe this write (same pattern as record_sales_activity/
-            # set_next_action).
-            opportunity.version += 1
-            opportunity.updated_at = now
             if existing_id:
                 conversion = state.conversions[(context.tenant_id, existing_id)]
                 # Any decision already made here (approved/rejected/disputed/
@@ -448,18 +463,30 @@ class CrmService:
                 # claim can still accept a competing claim (UAT-M10-009).
                 if conversion.decision_status != "proposed":
                     error = ConflictError("this transaction's conversion has already been decided", code="conversion_already_decided")
+                    # A rejected re-claim must leave the opportunity untouched
+                    # -- bumping its version here would commit (repository.py
+                    # commits the mutated working state even on a returned
+                    # _Outcome.error) and silently invalidate any CAS/ETag a
+                    # caller is holding on the terminal/decided aggregate.
                     return _Outcome({}, error.status, "conversion", conversion.id, conversion.version, error)
                 conversion.claim_history = (*conversion.claim_history, claim)
                 conversion.evidence_activity_ids = tuple(sorted(set(conversion.evidence_activity_ids) | set(activity_ids)))
                 conversion.version += 1
                 conversion.updated_at = now
+                # The path's CAS'd aggregate is the opportunity; bump its
+                # version so a subsequent CAS'd command on the same
+                # opportunity_id must observe this write (same pattern as
+                # record_sales_activity/set_next_action) -- only on success.
+                opportunity.version += 1
+                opportunity.updated_at = now
                 return self._conversion_outcome(conversion, context, 201)
             if opportunity.status in {"converted", "lost", "cancelled"}:
                 # A brand-new conversion attempt (a different
                 # contract_service_id) against an opportunity already closed
                 # out by a prior transaction -- unlike the existing_id branch
                 # above, there is no decided conversion row to carry the more
-                # specific "already decided" code.
+                # specific "already decided" code. Leave the opportunity
+                # untouched (see the existing_id branch's error above).
                 error = ConflictError("opportunity is already in a terminal state", code="opportunity_terminal")
                 return _Outcome({}, error.status, "opportunity", opportunity.id, opportunity.version, error)
             conversion = Conversion(
@@ -480,6 +507,8 @@ class CrmService:
             )
             state.conversions[(context.tenant_id, conversion.id)] = conversion
             state.conversion_by_contract_service[(context.tenant_id, contract_service_id)] = conversion.id
+            opportunity.version += 1
+            opportunity.updated_at = now
             return self._conversion_outcome(conversion, context, 201)
 
         return self._run_command(context, "claim_conversion", idempotency_key, {"opportunity_id": opportunity_id, **body}, correlation_id, mutate)
@@ -545,16 +574,24 @@ class CrmService:
             candidate_ids = requested_activity_ids or list(conversion.evidence_activity_ids)
             # Independent temporal-causality check (REQ-M10-010): never trust
             # the ``qualifies_for_claim``/``late_entry`` flags alone at
-            # decision time -- require that the cited activity's own
-            # ``occurred_at`` actually precedes the point this transaction
-            # was first claimed (``conversion.created_at``, the earliest
-            # record this module has of the transaction).
+            # decision time. The claim time (``conversion.created_at``) is
+            # sales-controlled and not authoritative on its own -- an
+            # upstream system of record (contract effective / payment
+            # confirmed) may show the transaction closed even earlier, so the
+            # cited activity's ``occurred_at`` must precede whichever of the
+            # two came first. Separately, an activity actually *recorded*
+            # after that upstream close is a backfill regardless of what
+            # ``occurred_at`` it claims, unless a supervisor has explicitly
+            # approved it as a late entry.
+            upstream_tx_at = self._earliest_confirmed_transaction_at(state, context.tenant_id, opportunity.customer_id, opportunity.created_at)
+            boundary_at = min(conversion.created_at, upstream_tx_at) if upstream_tx_at is not None else conversion.created_at
             qualifying_ids = [
                 activity_id for activity_id in candidate_ids
                 if (activity := state.activities.get((context.tenant_id, activity_id))) is not None
                 and activity.opportunity_id == conversion.opportunity_id
                 and activity.qualifies_for_claim
-                and activity.occurred_at < conversion.created_at
+                and activity.occurred_at < boundary_at
+                and (upstream_tx_at is None or activity.created_at <= upstream_tx_at or activity.late_entry_approved_at is not None)
             ]
             if approved_salesperson_id is not None and not qualifying_ids:
                 error = ValidationError(
@@ -892,13 +929,17 @@ class CrmService:
                 suppression.updated_at = now
                 self._emit_suppression_changed(state, suppression, correlation_id, active=False)
 
-    def record_payment_confirmed(self, state: StoreState, tenant_id: str, application_id: str) -> None:
+    def record_payment_confirmed(self, state: StoreState, tenant_id: str, application_id: str, confirmed_at: datetime) -> None:
+        application = state.applications.get((tenant_id, application_id))
+        customer_id = application.customer_id if application is not None else None
         payment = state.payments.get((tenant_id, application_id))
         if payment is None:
-            payment = PaymentProjection(tenant_id=tenant_id, application_id=application_id, status="confirmed")
+            payment = PaymentProjection(tenant_id=tenant_id, application_id=application_id, status="confirmed", customer_id=customer_id, confirmed_at=confirmed_at)
             state.payments[(tenant_id, application_id)] = payment
         else:
             payment.status = "confirmed"
+            payment.customer_id = customer_id or payment.customer_id
+            payment.confirmed_at = confirmed_at
 
     def record_payment_failed(self, state: StoreState, tenant_id: str, application_id: str, customer_id: str, reason_code: str, now: datetime) -> None:
         state.payments[(tenant_id, application_id)] = PaymentProjection(tenant_id=tenant_id, application_id=application_id, status="failed", customer_id=customer_id, reason_code=reason_code)

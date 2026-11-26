@@ -15,7 +15,6 @@ from modules.crm.domain import (
     ValidationError,
     canonical_hash,
     new_id,
-    utc_now,
 )
 from modules.crm.repository import InMemoryRepository, StoreState
 from modules.crm.service import CrmService
@@ -142,7 +141,7 @@ class M10EventConsumer:
         return "proceed", None
 
     def _finalize(self, state: StoreState, envelope: dict[str, Any], key: tuple[str, str, str, str], result_code: str) -> None:
-        applied_at = utc_now()
+        applied_at = self.service._clock()
         state.inbox[key] = self._receipt(envelope, "applied", result_code, applied_at)
         state.audit_events.append(
             AuditEvent(
@@ -157,7 +156,7 @@ class M10EventConsumer:
         event_type = envelope["event_type"]
         payload = envelope["payload"]
         tenant_id = envelope["tenant_id"]
-        now = utc_now()
+        now = self.service._clock()
 
         if event_type == "customer.created":
             self.service.record_customer_created(state, tenant_id, payload["customer_id"], payload["marketing_attribution_id"], now)
@@ -230,7 +229,7 @@ class M10EventConsumer:
             return "support_case_resolution_recorded"
 
         if event_type == "finance.payment_confirmed":
-            self.service.record_payment_confirmed(state, tenant_id, payload["application_id"])
+            self.service.record_payment_confirmed(state, tenant_id, payload["application_id"], self._time(payload["confirmed_at"]))
             return "payment_confirmation_recorded"
 
         if event_type == "finance.payment_failed":

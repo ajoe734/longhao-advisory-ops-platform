@@ -108,6 +108,40 @@ def test_unknown_opportunity_is_404(service, actors):
         service.get_opportunity(actors.sales(), _uuid())
 
 
+# ---- list_crm_worklists pagination (F3) -----------------------------------
+
+
+def test_list_crm_worklists_cursor_pagination_walks_every_item_exactly_once(service, actors):
+    """F3 regression: filtering by cursor *before* slicing to ``limit`` (not
+    after) must produce a ``next_cursor`` only on an actual non-final page,
+    and every item from a full cursor walk must be distinct and complete --
+    the previous bug's spurious ``next_cursor`` on the last page crashed the
+    following page's ``page[-1]["id"]`` with an uncaught ``IndexError``."""
+    customer_ids = [_uuid(), _uuid(), _uuid()]
+    for customer_id in customer_ids:
+        service.repository.atomic(
+            lambda state, cid=customer_id: service.record_kyc_refresh_required(
+                state, actors.tenant_id, cid, _uuid(), _now() + timedelta(days=3), _now(),
+            )
+        )
+
+    seen_ids: list[str] = []
+    cursor = None
+    pages = 0
+    while True:
+        page = service.list_crm_worklists(actors.supervisor(), state_filter=None, cursor=cursor, limit=2, as_of=None)
+        items = [item for item in page.data["items"] if item["customer_id"] in customer_ids]
+        seen_ids.extend(item["id"] for item in items)
+        pages += 1
+        assert pages <= 10, "pagination must terminate; a stuck next_cursor would loop forever"
+        if page.data["next_cursor"] is None:
+            break
+        cursor = page.data["next_cursor"]
+
+    assert len(seen_ids) == len(set(seen_ids)) == 3, "every item must be seen exactly once across the full cursor walk"
+    assert pages >= 2, "limit=2 over 3 items must require at least two pages"
+
+
 # ---- HTTP boundary (framework-neutral controller) -------------------------
 
 

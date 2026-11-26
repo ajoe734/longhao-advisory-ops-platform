@@ -556,6 +556,7 @@ class PaymentProjection:
     status: str
     customer_id: str | None = None
     reason_code: str | None = None
+    confirmed_at: datetime | None = None
 
 
 # ---- audit / outbox / inbox / idempotency ----------------------------------

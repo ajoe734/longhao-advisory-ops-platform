@@ -580,6 +580,137 @@ def test_uat_010_late_entry_activity_cannot_backdate_attribution(service, actors
     assert recorded_created_at >= recorded_before, "created_at must reflect real recording time, never the backdated occurred_at"
 
 
+def _consume_known_transaction(consumer, actors, customer_id: str, tx_at: datetime) -> None:
+    """Project a contract.effective + finance.payment_confirmed pair for
+    ``customer_id`` with both timestamps at ``tx_at``, as the real upstream
+    system of record for this transaction (independent of whatever a sales
+    activity or a conversion claim later asserts about its own timing)."""
+    application_id = _uuid()
+    assert consumer.consume(make_envelope(
+        event_type="application.created", tenant_id=actors.tenant_id, producer="M01", aggregate_type="application",
+        aggregate_id=application_id,
+        payload={"application_id": application_id, "customer_id": customer_id, "package_version_id": _uuid(), "intent": "renewal"},
+    )).status == "applied"
+    contract_id = _uuid()
+    assert consumer.consume(make_envelope(
+        event_type="contract.effective", tenant_id=actors.tenant_id, producer="M02", aggregate_type="contract",
+        aggregate_id=contract_id,
+        payload={
+            "contract_id": contract_id, "customer_id": customer_id, "effective_at": _iso(tx_at),
+            "service_starts_at": _iso(tx_at), "service_ends_at": _iso(tx_at + timedelta(days=30)),
+        },
+    )).status == "applied"
+    payment_id = _uuid()
+    assert consumer.consume(make_envelope(
+        event_type="finance.payment_confirmed", tenant_id=actors.tenant_id, producer="M14", aggregate_type="payment",
+        aggregate_id=payment_id,
+        payload={
+            "payment_id": payment_id, "application_id": application_id, "invoice_id": None,
+            "confirmed_at": _iso(tx_at), "evidence_snapshot_id": _uuid(),
+        },
+    )).status == "applied"
+
+
+def test_uat_010_pre_claim_backdated_activity_after_known_transaction_does_not_qualify(consumer, service, actors, evidence):
+    """F5(b) 2nd round: before any ``claim_conversion`` exists,
+    ``_has_claimed_conversion`` alone is blind to a transaction the upstream
+    systems (M02/M14) have already confirmed. A sales activity submitted
+    with a backdated ``occurred_at`` after that confirmed transaction must
+    still be flagged as a post-transaction backfill, not sail through as a
+    pre-transaction activity."""
+    customer_id = _uuid()
+    opp_id = _create_opportunity_for(service, actors, customer_id, "renewal")
+    opportunity_created_at = datetime.fromisoformat(
+        service.get_opportunity(actors.sales(), opp_id).data["created_at"].replace("Z", "+00:00")
+    )
+    _consume_known_transaction(consumer, actors, customer_id, opportunity_created_at)
+
+    ev = _uuid()
+    evidence.register(actors.tenant_id, ev)
+    backdated_activity = service.record_sales_activity(
+        actors.sales(), opp_id, {
+            "activity_type": "completed_call", "occurred_at": _iso(opportunity_created_at - timedelta(days=1)),
+            "customer_response_evidence_id": ev, "activity_evidence_asset_id": ev,
+            "needs_summary": "x", "next_action": "y", "next_action_due_at": _iso(_now() + timedelta(days=1)),
+            "outcome": "converted",
+        }, expected_version=1, idempotency_key="uat010-preclaim-backdated-00000001",
+    )
+    assert backdated_activity.data["qualifies_for_attribution"] is False
+    assert backdated_activity.data["attribution_review_reason"] == "late_entry_pending_approval"
+
+
+def test_uat_010_pre_claim_post_transaction_occurred_at_does_not_qualify(consumer, service, actors, evidence):
+    """F5(b) 2nd round: a claimed ``occurred_at`` *after* the confirmed
+    transaction is just as much a backfill as a backdated one -- the
+    salesperson is recording "evidence" for a deal that has already closed."""
+    customer_id = _uuid()
+    opp_id = _create_opportunity_for(service, actors, customer_id, "renewal")
+    opportunity_created_at = datetime.fromisoformat(
+        service.get_opportunity(actors.sales(), opp_id).data["created_at"].replace("Z", "+00:00")
+    )
+    _consume_known_transaction(consumer, actors, customer_id, opportunity_created_at)
+
+    ev = _uuid()
+    evidence.register(actors.tenant_id, ev)
+    post_tx_activity = service.record_sales_activity(
+        actors.sales(), opp_id, {
+            "activity_type": "completed_call", "occurred_at": _iso(opportunity_created_at + timedelta(hours=5)),
+            "customer_response_evidence_id": ev, "activity_evidence_asset_id": ev,
+            "needs_summary": "x", "next_action": "y", "next_action_due_at": _iso(_now() + timedelta(days=1)),
+            "outcome": "converted",
+        }, expected_version=1, idempotency_key="uat010-preclaim-posttx-00000001",
+    )
+    assert post_tx_activity.data["qualifies_for_attribution"] is False
+    assert post_tx_activity.data["attribution_review_reason"] == "late_entry_pending_approval"
+
+
+def test_uat_010_post_claim_pre_decision_backfill_revealed_by_late_projection(consumer, service, actors, evidence):
+    """F5(b) 2nd round: an activity that looked genuine when it was recorded
+    (no known transaction yet, so ``qualifies_for_claim`` was True) and was
+    then claimed must still be rejected at decide time once the upstream
+    transaction projection catches up and shows it actually closed *before*
+    this activity was ever entered into the system -- the claim time
+    (sales-controlled) is not the only clock that matters."""
+    customer_id = _uuid()
+    opp_id = _create_opportunity_for(service, actors, customer_id, "renewal")
+    opportunity_created_at = datetime.fromisoformat(
+        service.get_opportunity(actors.sales(), opp_id).data["created_at"].replace("Z", "+00:00")
+    )
+    ev = _uuid()
+    evidence.register(actors.tenant_id, ev)
+    activity = service.record_sales_activity(
+        actors.sales(), opp_id, {
+            "activity_type": "completed_call", "occurred_at": _iso(opportunity_created_at - timedelta(hours=1)),
+            "customer_response_evidence_id": ev, "activity_evidence_asset_id": ev,
+            "needs_summary": "x", "next_action": "y", "next_action_due_at": _iso(_now() + timedelta(days=1)),
+            "outcome": "converted",
+        }, expected_version=1, idempotency_key="uat010-postclaim-activity-00000001",
+    )
+    assert activity.data["qualifies_for_attribution"] is True, "no transaction is known yet -- this must look genuine when recorded"
+
+    claim = service.claim_conversion(
+        actors.sales(), opp_id, {
+            "application_id": _uuid(), "contract_id": _uuid(), "finance_transaction_ref": _uuid(),
+            "sales_activity_ids": [activity.data["id"]], "conversion_type": "renewal",
+            "claimed_salesperson_id": actors.sales_id, "reason_code": "x",
+        }, expected_version=_opportunity_version(service, actors, opp_id), idempotency_key="uat010-postclaim-claim-00000001",
+    )
+
+    # Only now does the upstream system of record catch up: the transaction
+    # actually closed at ``opportunity_created_at``, i.e. before this
+    # activity's own ``created_at`` -- a classic async-projection-lag backfill.
+    _consume_known_transaction(consumer, actors, customer_id, opportunity_created_at)
+
+    with pytest.raises(ValidationError) as excinfo:
+        service.decide_conversion(
+            actors.supervisor(), claim.data["id"], {
+                "decision": "approve", "reason_code": "x", "approved_salesperson_id": actors.sales_id,
+                "causality_evidence_asset_id": ev,
+            }, expected_version=1, idempotency_key="uat010-postclaim-decide-00000001",
+        )
+    assert excinfo.value.code == "evidence_insufficient"
+
+
 # ---- UAT-M10-011: 漏斗統計重放與退出正確 ----------------------------------
 
 

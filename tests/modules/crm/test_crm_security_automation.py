@@ -341,6 +341,12 @@ def test_reclaim_after_supervisor_rejection_is_blocked_not_reset_to_proposed(ser
     assert stored.decided_by == actors.supervisor_id
     assert stored.decision_at is not None
 
+    # F8: a rejected re-claim must never mutate the opportunity it was
+    # rejected against -- bumping its version here would silently
+    # invalidate any CAS/ETag a caller is still holding on it.
+    opp_after_rejected_reclaim = service.get_opportunity(actors.sales(), opp.data["id"])
+    assert opp_after_rejected_reclaim.data["version"] == opp_now.data["version"]
+
 
 def test_claim_conversion_on_a_terminal_opportunity_is_rejected(service, actors, evidence):
     """F4(e): a brand-new conversion claim (different contract_service_id)
@@ -386,3 +392,8 @@ def test_claim_conversion_on_a_terminal_opportunity_is_rejected(service, actors,
             }, expected_version=opp_now.data["version"], idempotency_key="terminal-claim-second-claim-00000001",
         )
     assert excinfo.value.code == "opportunity_terminal"
+
+    # F8: a rejected claim against a terminal opportunity must never bump
+    # its version -- it is already a decided/converted aggregate.
+    opp_after_terminal_claim = service.get_opportunity(actors.sales(), opp.data["id"])
+    assert opp_after_terminal_claim.data["version"] == opp_now.data["version"]

@@ -1,7 +1,7 @@
 # M10 共用契約相容新增提案
 
 本模組實作完全落在既有 `api/openapi.yaml`（10 個 M10 operationId）與
-`events/registry.json`（M10 的 19 個訂閱事件＋3 個發出事件）範圍內，**未**
+`events/registry.json`（M10 的 20 個訂閱事件＋3 個發出事件）範圍內，**未**
 提出新的 OpenAPI operation 或事件註冊；只新增 DB 層的 `crm.opportunity`／
 `crm.work_item`／`crm.conversion`／`crm.suppression`／`crm.activity` 欄位與
 CHECK 擴充（見 `001_crm.sql`）。
@@ -50,7 +50,7 @@ contract_service_id」為後備假設（單一服務線的合約必然成立）�
 ## 與其他模組提案的相依關係
 
 - `database/proposals/M01/contract-changes.md` 等其他模組提案若新增/變更
-  事件註冊，本模組目前只依賴 `events/registry.json` 已登錄的 19 個訂閱
+  事件註冊，本模組目前只依賴 `events/registry.json` 已登錄的 20 個訂閱
   事件；尚未核准的對方模組契約變更不在本模組假設範圍內。
 - `crm.conversion`/`crm.opportunity`/`crm.work_item`/`crm.suppression`/
   `crm.activity` 僅本模組擁有寫入權；未更動其他模組擁有的資料表或唯讀
