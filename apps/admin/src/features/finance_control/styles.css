@@ -1,0 +1,8 @@
+.m14-stack { display: grid; gap: 1rem; }
+.m14-panel { background: var(--surface, #fff); border: 1px solid var(--border, #cbd5e1); border-radius: .5rem; padding: 1rem; }
+.m14-table-scroll { overflow-x: auto; }
+.m14-table-scroll table { border-collapse: collapse; width: 100%; }
+.m14-table-scroll th, .m14-table-scroll td { border-bottom: 1px solid var(--border, #cbd5e1); padding: .75rem; text-align: left; }
+.m14-eyebrow { letter-spacing: .08em; text-transform: uppercase; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #0ea5e9; outline-offset: 2px; }
+@media (max-width: 48rem) { .m14-table-scroll table, .m14-table-scroll tbody, .m14-table-scroll tr, .m14-table-scroll td, .m14-table-scroll th { display: block; } .m14-table-scroll thead { position: absolute; clip: rect(0 0 0 0); } }
