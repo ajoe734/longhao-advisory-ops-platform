@@ -1,0 +1,17 @@
+.m05-stack { display: grid; gap: 1rem; }
+.m05-panel { background: var(--surface, #fff); border: 1px solid var(--border, #cbd5e1); border-radius: .5rem; padding: 1rem; }
+.m05-filter-grid { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); }
+.m05-filter-grid label { display: grid; gap: .25rem; }
+.m05-table-scroll { overflow-x: auto; }
+.m05-table-scroll table { border-collapse: collapse; width: 100%; }
+.m05-table-scroll th, .m05-table-scroll td { border-bottom: 1px solid var(--border, #cbd5e1); padding: .75rem; text-align: left; }
+.m05-table-scroll small { display: block; font-weight: normal; }
+.m05-eyebrow { letter-spacing: .08em; text-transform: uppercase; }
+.m05-flag-text { font-weight: 600; } /* 旗標一律用文字描述，不只靠顏色表達 */
+.m05-banner-stale { border-inline-start: .3rem solid #b45309; padding: .5rem .75rem; background: #fffbeb; }
+.m05-banner-conflict { border-inline-start: .3rem solid #b91c1c; padding: .5rem .75rem; background: #fef2f2; }
+.m05-health-grid { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
+.m05-health-grid dt { font-size: .85rem; color: var(--muted, #475569); }
+.m05-health-grid dd { margin: 0; font-size: 1.25rem; font-weight: 700; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #0ea5e9; outline-offset: 2px; }
+@media (max-width: 48rem) { .m05-table-scroll table, .m05-table-scroll tbody, .m05-table-scroll tr, .m05-table-scroll td, .m05-table-scroll th { display: block; } .m05-table-scroll thead { position: absolute; clip: rect(0 0 0 0); } }

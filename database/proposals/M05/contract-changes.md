@@ -1,0 +1,11 @@
+# M05 共用契約協調與整合風險
+
+此檔不直接修改 `api/openapi.yaml`、`events/registry.json` 或其他模組程式碼，記錄 integration steward 需核對／合併的項目：
+
+1. **origin／status 字面值不一致**：`database/catalog.json`／`database/migrations/0001_domains.sql` 的 `research.candidate.origin` CHECK 是 `persona_autonomous`/`analyst_requested`；`api/openapi.yaml` 的 `CandidateCreate.origin`／`ResearchCandidate.origin` 與 `events/schemas/research.candidate_*.v1.schema.json` 的 `payload.origin` 卻是 `persona_autonomous`/`analyst_initiated`。本模組在 `apps/api/src/modules/pantheon_intake/domain.py` 的 `origin_to_wire()`/`origin_from_wire()` 做唯一轉換，兩邊字面值都未被本模組更動。同理 DB `status` 的 `ready`/`superseded` 對應 wire `ResearchCandidate.state` 的 `accepted`（無對應 `superseded`，superseded 列固定顯示其被取代前的最後驗證結果）由 `status_to_wire()` 處理。建議 steward 擇一統一字面值；在那之前兩端契約都是現行已核准版本，不應被本模組私改。
+2. **`review_case_id` 的跨模組 ID 協調**：M05 從不寫 `review.case_file`（M06 擁有），但 `research.candidate_validated`／`research.candidate_superseded` 事件與 `ResearchCandidate.review_case_id` 都會先由 M05 用 `deterministic_review_case_id(tenant_id, candidate_id)`（`uuid5(NAMESPACE_URL, "longhao:{tenant}:research_candidate:{candidate_id}:review_case")`）指定一個 ID。這只是「保留」，不是「建立」：**M06 實作時必須採用同一個 deterministic 函式／ID 來源建立 `review.case_file.id`**，否則兩邊 ID 會不一致。這是本次整合必須核對的相依項，不是可延後的細節；若 M06 改用別的 ID 分配策略，`research.candidate.review_case_id` 欄位語意需要重新定義。
+3. **`get_member_feed`（M09）相依**：UAT-M05-006 的完整驗收情境包含「member feed 不存在該候選」，但 `get_member_feed` 是 M09 的 operationId，不在本模組 `write_scopes`。本模組測試只驗證了「本模組從未產生任何會被誤判為已核准投顧建議的事件／對客 API」與「customer principal 被拒絕讀取」；M09 實際未索引本模組候選內容的驗收，需待 M09 落地後由跨模組 E2E 補上，不能由本模組單獨宣稱已完全驗收 UAT-M05-006。
+4. **Pantheon webhook 信封與 schema_version 版本閘**：OpenAPI `CandidateCreate` 本身沒有 `schema_version` 欄位（`additionalProperties: false`）；UAT-M05-008 測的是本模組 `adapter.py` 的 `PantheonAdapter.translate()`，這是在正式 `ingest_research_candidate` 之前、本模組自訂的 adapter 信封版本閘（`{"schema_version": ..., "candidate": {...CandidateCreate}}`），不是 OpenAPI 契約的一部分。若日後需要把這個信封正式收進 wire 契約（例如讓 webhook 入口直接對外），需要 API steward 另行核准新的 request schema，不能假設目前已有。
+5. **SSRF allowlist 的來源**：`ports.py` 的 `ALLOWED_EVIDENCE_HOSTS` 目前是程式內常數（`pantheon.internal.longhao.invalid`、`agora.internal.longhao.invalid`），僅供本模組測試替身使用。正式環境的允許清單需由平台設定／秘密管理注入，並由安全 steward 核准，不得沿用程式碼常數或放寬到任意 host。
+
+在上述契約協調完成前，本模組只提供 adapter port 與 local fake；沒有修改或呼叫外部 Pantheon/Agora/LegendFlow endpoint，真實接線維持 `NOT_CONNECTED`。
