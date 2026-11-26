@@ -1,0 +1,12 @@
+.m11-stack { display: grid; gap: 1rem; }
+.m11-banner-stale { border: 1px solid #b45309; background: #fffbeb; color: #92400e; border-radius: .375rem; padding: .5rem .75rem; margin-bottom: .75rem; }
+.m11-panel { background: var(--surface, #fff); border: 1px solid var(--border, #cbd5e1); border-radius: .5rem; padding: 1rem; }
+.m11-table-scroll { overflow-x: auto; }
+.m11-table-scroll table { border-collapse: collapse; width: 100%; }
+.m11-table-scroll th, .m11-table-scroll td { border-bottom: 1px solid var(--border, #cbd5e1); padding: .75rem; text-align: left; }
+.m11-timeline { display: grid; gap: .5rem; list-style: none; padding: 0; }
+.m11-timeline li { border-inline-start: .3rem solid #64748b; padding: .75rem; }
+.m11-timeline li[aria-current="step"] { border-inline-start-color: #075985; background: #e0f2fe; }
+.m11-timeline small { display: block; }
+button:focus-visible, input:focus-visible { outline: 3px solid #0ea5e9; outline-offset: 2px; }
+@media (max-width: 48rem) { .m11-table-scroll table, .m11-table-scroll tbody, .m11-table-scroll tr, .m11-table-scroll td, .m11-table-scroll th { display: block; } .m11-table-scroll thead { position: absolute; clip: rect(0 0 0 0); } }
