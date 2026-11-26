@@ -1,0 +1,10 @@
+.m07-stack { display: grid; gap: 1rem; }
+.m07-panel { background: var(--surface, #fff); border: 1px solid var(--border, #cbd5e1); border-radius: .5rem; padding: 1rem; }
+.m07-eyebrow { letter-spacing: .08em; text-transform: uppercase; }
+.m07-timeline { display: grid; gap: .75rem; list-style: none; padding: 0; }
+.m07-timeline li { border-inline-start: .3rem solid #64748b; padding: .75rem; }
+.m07-timeline li[aria-current="step"] { border-inline-start-color: #075985; background: #e0f2fe; }
+.m07-channel-preview { display: grid; gap: .5rem; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); }
+.m07-auto-publish-notice { font-weight: 600; }
+button:focus-visible, input:focus-visible { outline: 3px solid #0ea5e9; outline-offset: 2px; }
+@media (max-width: 48rem) { .m07-channel-preview { grid-template-columns: 1fr; } }
