@@ -345,6 +345,58 @@ def test_response_dispatch_worker_lease_bounded_retry_and_queries_unknown_before
     assert third.processed == 0
 
 
+def test_response_dispatch_worker_does_not_resend_after_delayed_provider_acceptance(m13, agent, agent_two):
+    """Regression for F8: a prior candidate re-leased a status="unknown"
+    dispatch and called provider.send() again without first calling
+    provider.lookup() on the pending attempt's provider_request_id. If the
+    provider's async acceptance of the first send arrived between leases,
+    that duplicated the outbound customer message."""
+    service = m13["service"]
+    case = create_case(service, agent, "delayed-accept-create-001").data
+    draft = service.draft_service_response(agent, case["id"], draft_body(), expected_version=case["version"], idempotency_key="delayed-accept-draft-001").data
+    approval = service.approve_service_response_draft(agent_two, draft["id"], {
+        "draft_content_sha256": _draft_content_sha(m13, draft), "decision": "approve", "approval_mode": "human_reviewed",
+        "template_version": "manual", "policy_version": "policy-v1", "reason_code": "ok", "publication_reference_ids": [],
+        "valid_until": "2027-01-01T00:00:00Z",
+    }, expected_version=1, idempotency_key="delayed-accept-approve-001").data
+    latest = service.get_service_case(agent, case["id"]).data
+    sent = service.send_service_response(agent, case["id"], {
+        "draft_id": draft["id"], "draft_content_sha256": approval["draft_content_sha256"], "channel_binding_id": CHANNEL_BINDING,
+        "channel": "email", "approval_mode": "human_reviewed", "approval_id": approval["id"], "template_version": "manual",
+        "publication_reference_ids": [], "valid_until": "2027-01-01T00:00:00Z",
+    }, expected_version=latest["version"], idempotency_key="delayed-accept-send-001").data
+
+    provider = LocalMessagingProvider()
+    provider.failure_mode = "unknown"
+    send_calls: list[object] = []
+    lookup_calls: list[object] = []
+    original_send, original_lookup = provider.send, provider.lookup
+    provider.send = lambda *a, **kw: (send_calls.append(a), original_send(*a, **kw))[1]
+    provider.lookup = lambda *a, **kw: (lookup_calls.append(a), original_lookup(*a, **kw))[1]
+
+    sender = ResponseDispatchSender(m13["repository"], provider, max_attempts=3)
+    first = sender.run_once("worker-a")
+    assert first.retried == 1
+    assert len(send_calls) == 1 and len(lookup_calls) == 1
+
+    pending_ref = f"unknown-{sent['id']}"
+    provider.sent[pending_ref] = sent["id"]  # simulate the provider's async acceptance arriving after run 1
+
+    def make_due(state):
+        for dispatch in state.response_dispatches.values():
+            dispatch.next_attempt_at = NOW - timedelta(seconds=1)
+    m13["repository"].atomic(make_due)
+
+    second = sender.run_once("worker-b")
+    assert second.processed == 1
+    assert len(send_calls) == 1, "must not resend once the pending attempt's provider_request_id is confirmed accepted"
+    assert len(lookup_calls) == 2
+
+    final = m13["repository"].snapshot().response_dispatches[(TENANT, sent["id"])]
+    assert final.status == "accepted"
+    assert final.provider_message_ref == pending_ref
+
+
 def test_response_dispatch_never_persists_an_invalid_retry_state(m13, agent, agent_two):
     """Regression for F1: a prior candidate wrote status="retry" on timeout
     and on an unresolved unknown outcome, which violates both api/openapi.yaml

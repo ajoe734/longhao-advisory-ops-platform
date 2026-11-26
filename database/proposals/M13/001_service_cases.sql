@@ -131,8 +131,8 @@ FOR EACH ROW EXECUTE FUNCTION core.reject_evidence_mutation();
 -- The baseline migration only defines core.touch_version()/core.reject_evidence_mutation()
 -- without wiring them to any support.* table. M13 is the sole owner of this
 -- schema, so this proposal wires CAS version-bump triggers to the three
--- mutable aggregates and append-only guards to the five evidentiary tables,
--- plus tenant-isolating RLS across all nine support.* tables.
+-- mutable aggregates and append-only guards to the six evidentiary tables,
+-- plus tenant-isolating RLS across all ten support.* tables.
 DROP TRIGGER IF EXISTS m13_touch_version ON support.case_file;
 CREATE TRIGGER m13_touch_version BEFORE UPDATE ON support.case_file
 FOR EACH ROW EXECUTE FUNCTION core.touch_version();

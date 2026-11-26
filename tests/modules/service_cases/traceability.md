@@ -51,13 +51,21 @@ Reviewer `Antigravity` 的完整 review report：
 | F7(b) Medium：webhook Idempotency-Key/Timestamp/Nonce/signature 未驗證 | `service.py` `receive_service_response_receipt` 加 `_KEY_RE`/`_WEBHOOK_TS_RE`/`_WEBHOOK_NONCE_RE`/±300s skew/`integration_keys.secret`/HMAC-SHA256 比對/nonce 重放拒絕；`ports.py` 新增 `IntegrationKeyPort`/`FakeIntegrationKeys`；`repository.py` `StoreState.webhook_nonces`；`http.py` 透傳 `raw_body` 並修正 `headers.get("integration-key-id")`→`"x-integration-key-id"`（原碼未加 `X-` 前綴，HTTP 層永遠讀不到此 header）；`database/proposals/M13/001_service_cases.sql` 新增 `support.webhook_nonce` 表 | 舊：僅檢查 `Integration-Key-Id` 非空字串，完全未驗證格式/時效/重放/簽章。新：六項缺失逐一修正並有獨立負向測試 | 新增 `test_receive_service_response_receipt_rejects_bad_webhook_headers`（bad key / bad timestamp / stale timestamp / bad nonce / bad signature / unknown integration key / nonce replay 七個子案例）；同一 pytest 結果；新表已用 standalone PostgreSQL 16 套用成功（`PASS database/proposals/M13/001_service_cases.sql`） | 未接 production HSM/KMS 金鑰管理；`FakeIntegrationKeys` 僅供測試，production 環境會被 `ServiceCaseService.__init__` 的 fake-adapter 守門擋下 |
 | F7(c) Medium：`contract-changes.md` 誤稱 `request_refund` 不存在 | `database/proposals/M13/contract-changes.md` 改寫為 M14 cross-module port 邊界說明 | 舊：文件主張 `request_refund` 不存在於 `api/openapi.yaml`，建議 QA 刪除該 operationId。新：確認其存在於 M14（`POST /finance/refunds`，`x-allowed-roles` 含 `service_agent`），說明屬於 `NOT_CONNECTED` 的跨模組 port 邊界，不建議刪除 | `python3 -c "import yaml; ..."` 確認 `request_refund` 於 `api/openapi.yaml` 存在且 `x-module: M14`（見本次對話證據，非自動化測試） | 未修改 `qa/test-catalog.json`（超出 M13 write_scope，交 QA/integration steward 依文件建議調整） |
 
-### 本輪整體回歸
+## Reopen 修復證據（候選 `600623a6a8b198c5c262803dbf25f1b8f09a3756` → 本候選）
 
-- `python3 -m pytest tests/modules/service_cases -q`：exit 0，44 passed（35 既有 + 9 新增）。
-- `python3 -m pytest tests/ -q`：exit 0，73 passed（整個 repo，含 M01）。
-- `python3 scripts/validate_contracts.py`：`status: passed`，142 ops / 190 schemas / 47 events（與修復前相同，確認未變更契約）。
+Reviewer `Antigravity` 的完整 review report：
+`/home/hsinping_hung_cctech_support_com/.gemini/antigravity-cli/brain/709e102c-4926-4680-adc0-e80685dcdccc/m13-review-600623a.md`。
+
+| Finding | 原始碼依據與修改位置 | 舊版重現 → 修正版結果 | 命令、退出碼、執行版本與證據位置 | 未驗項與具體限制 |
+| --- | --- | --- | --- | --- |
+| F8 High：re-lease `status="unknown"` 時未先 `lookup()` 就直接 `send()`，重複發送客戶訊息 | `workers/tasks/service_cases/tasks.py` `ResponseDispatchSender.run_once`：在 `try: self.provider.send(...)` 之前加入 `dispatch.status == "unknown"` 分支，新增 `_latest_unknown_provider_ref()` 查出該 `(tenant_id, dispatch_id)` 最新 `outcome="unknown"` 的 `ResponseAttempt.provider_request_id`，呼叫 `provider.lookup()`；`"accepted"` 則直接 `_complete()` 並 `continue`（跳過 `send()`），僅 `"not_found"` 才進入既有 `send()` 路徑 | 舊：Run 1 `send()` 丟 `UnknownExternalResult(ref1)` → `lookup(ref1)=="not_found"` → `status="unknown"`；provider 之後非同步 accept `ref1`；Run 2 對 `status="unknown"` 的 dispatch 直接再呼叫一次 `send()`（`sends=2, lookups=1`），重複送出客戶訊息。新：Run 2 改為先 `lookup(ref1)`，發現 `"accepted"` 後直接 `_complete()`，全程 `sends=1, lookups=2`，不重送 | 新增 `test_response_dispatch_worker_does_not_resend_after_delayed_provider_acceptance`（monkeypatch `provider.send`/`provider.lookup` 計數，手動把 `provider.sent[pending_ref]` 設為已 accept 模擬非同步到達）；對修復前程式碼人工移除新增分支重跑該測試確認 `FAILED`（`assert 2 == 1`，重現 F8），還原分支後重跑確認 `PASSED`；`python3 -m pytest tests/modules/service_cases -q` exit 0（45 passed）；`python3 -m pytest tests/ -q` exit 0（74 passed，整個 repo） | 無。(Non-blocking nit 已處理：`database/proposals/M13/001_service_cases.sql:134-135` 註解 `five`/`nine` 已修正為 `six`/`ten`，與實際 6 個 evidentiary 表、10 個 support.* RLS 表一致，純文件註解無需額外測試) |
+
+### 本輪整體回歸（F8 修復後）
+
+- `python3 -m pytest tests/modules/service_cases -q`：exit 0，45 passed（44 既有 + 1 新增）。
+- `python3 -m pytest tests/ -q`：exit 0，74 passed（整個 repo，含 M01）。
+- `python3 scripts/validate_contracts.py`：`status: passed`，142 ops / 190 schemas / 47 events（worker-only 修復，未變更契約）。
 - `python3 scripts/validate_docs.py` / `python3 scripts/validate_sql.py` / `python3 scripts/check_public_repository.py`：全部 PASS。
 - `git diff --check HEAD`：無空白字元錯誤。
-- `python3 -m pytest qa/test_platform_runtime.py -q`：exit 0，11 passed（確認 F3 的「不加 plugin.py」決定未破壞平台共用測試）。
-- standalone PostgreSQL 16（`pgserver` 單人引擎）依序套用 `0001_domains.sql`→`0004_database_roles.sql`→`001_synthetic.sql`→`database/proposals/M13/001_service_cases.sql`（含新 `support.webhook_nonce`）：全部無 ERROR/FATAL/PANIC。
-- **NOT_RUN**：`apps/admin` 的 `tsc -b`/`vite build`（本 worktree 無 `node_modules`，VM 限制禁止安裝/啟動開發伺服器驗證 UI）；PostgreSQL 非 superuser RLS 執行期測試（需 `--dsn-env`/`--ephemeral`）；browser/Playwright 互動驗證。三者皆仰賴既有授權的 hosted CI workflow 對本候選 SHA 重新執行。
+- `python3 -m pytest qa/test_platform_runtime.py -q`：exit 0，11 passed。
+- **NOT_RUN**：`apps/admin` 的 `tsc -b`/`vite build`（本 worktree 無 `node_modules`，VM 限制禁止安裝/啟動開發伺服器驗證 UI）；standalone PostgreSQL DDL 重新套用（本輪僅改一行 SQL 註解，無結構變更，沿用前輪已驗證結果）；PostgreSQL 非 superuser RLS 執行期測試；browser/Playwright 互動驗證。三者皆仰賴既有授權的 hosted CI workflow 對本候選 SHA 重新執行。

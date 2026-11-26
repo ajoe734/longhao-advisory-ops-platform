@@ -199,6 +199,12 @@ class ResponseDispatchSender:
                 1 for (tenant, _), attempt in self.repository.snapshot().response_attempts.items()
                 if tenant == tenant_id and attempt.response_id == dispatch_id
             )
+            if dispatch.status == "unknown":
+                last_unknown_ref = self._latest_unknown_provider_ref(tenant_id, dispatch_id)
+                if last_unknown_ref is not None and self.provider.lookup(last_unknown_ref) == "accepted":
+                    self._complete(tenant_id, dispatch_id, worker_id, last_unknown_ref)
+                    processed += 1
+                    continue
             started = utc_now()
             try:
                 outcome, provider_request_id = self.provider.send(dispatch_id, dispatch.channel, dispatch.content_sha256)
@@ -237,6 +243,18 @@ class ResponseDispatchSender:
             state.response_attempts[(tenant_id, attempt.id)] = attempt
 
         self.repository.atomic(record)
+
+    def _latest_unknown_provider_ref(self, tenant_id: str, dispatch_id: str) -> str | None:
+        def read(state: StoreState) -> str | None:
+            unknown_attempts = [
+                attempt for (tenant, _), attempt in state.response_attempts.items()
+                if tenant == tenant_id and attempt.response_id == dispatch_id and attempt.outcome == "unknown"
+            ]
+            if not unknown_attempts:
+                return None
+            return max(unknown_attempts, key=lambda attempt: attempt.attempt_no).provider_request_id
+
+        return self.repository.read(read)
 
     def _lease(self, worker_id: str, limit: int) -> list[tuple[str, str]]:
         now = utc_now()
