@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime
 from threading import RLock
 from typing import Callable, TypeVar
 
@@ -40,6 +41,7 @@ class StoreState:
     inbox: dict[tuple[str, str, str, str], InboxReceipt] = field(default_factory=dict)
     idempotency: dict[tuple[str, str, str, str], IdempotencyReceipt] = field(default_factory=dict)
     jobs: dict[tuple[str, str], Job] = field(default_factory=dict)
+    webhook_nonces: dict[tuple[str, str, str], datetime] = field(default_factory=dict)
 
 
 T = TypeVar("T")

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from hashlib import sha256
 
 import pytest
 
 from modules.service_cases.automation import DraftResult
 from modules.service_cases.domain import ActorContext, ConflictError, ForbiddenError, NotFoundError, ValidationError
 
-from conftest import (
+from tests.modules.service_cases.conftest import (
     CHANNEL_BINDING,
     CONTEXT_EVIDENCE,
+    SUPERVISOR,
     TENANT,
     case_body,
     create_case,
@@ -39,7 +41,7 @@ def test_unverified_customer_cannot_see_another_customers_case(m13, agent):
     service = m13["service"]
     case = create_case(service, agent, "self-service-001").data
 
-    from conftest import customer_context
+    from tests.modules.service_cases.conftest import customer_context
     stranger = customer_context(customer_id="30000000-0000-0000-0000-000000000099", actor_id="30000000-0000-0000-0000-000000000099")
     with pytest.raises(NotFoundError):
         service.add_case_interaction(stranger, case["id"], {
@@ -50,7 +52,7 @@ def test_unverified_customer_cannot_see_another_customers_case(m13, agent):
 
 def test_customer_cannot_record_internal_or_outbound_interactions(m13, agent):
     service = m13["service"]
-    from conftest import customer_context
+    from tests.modules.service_cases.conftest import customer_context
     case = create_case(service, agent, "customer-direction-001").data
     customer = customer_context()
     with pytest.raises(ForbiddenError) as denied:
@@ -145,6 +147,39 @@ def test_hard_block_refuses_approval_and_send_of_new_investment_judgment_even_if
     assert approve_denied.value.code == "new_investment_judgment_blocked"
 
 
+def test_case_allowed_actions_offer_send_and_never_offer_resolve_twice(m13, agent):
+    """Regression for F6: _case_actions() never advertised
+    "send_service_response" at all (the admin UI's send button was gated on
+    an action that could never appear), and it kept advertising
+    "resolve_service_case" once the case was already resolved, which would
+    411/409 on retry."""
+    service = m13["service"]
+    case = create_case(service, agent, "allowed-actions-create-001").data
+    assert "send_service_response" in case["allowed_actions"]
+    assert "resolve_service_case" in case["allowed_actions"]
+
+    resolved = service.resolve_service_case(agent, case["id"], {
+        "resolution_code": "fixed", "resolution_summary": "問題已處理完成",
+        "customer_notice_evidence_id": CONTEXT_EVIDENCE,
+    }, expected_version=case["version"], idempotency_key="allowed-actions-resolve-001").data
+    assert "resolve_service_case" not in resolved["allowed_actions"]
+    assert "send_service_response" not in resolved["allowed_actions"]
+
+
+def test_draft_allowed_actions_never_offer_approve_to_the_drafter(m13, agent, agent_two):
+    """Regression for F6: _draft_actions() offered "approve_service_response_draft"
+    to the drafter themself even though human_reviewed maker-checker always
+    rejects that combination, making the advertised action unusable."""
+    service = m13["service"]
+    case = create_case(service, agent, "draft-actions-create-001").data
+    draft = service.draft_service_response(agent, case["id"], draft_body(), expected_version=case["version"], idempotency_key="draft-actions-draft-001").data
+    assert "approve_service_response_draft" not in draft["allowed_actions"]
+    as_drafter = service.get_service_response_draft(agent, draft["id"]).data
+    assert "approve_service_response_draft" not in as_drafter["allowed_actions"]
+    as_reviewer = service.get_service_response_draft(agent_two, draft["id"]).data
+    assert "approve_service_response_draft" in as_reviewer["allowed_actions"]
+
+
 def test_refund_escalation_cannot_be_approved_or_executed_by_this_module(m13, agent):
     service = m13["service"]
     assert not hasattr(service, "approve_refund")
@@ -154,12 +189,55 @@ def test_refund_escalation_cannot_be_approved_or_executed_by_this_module(m13, ag
 
 def test_production_automation_refuses_local_fake(m13):
     from modules.service_cases.automation import LocalDraftingAssistant
-    from modules.service_cases.ports import FakeChannelBindings, FakeKnowledgeBase, FakeObjectAssetStore, FakeSuppressionRequests
+    from modules.service_cases.ports import FakeChannelBindings, FakeIntegrationKeys, FakeKnowledgeBase, FakeObjectAssetStore, FakeSuppressionRequests
     from modules.service_cases.repository import InMemoryRepository
     from modules.service_cases.service import ServiceCaseService
 
     with pytest.raises(RuntimeError):
         ServiceCaseService(
             InMemoryRepository(), FakeObjectAssetStore(), FakeKnowledgeBase(), FakeChannelBindings(),
-            FakeSuppressionRequests(), LocalDraftingAssistant(), environment="production",
+            FakeSuppressionRequests(), LocalDraftingAssistant(), FakeIntegrationKeys(), environment="production",
         )
+
+
+def test_approved_low_risk_template_requires_policy_service_and_blocks_sensitive_categories(m13, agent, response_service):
+    """Regression for F2: a prior candidate let any service_agent/supervisor —
+    including the drafter — self-approve by passing
+    approval_mode="approved_low_risk_template" with an arbitrary
+    template_version, bypassing maker-checker on any case including
+    complaint/refund. Only the controlled policy service may use this mode,
+    and never for complaint/refund/research_question/AML-escalated cases."""
+    service = m13["service"]
+
+    def draft_and_approve_attempt(approver, **case_overrides):
+        case = create_case(service, agent, f"low-risk-create-{case_overrides.get('category', 'billing')}", **case_overrides).data
+        draft = service.draft_service_response(agent, case["id"], draft_body(), expected_version=case["version"], idempotency_key=f"low-risk-draft-{case['id']}").data
+        sha = sha256(draft["text"].encode("utf-8")).hexdigest() if draft["text"] else "0" * 64
+        return service.approve_service_response_draft(approver, draft["id"], {
+            "draft_content_sha256": sha, "decision": "approve",
+            "approval_mode": "approved_low_risk_template", "template_version": "any-attacker-chosen-version",
+            "policy_version": "policy-v1", "reason_code": "self_service_template", "publication_reference_ids": [],
+            "valid_until": "2027-01-01T00:00:00Z",
+        }, expected_version=1, idempotency_key=f"low-risk-approve-{case['id']}")
+
+    # The drafter themself (a plain service_agent) must never bypass review this way.
+    with pytest.raises(ForbiddenError) as drafter_denied:
+        draft_and_approve_attempt(agent, category="billing")
+    assert drafter_denied.value.code == "low_risk_template_requires_policy_service"
+
+    # Even a different human staff role (supervisor) cannot use this mode.
+    supervisor = ActorContext(TENANT, SUPERVISOR, frozenset({"service_supervisor"}), principal_type="staff")
+    with pytest.raises(ForbiddenError) as supervisor_denied:
+        draft_and_approve_attempt(supervisor, category="billing")
+    assert supervisor_denied.value.code == "low_risk_template_requires_policy_service"
+
+    # The controlled policy service may use it for a low-risk category...
+    allowed = draft_and_approve_attempt(response_service, category="billing")
+    assert allowed.status == 201
+
+    # ...but never for complaint/refund/research_question, even as the policy service.
+    for category in ("complaint", "refund", "research_question"):
+        with pytest.raises((ForbiddenError, ConflictError)) as blocked:
+            draft_and_approve_attempt(response_service, category=category)
+        if isinstance(blocked.value, ForbiddenError):
+            assert blocked.value.code in ("low_risk_template_category_blocked", "new_investment_judgment_blocked")

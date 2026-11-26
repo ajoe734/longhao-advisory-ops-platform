@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+import hmac
 import re
 from typing import Any, Callable
 
@@ -44,12 +45,16 @@ from .domain import (
     wire_time,
 )
 from .automation import DraftingAssistantPort
-from .ports import ChannelBindingPort, KnowledgeBasePort, ObjectAssetPort, SuppressionRequestPort
+from .ports import ChannelBindingPort, IntegrationKeyPort, KnowledgeBasePort, ObjectAssetPort, SuppressionRequestPort
 from .repository import InMemoryRepository, StoreState
 
 
 _KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _SHA_RE = re.compile(r"^[a-f0-9]{64}$")
+_WEBHOOK_TS_RE = re.compile(r"^[0-9]{10}$")
+_WEBHOOK_NONCE_RE = re.compile(r"^.{16,128}$")
+_WEBHOOK_TIMESTAMP_SKEW_SECONDS = 300
+_WEBHOOK_RECEIPT_PATH = "/webhooks/service-response-receipts"
 
 SLA_POLICY_VERSION = "m13-sla-v1"
 _FIRST_RESPONSE_HOURS = {"urgent": 1, "high": 4, "normal": 24}
@@ -61,6 +66,15 @@ _RESPONSE_SENDERS = {"service_agent", "service_supervisor", "service_response_se
 _RESPONSE_READERS = {"service_agent", "service_supervisor"}
 _APPROVERS = {"service_agent", "service_supervisor", "service_response_service"}
 _MESSAGING_ADAPTER = {"service_messaging_adapter"}
+# low-risk template approval bypasses human maker-checker review, so it is
+# restricted to the controlled policy service, never a human agent/supervisor
+# (docs/modules/M13-service_cases.md §4: "low-risk template由受控policy service記錄").
+_LOW_RISK_TEMPLATE_APPROVERS = {"service_response_service"}
+# investment judgment is already hard-blocked above; complaints, refunds and
+# research questions must still go through an authorized human/system workflow
+# per docs/modules/M13-service_cases.md §4, as must any case already routed to
+# the compliance (AML) queue.
+_LOW_RISK_TEMPLATE_BLOCKED_CATEGORIES = {"complaint", "refund", "research_question"}
 
 
 @dataclass(frozen=True)
@@ -102,13 +116,14 @@ class ServiceCaseService:
         channel_bindings: ChannelBindingPort,
         suppression: SuppressionRequestPort,
         assistant: DraftingAssistantPort,
+        integration_keys: IntegrationKeyPort,
         *,
         clock: Callable[[], datetime] = utc_now,
         environment: str = "test",
     ) -> None:
         if environment == "production" and any(
             getattr(adapter, "is_fake", False)
-            for adapter in (repository, object_assets, knowledge_base, channel_bindings, suppression, assistant)
+            for adapter in (repository, object_assets, knowledge_base, channel_bindings, suppression, assistant, integration_keys)
         ):
             raise RuntimeError("fake M13 adapters are forbidden in production")
         self.repository = repository
@@ -117,6 +132,7 @@ class ServiceCaseService:
         self.channel_bindings = channel_bindings
         self.suppression = suppression
         self.assistant = assistant
+        self.integration_keys = integration_keys
         self._clock = clock
 
     # ---- case commands ---------------------------------------------------
@@ -487,11 +503,18 @@ class ServiceCaseService:
                     "knowledge_version": knowledge_version, "approved_source_refs": refs,
                 })
                 if result.requires_human or not result.text:
+                    # baseline 0001_domains.sql CHECK requires content_asset_id
+                    # whenever status is 'requires_human'; store an internal
+                    # evidence marker (never shown as draft text) so the row
+                    # stays valid without implying a usable draft exists.
+                    placeholder = "requires_human: automation declined to draft a response for this case"
+                    placeholder_asset_id = self.object_assets.store(context.tenant_id, placeholder)
                     draft = ResponseDraft(
                         id=draft_id, tenant_id=context.tenant_id, case_id=case_id, version=1,
                         created_at=now, updated_at=now, status="requires_human", created_by=context.actor_id,
                         knowledge_version=knowledge_version, model_version=self.assistant.model_version,
                         prompt_version=self.assistant.prompt_version, source_refs=refs,
+                        content_asset_id=placeholder_asset_id, content_sha256=_text_sha256(placeholder),
                         contains_new_investment_judgment=result.contains_new_investment_judgment,
                     )
                 else:
@@ -675,6 +698,7 @@ class ServiceCaseService:
         references = body["publication_reference_ids"]
         if not isinstance(references, list) or len(references) > 20:
             raise ValidationError("publication_reference_ids must contain at most 20 items", field_name="publication_reference_ids")
+        references = [require_uuid(value, "publication_reference_ids") for value in references]
         valid_until = self._parse_time(body["valid_until"], "valid_until")
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
@@ -690,8 +714,23 @@ class ServiceCaseService:
                 raise ConflictError("draft_content_sha256 does not match the current draft", code="draft_content_mismatch")
             if decision == "approve" and draft.contains_new_investment_judgment:
                 raise ForbiddenError("a draft containing new investment judgment cannot be approved", code="new_investment_judgment_blocked")
-            if approval_mode == "human_reviewed" and decision == "approve" and context.actor_id == draft.created_by:
-                raise ForbiddenError("the approver must differ from the drafter", code="maker_checker_violation")
+            if approval_mode == "human_reviewed":
+                if decision == "approve" and context.actor_id == draft.created_by:
+                    raise ForbiddenError("the approver must differ from the drafter", code="maker_checker_violation")
+            else:
+                if decision == "approve" and not self._authorized(context, _LOW_RISK_TEMPLATE_APPROVERS):
+                    raise ForbiddenError(
+                        "approved_low_risk_template may only be recorded by the controlled policy service",
+                        code="low_risk_template_requires_policy_service",
+                    )
+                case = self._stored_case(state, context.tenant_id, draft.case_id)
+                if decision == "approve" and (
+                    case.category in _LOW_RISK_TEMPLATE_BLOCKED_CATEGORIES or case.escalated_queue == "compliance"
+                ):
+                    raise ForbiddenError(
+                        "approved_low_risk_template cannot authorize this case category",
+                        code="low_risk_template_category_blocked",
+                    )
             evidence_record = canonical_hash({
                 "draft_id": draft_id, "decision": decision, "reviewer_id": context.actor_id,
                 "approved_at": wire_time(now), "draft_content_sha256": sha,
@@ -818,6 +857,10 @@ class ServiceCaseService:
         *,
         provider: str,
         idempotency_key: str,
+        webhook_timestamp: str = "",
+        webhook_nonce: str = "",
+        signature: str = "",
+        raw_body: bytes = b"",
         correlation_id: str | None = None,
     ) -> ServiceResponse:
         self._authorize_staff(context, _MESSAGING_ADAPTER)
@@ -840,14 +883,32 @@ class ServiceCaseService:
             raise ValidationError("provider_receipt_asset_id does not exist", code="evidence_not_found", field_name="provider_receipt_asset_id")
         if not provider:
             raise ValidationError("Integration-Key-Id header is required", field_name="Integration-Key-Id")
-        correlation_id = self._correlation(correlation_id)
+        if not _KEY_RE.fullmatch(idempotency_key):
+            raise ValidationError("Idempotency-Key must match the published contract", field_name="Idempotency-Key")
+        if not _WEBHOOK_TS_RE.fullmatch(webhook_timestamp):
+            raise ValidationError("X-Webhook-Timestamp must be unix seconds", field_name="X-Webhook-Timestamp")
+        if not _WEBHOOK_NONCE_RE.fullmatch(webhook_nonce):
+            raise ValidationError("X-Webhook-Nonce must be 16 to 128 characters", field_name="X-Webhook-Nonce")
         now = self._clock()
+        if abs(int(now.timestamp()) - int(webhook_timestamp)) > _WEBHOOK_TIMESTAMP_SKEW_SECONDS:
+            raise ValidationError("X-Webhook-Timestamp is outside the allowed skew", field_name="X-Webhook-Timestamp")
+        secret = self.integration_keys.secret(context.tenant_id, provider)
+        if not secret:
+            raise ForbiddenError("Integration-Key-Id is not registered", code="integration_key_unknown")
+        expected_signature = self._webhook_signature(secret, webhook_timestamp, webhook_nonce, raw_body)
+        if not hmac.compare_digest(expected_signature, signature or ""):
+            raise ForbiddenError("X-Webhook-Signature is invalid", code="webhook_signature_invalid")
+        correlation_id = self._correlation(correlation_id)
         payload_sha256 = canonical_hash({
             "event_id": event_id, "response_id": response_id, "provider_message_ref": provider_message_ref,
             "provider_status": provider_status, "provider_occurred_at": wire_time(provider_occurred_at),
         })
 
         def mutate(state: StoreState) -> tuple[dict[str, Any], int]:
+            nonce_key = (context.tenant_id, provider, webhook_nonce)
+            if nonce_key in state.webhook_nonces:
+                raise ConflictError("X-Webhook-Nonce was already used", code="webhook_nonce_replayed")
+            state.webhook_nonces[nonce_key] = now
             receipt_id = new_id()
             existing_id = next(
                 (rid for (tenant, pv, eid), rid in self._receipt_index(state).items() if tenant == context.tenant_id and pv == provider and eid == event_id),
@@ -1022,6 +1083,12 @@ class ServiceCaseService:
         return require_uuid(value, "X-Correlation-Id") if value else new_id()
 
     @staticmethod
+    def _webhook_signature(secret: bytes, timestamp: str, nonce: str, raw_body: bytes) -> str:
+        body_hash = sha256(raw_body).hexdigest()
+        message = f"{timestamp}\n{nonce}\nPOST\n{_WEBHOOK_RECEIPT_PATH}\n{body_hash}".encode("utf-8")
+        return hmac.new(secret, message, sha256).hexdigest()
+
+    @staticmethod
     def _etag(version: int | None) -> str | None:
         return f'"{version}"' if version else None
 
@@ -1101,8 +1168,10 @@ class ServiceCaseService:
         if self._authorized(context, _SERVICE_AGENT):
             if case.status not in {"resolved", "closed"}:
                 actions.extend(["add_case_interaction", "escalate_service_case", "draft_service_response"])
-            if case.status != "closed":
+            if case.status not in {"resolved", "closed"}:
                 actions.append("resolve_service_case")
+        if self._authorized(context, _RESPONSE_SENDERS) and case.customer_id and case.status not in {"resolved", "closed"}:
+            actions.append("send_service_response")
         if self._authorized(context, _SERVICE_SUPERVISOR) and case.status != "closed":
             actions.append("assign_service_case")
         if case.status in {"resolved", "closed"} and (is_owner_customer or self._authorized(context, _SERVICE_AGENT)):
@@ -1113,9 +1182,13 @@ class ServiceCaseService:
         return []
 
     def _draft_actions(self, draft: ResponseDraft, context: ActorContext) -> list[str]:
-        if draft.status == "drafted" and not draft.contains_new_investment_judgment and self._authorized(context, _APPROVERS):
-            return ["approve_service_response_draft"]
-        return []
+        if draft.status != "drafted" or draft.contains_new_investment_judgment:
+            return []
+        if not self._authorized(context, _APPROVERS):
+            return []
+        if context.actor_id == draft.created_by and not self._authorized(context, _LOW_RISK_TEMPLATE_APPROVERS):
+            return []
+        return ["approve_service_response_draft"]
 
     def _dispatch_actions(self, dispatch: ResponseDispatch, context: ActorContext) -> list[str]:
         return []

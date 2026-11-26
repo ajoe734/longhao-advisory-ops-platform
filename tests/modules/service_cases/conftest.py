@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
+import hmac
+import json
 from pathlib import Path
 import sys
 
@@ -15,6 +18,7 @@ from modules.service_cases.automation import LocalDraftingAssistant
 from modules.service_cases.domain import ActorContext
 from modules.service_cases.ports import (
     FakeChannelBindings,
+    FakeIntegrationKeys,
     FakeKnowledgeBase,
     FakeObjectAssetStore,
     FakeSuppressionRequests,
@@ -42,6 +46,9 @@ KNOWLEDGE_SOURCE_REF = "50000000-0000-0000-0000-000000000001"
 CHANNEL_BINDING = "60000000-0000-0000-0000-000000000001"
 KNOWLEDGE_VERSION = "kb-v1"
 NOW = datetime(2026, 11, 23, 1, 2, 3, tzinfo=timezone.utc)
+WEBHOOK_PROVIDER = "email-adapter"
+WEBHOOK_SECRET = b"m13-test-webhook-secret-0123456789abcdef"
+WEBHOOK_RECEIPT_PATH = "/webhooks/service-response-receipts"
 
 
 class FixedClock:
@@ -70,9 +77,11 @@ def m13():
     channel_bindings.add(TENANT, CHANNEL_BINDING, CUSTOMER_ID, "email")
     suppression = FakeSuppressionRequests()
     assistant = LocalDraftingAssistant()
+    integration_keys = FakeIntegrationKeys()
+    integration_keys.add(TENANT, WEBHOOK_PROVIDER, WEBHOOK_SECRET)
     clock = FixedClock()
     service = ServiceCaseService(
-        repository, assets, knowledge_base, channel_bindings, suppression, assistant, clock=clock,
+        repository, assets, knowledge_base, channel_bindings, suppression, assistant, integration_keys, clock=clock,
     )
     return {
         "service": service,
@@ -82,6 +91,7 @@ def m13():
         "channel_bindings": channel_bindings,
         "suppression": suppression,
         "assistant": assistant,
+        "integration_keys": integration_keys,
         "clock": clock,
     }
 
@@ -104,6 +114,41 @@ def supervisor() -> ActorContext:
 @pytest.fixture
 def messaging_adapter() -> ActorContext:
     return ActorContext(TENANT, MESSAGING_ADAPTER, frozenset({"service_messaging_adapter"}), principal_type="service")
+
+
+@pytest.fixture
+def response_service() -> ActorContext:
+    return ActorContext(
+        TENANT, "20000000-0000-0000-0000-000000000005",
+        frozenset({"service_response_service"}), principal_type="service",
+    )
+
+
+def webhook_signature(secret: bytes, timestamp: str, nonce: str, raw_body: bytes) -> str:
+    """Mirrors ServiceCaseService._webhook_signature so tests act as an
+    independent external caller rather than reusing the implementation."""
+    body_hash = sha256(raw_body).hexdigest()
+    message = f"{timestamp}\n{nonce}\nPOST\n{WEBHOOK_RECEIPT_PATH}\n{body_hash}".encode("utf-8")
+    return hmac.new(secret, message, sha256).hexdigest()
+
+
+def receive_receipt(
+    m13, context, body, *, idempotency_key: str, provider: str = WEBHOOK_PROVIDER,
+    secret: bytes = WEBHOOK_SECRET, timestamp: str | None = None, nonce: str | None = None, tamper_signature: bool = False,
+):
+    """Signs and submits a service-response receipt the way a real webhook
+    sender would: a fixed raw body, a fresh nonce and an HMAC over both."""
+    service = m13["service"]
+    raw_body = json.dumps(body, sort_keys=True).encode("utf-8")
+    ts = timestamp if timestamp is not None else str(int(m13["clock"]().timestamp()))
+    nc = nonce if nonce is not None else sha256(f"nonce:{idempotency_key}".encode("utf-8")).hexdigest()
+    sig = webhook_signature(secret, ts, nc, raw_body)
+    if tamper_signature:
+        sig = ("0" if sig[0] != "0" else "1") + sig[1:]
+    return service.receive_service_response_receipt(
+        context, body, provider=provider, idempotency_key=idempotency_key,
+        webhook_timestamp=ts, webhook_nonce=nc, signature=sig, raw_body=raw_body,
+    )
 
 
 def customer_context(customer_id: str = CUSTOMER_ID, actor_id: str = CUSTOMER_ID) -> ActorContext:

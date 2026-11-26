@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from hashlib import sha256
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -9,16 +10,16 @@ from jsonschema import Draft202012Validator, FormatChecker
 import pytest
 import yaml
 
-from modules.service_cases.domain import ActorContext, ConflictError, NotFoundError, ValidationError, canonical_hash, wire_time
+from modules.service_cases.domain import ActorContext, ConflictError, ForbiddenError, NotFoundError, ValidationError, canonical_hash, wire_time
 from modules.service_cases.http import M13Controller, ROUTES
-from modules.service_cases.ports import FakeChannelBindings, FakeKnowledgeBase, FakeObjectAssetStore, FakeSuppressionRequests
+from modules.service_cases.ports import FakeChannelBindings, FakeIntegrationKeys, FakeKnowledgeBase, FakeObjectAssetStore, FakeSuppressionRequests
 from modules.service_cases.automation import LocalDraftingAssistant
 from modules.service_cases.repository import InMemoryRepository
 from modules.service_cases.service import ServiceCaseService
 from workers.tasks.service_cases.consumer import M13EventConsumer
 from workers.tasks.service_cases.tasks import LocalEventBus, LocalMessagingProvider, OutboxPublisher, ResponseDispatchSender
 
-from conftest import (
+from tests.modules.service_cases.conftest import (
     CHANNEL_BINDING,
     CONTEXT_EVIDENCE,
     CUSTOMER_ID,
@@ -31,6 +32,7 @@ from conftest import (
     case_body,
     create_case,
     draft_body,
+    receive_receipt,
 )
 
 
@@ -144,10 +146,10 @@ def test_wire_responses_validate_against_openapi_1_0(m13, agent, agent_two, supe
         "publication_reference_ids": [], "valid_until": "2027-01-01T00:00:00Z",
     }, expected_version=latest["version"], idempotency_key="wire-send-0001").data
     validate("ServiceResponse", sent)
-    receipt_result = service.receive_service_response_receipt(messaging_adapter, {
+    receipt_result = receive_receipt(m13, messaging_adapter, {
         "event_id": str(uuid4()), "response_id": sent["id"], "provider_message_ref": "wire-ref-0001",
         "provider_status": "accepted", "provider_occurred_at": wire_time(NOW), "provider_receipt_asset_id": RECEIPT_EVIDENCE,
-    }, provider="email-adapter", idempotency_key="wire-receipt-0001").data
+    }, idempotency_key="wire-receipt-0001").data
     validate("CallbackReceipt", receipt_result)
 
     problem = M13Controller(service).handle(
@@ -217,6 +219,74 @@ def test_consumer_rejects_wrong_schema_and_isolates_tenant(m13, agent):
     assert m13["repository"].snapshot().cases[(TENANT, case["id"])].maintenance_owner_id is None
 
 
+def test_consumer_accepts_its_own_self_produced_case_opened_event(m13, agent):
+    """Regression for F5: support.case_opened is listed for M13 in both
+    events/registry.json and the task packet, but a prior candidate's
+    _CONTRACTS table omitted it, so the consumer raised ValidationError for
+    an event M13 both produces and is contractually subscribed to."""
+    case = create_case(m13["service"], agent, "consumer-case-opened-001").data
+    consumer = M13EventConsumer(m13["repository"])
+    payload = {"case_id": case["id"], "customer_id": CUSTOMER_ID, "category": "billing", "priority": "normal"}
+    envelope = incoming("support.case_opened", "M13", "service_case", case["id"], 1, payload)
+    result = consumer.consume(envelope)
+    assert result.status == "applied"
+    assert result.result_code == "acknowledged_no_projection"
+
+
+def test_consumer_assignment_state_clears_or_ignores_instead_of_blind_overwrite(m13, agent):
+    """Regression for F5: ownership.assignment_changed must clear
+    maintenance_owner_id on released/departure and must not overwrite it on
+    superseded (a later active event for the replacement owner will arrive
+    separately); a prior candidate copied salesperson_id verbatim regardless
+    of state."""
+    service = m13["service"]
+    case = create_case(service, agent, "consumer-assignment-state-001").data
+    consumer = M13EventConsumer(m13["repository"])
+    assignment_id = str(uuid4())
+    salesperson_id = str(uuid4())
+
+    def assignment_envelope(state: str, sequence: int, salesperson=salesperson_id):
+        payload = {
+            "assignment_id": assignment_id, "customer_id": CUSTOMER_ID, "salesperson_id": salesperson,
+            "effective_at": wire_time(NOW), "state": state,
+        }
+        return incoming("ownership.assignment_changed", "M11", "maintenance_assignment", assignment_id, sequence, payload)
+
+    consumer.consume(assignment_envelope("active", 1))
+    assert m13["repository"].snapshot().cases[(TENANT, case["id"])].maintenance_owner_id == salesperson_id
+
+    superseded_result = consumer.consume(assignment_envelope("superseded", 2, salesperson=str(uuid4())))
+    assert superseded_result.result_code == "maintenance_owner_superseded_ignored:0"
+    assert m13["repository"].snapshot().cases[(TENANT, case["id"])].maintenance_owner_id == salesperson_id
+
+    consumer.consume(assignment_envelope("released", 3, salesperson=None))
+    assert m13["repository"].snapshot().cases[(TENANT, case["id"])].maintenance_owner_id is None
+
+
+def test_consumer_publication_withdrawn_sla_event_id_matches_dict_key(m13, agent):
+    """Regression for F5: a prior candidate called new_id() twice for the
+    same sla_event (once for the dict key, once for SlaEvent.id), so the
+    stored key never matched the record's own id field."""
+    service = m13["service"]
+    case = create_case(service, agent, "consumer-pub-withdrawn-001").data
+    publication_id = str(uuid4())
+    linked = create_case(service, agent, "consumer-pub-withdrawn-create-001", publication_id=publication_id).data
+    consumer = M13EventConsumer(m13["repository"])
+    payload = {
+        "publication_id": publication_id, "withdrawal_record_id": str(uuid4()),
+        "effective_at": wire_time(NOW), "notify_recipients": False,
+    }
+    consumer.consume(incoming("publication.withdrawn", "M08", "publication", publication_id, 1, payload))
+    snapshot = m13["repository"].snapshot()
+    matches = [
+        (key, event) for key, event in snapshot.sla_events.items()
+        if key[0] == TENANT and event.case_id == linked["id"] and event.reason_code == "publication_withdrawn"
+    ]
+    assert len(matches) == 1
+    (tenant, stored_key_id), event = matches[0]
+    assert stored_key_id == event.id
+
+
 def test_outbox_worker_uses_lease_bounded_retry_and_no_duplicate_publish(m13, agent):
     create_case(m13["service"], agent, "worker-create-001")
     bus = LocalEventBus()
@@ -275,6 +345,116 @@ def test_response_dispatch_worker_lease_bounded_retry_and_queries_unknown_before
     assert third.processed == 0
 
 
+def test_response_dispatch_never_persists_an_invalid_retry_state(m13, agent, agent_two):
+    """Regression for F1: a prior candidate wrote status="retry" on timeout
+    and on an unresolved unknown outcome, which violates both api/openapi.yaml
+    ServiceResponse.state and the baseline support.response_dispatch CHECK.
+    Both paths must land on an enum value the OpenAPI schema actually allows."""
+    service = m13["service"]
+    specification = yaml.safe_load((ROOT / "api" / "openapi.yaml").read_text(encoding="utf-8"))
+    state_enum = specification["components"]["schemas"]["ServiceResponse"]["properties"]["state"]["enum"]
+    assert "retry" not in state_enum
+
+    case = create_case(service, agent, "retry-state-create-001").data
+    draft = service.draft_service_response(agent, case["id"], draft_body(), expected_version=case["version"], idempotency_key="retry-state-draft-001").data
+    approval = service.approve_service_response_draft(agent_two, draft["id"], {
+        "draft_content_sha256": _draft_content_sha(m13, draft), "decision": "approve", "approval_mode": "human_reviewed",
+        "template_version": "manual", "policy_version": "policy-v1", "reason_code": "ok", "publication_reference_ids": [],
+        "valid_until": "2027-01-01T00:00:00Z",
+    }, expected_version=1, idempotency_key="retry-state-approve-001").data
+    latest = service.get_service_case(agent, case["id"]).data
+    sent = service.send_service_response(agent, case["id"], {
+        "draft_id": draft["id"], "draft_content_sha256": approval["draft_content_sha256"], "channel_binding_id": CHANNEL_BINDING,
+        "channel": "email", "approval_mode": "human_reviewed", "approval_id": approval["id"], "template_version": "manual",
+        "publication_reference_ids": [], "valid_until": "2027-01-01T00:00:00Z",
+    }, expected_version=latest["version"], idempotency_key="retry-state-send-001").data
+
+    provider = LocalMessagingProvider()
+    provider.failure_mode = "timeout"
+    sender = ResponseDispatchSender(m13["repository"], provider, max_attempts=3)
+    sender.run_once("worker-a")
+    after_timeout = service.get_service_response(agent, sent["id"]).data
+    assert after_timeout["state"] in state_enum and after_timeout["state"] == "queued"
+
+    provider.failure_mode = "unknown"
+
+    def make_due(state):
+        for dispatch in state.response_dispatches.values():
+            dispatch.next_attempt_at = NOW - timedelta(seconds=1)
+    m13["repository"].atomic(make_due)
+    sender.run_once("worker-b")
+    after_unknown = service.get_service_response(agent, sent["id"]).data
+    assert after_unknown["state"] in state_enum and after_unknown["state"] == "unknown"
+
+
+def test_webhook_router_prefix_is_not_doubled():
+    """Regression for F3: longhao_platform.http.create_app() includes every
+    router with prefix="/api/v1"; the module must not also bake that prefix
+    into its own APIRouter or the path would double to /api/v1/api/v1/...."""
+    pytest.importorskip("fastapi")
+    from modules.service_cases.http import create_fastapi_router
+
+    router = create_fastapi_router(object(), lambda request: None)
+    assert router.prefix == ""
+
+
+def test_receive_service_response_receipt_rejects_bad_webhook_headers(m13, agent, agent_two, messaging_adapter):
+    """Regression for F7(b): a prior candidate skipped Idempotency-Key format
+    checks and the WebhookTimestamp/WebhookNonce/signature headers api/openapi.yaml
+    requires for this operation's integrationSignature security scheme."""
+    service = m13["service"]
+    case = create_case(service, agent, "webhook-guard-create-001").data
+    draft = service.draft_service_response(agent, case["id"], draft_body(), expected_version=case["version"], idempotency_key="webhook-guard-draft-001").data
+    approval = service.approve_service_response_draft(agent_two, draft["id"], {
+        "draft_content_sha256": _draft_content_sha(m13, draft), "decision": "approve", "approval_mode": "human_reviewed",
+        "template_version": "manual", "policy_version": "policy-v1", "reason_code": "ok", "publication_reference_ids": [],
+        "valid_until": "2027-01-01T00:00:00Z",
+    }, expected_version=1, idempotency_key="webhook-guard-approve-001").data
+    latest = service.get_service_case(agent, case["id"]).data
+    sent = service.send_service_response(agent, case["id"], {
+        "draft_id": draft["id"], "draft_content_sha256": approval["draft_content_sha256"], "channel_binding_id": CHANNEL_BINDING,
+        "channel": "email", "approval_mode": "human_reviewed", "approval_id": approval["id"], "template_version": "manual",
+        "publication_reference_ids": [], "valid_until": "2027-01-01T00:00:00Z",
+    }, expected_version=latest["version"], idempotency_key="webhook-guard-send-001").data
+
+    body = {
+        "event_id": str(uuid4()), "response_id": sent["id"], "provider_message_ref": "webhook-guard-ref-001",
+        "provider_status": "accepted", "provider_occurred_at": wire_time(NOW), "provider_receipt_asset_id": RECEIPT_EVIDENCE,
+    }
+
+    with pytest.raises(ValidationError) as bad_key:
+        receive_receipt(m13, messaging_adapter, body, idempotency_key="too short")
+    assert bad_key.value.field_name == "Idempotency-Key"
+
+    with pytest.raises(ValidationError) as bad_ts:
+        receive_receipt(m13, messaging_adapter, body, idempotency_key="webhook-guard-receipt-001", timestamp="not-a-timestamp")
+    assert bad_ts.value.field_name == "X-Webhook-Timestamp"
+
+    stale_ts = str(int(m13["clock"]().timestamp()) - 301)
+    with pytest.raises(ValidationError) as stale:
+        receive_receipt(m13, messaging_adapter, body, idempotency_key="webhook-guard-receipt-002", timestamp=stale_ts)
+    assert stale.value.field_name == "X-Webhook-Timestamp"
+
+    with pytest.raises(ValidationError) as bad_nonce:
+        receive_receipt(m13, messaging_adapter, body, idempotency_key="webhook-guard-receipt-003", nonce="short")
+    assert bad_nonce.value.field_name == "X-Webhook-Nonce"
+
+    with pytest.raises(ForbiddenError) as bad_sig:
+        receive_receipt(m13, messaging_adapter, body, idempotency_key="webhook-guard-receipt-004", tamper_signature=True)
+    assert bad_sig.value.code == "webhook_signature_invalid"
+
+    with pytest.raises(ForbiddenError) as unknown_key:
+        receive_receipt(m13, messaging_adapter, body, idempotency_key="webhook-guard-receipt-005", provider="unregistered-adapter")
+    assert unknown_key.value.code == "integration_key_unknown"
+
+    accepted = receive_receipt(m13, messaging_adapter, body, idempotency_key="webhook-guard-receipt-006")
+    assert accepted.status == 202
+    replay_nonce = sha256(b"nonce:webhook-guard-receipt-006").hexdigest()
+    with pytest.raises(ConflictError) as replayed:
+        receive_receipt(m13, messaging_adapter, body, idempotency_key="webhook-guard-receipt-007", nonce=replay_nonce)
+    assert replayed.value.code == "webhook_nonce_replayed"
+
+
 def test_production_composition_refuses_fake_adapters():
     repository = InMemoryRepository()
     assets = FakeObjectAssetStore()
@@ -282,5 +462,9 @@ def test_production_composition_refuses_fake_adapters():
     channel_bindings = FakeChannelBindings()
     suppression = FakeSuppressionRequests()
     assistant = LocalDraftingAssistant()
+    integration_keys = FakeIntegrationKeys()
     with pytest.raises(RuntimeError):
-        ServiceCaseService(repository, assets, knowledge_base, channel_bindings, suppression, assistant, environment="production")
+        ServiceCaseService(
+            repository, assets, knowledge_base, channel_bindings, suppression, assistant, integration_keys,
+            environment="production",
+        )

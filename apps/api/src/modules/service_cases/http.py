@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 import inspect
+import json
 from time import perf_counter
 from typing import Any, Callable
 
@@ -48,6 +49,7 @@ class M13Controller:
         path: dict[str, str] | None = None,
         query: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
+        raw_body: bytes = b"",
     ) -> ApiResponse:
         body = body or {}
         path = path or {}
@@ -56,7 +58,7 @@ class M13Controller:
         correlation_id = headers.get("x-correlation-id") or new_id()
         started = perf_counter()
         try:
-            response = self._dispatch(operation_id, context, body, path, query, headers, correlation_id)
+            response = self._dispatch(operation_id, context, body, path, query, headers, correlation_id, raw_body)
             response_headers = {"X-Correlation-Id": correlation_id}
             if response.etag:
                 response_headers["ETag"] = response.etag
@@ -98,6 +100,7 @@ class M13Controller:
         query: dict[str, Any],
         headers: dict[str, str],
         correlation_id: str,
+        raw_body: bytes = b"",
     ) -> ServiceResponse:
         key = headers.get("idempotency-key", "")
         version = self._if_match(headers.get("if-match"))
@@ -144,9 +147,13 @@ class M13Controller:
         if operation_id == "get_service_response":
             return self.service.get_service_response(context, path["response_id"], correlation_id=correlation_id)
         if operation_id == "receive_service_response_receipt":
-            provider = headers.get("integration-key-id", "")
+            provider = headers.get("x-integration-key-id", "")
             return self.service.receive_service_response_receipt(
-                context, body, provider=provider, idempotency_key=key, correlation_id=correlation_id,
+                context, body, provider=provider, idempotency_key=key,
+                webhook_timestamp=headers.get("x-webhook-timestamp", ""),
+                webhook_nonce=headers.get("x-webhook-nonce", ""),
+                signature=headers.get("x-webhook-signature", ""),
+                raw_body=raw_body, correlation_id=correlation_id,
             )
         if operation_id == "approve_service_response_draft":
             return self.service.approve_service_response_draft(
@@ -217,22 +224,27 @@ def create_fastapi_router(
         raise RuntimeError("FastAPI must be supplied by the shared application build") from exc
 
     controller = M13Controller(service)
-    router = APIRouter(prefix="/api/v1", tags=["M13"])
+    # No prefix here: longhao_platform.http.create_app() includes every module
+    # router with prefix="/api/v1" itself, so adding it again here would
+    # double it to "/api/v1/api/v1/...".
+    router = APIRouter(tags=["M13"])
 
     def endpoint_for(operation_id: str, method: str) -> Callable[..., Any]:
         async def endpoint(request: Request) -> JSONResponse:
             context = context_resolver(request)
             if inspect.isawaitable(context):
                 context = await context
+            raw_body = b""
             request_body: dict[str, Any] = {}
             if method not in {"GET", "HEAD"}:
                 try:
-                    request_body = await request.json()
+                    raw_body = await request.body()
+                    request_body = json.loads(raw_body) if raw_body else {}
                 except Exception:  # FastAPI/Starlette raises different decode errors by version.
                     request_body = {}
             result = controller.handle(
                 operation_id, context, body=request_body, path=dict(request.path_params),
-                query=dict(request.query_params), headers=dict(request.headers),
+                query=dict(request.query_params), headers=dict(request.headers), raw_body=raw_body,
             )
             return JSONResponse(result.body, status_code=result.status, headers=result.headers)
 

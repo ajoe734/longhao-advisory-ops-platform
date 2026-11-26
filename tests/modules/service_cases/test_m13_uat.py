@@ -9,7 +9,7 @@ from modules.service_cases.domain import ConflictError, ForbiddenError, Validati
 from workers.tasks.service_cases.consumer import M13EventConsumer
 from workers.tasks.service_cases.tasks import SuppressionJobRunner
 
-from conftest import (
+from tests.modules.service_cases.conftest import (
     AGENT_TWO,
     CHANNEL_BINDING,
     CONSENT_EVIDENCE,
@@ -27,6 +27,7 @@ from conftest import (
     create_case,
     customer_context,
     draft_body,
+    receive_receipt,
 )
 
 
@@ -101,22 +102,22 @@ def test_uat_m13_004_draft_requires_approval_before_send_and_tracks_real_status(
     }, expected_version=case_latest["version"], idempotency_key="uat004-send-0001").data
     assert sent["state"] == "queued" and sent["sent_at"] is None and sent["delivered_at"] is None
     accepted_event_id = str(uuid4())
-    accepted = service.receive_service_response_receipt(messaging_adapter, {
+    accepted = receive_receipt(m13, messaging_adapter, {
         "event_id": accepted_event_id, "response_id": sent["id"], "provider_message_ref": "ref-001",
         "provider_status": "accepted", "provider_occurred_at": wire_time(NOW), "provider_receipt_asset_id": RECEIPT_EVIDENCE,
-    }, provider="email-adapter", idempotency_key="uat004-receipt-0001").data
+    }, idempotency_key="uat004-receipt-0001").data
     assert accepted["status"] == "accepted"
     mid_state = service.get_service_response(agent, sent["id"]).data
     assert mid_state["state"] == "accepted" and mid_state["sent_at"] is None
-    duplicate = service.receive_service_response_receipt(messaging_adapter, {
+    duplicate = receive_receipt(m13, messaging_adapter, {
         "event_id": accepted_event_id, "response_id": sent["id"], "provider_message_ref": "ref-001",
         "provider_status": "accepted", "provider_occurred_at": wire_time(NOW), "provider_receipt_asset_id": RECEIPT_EVIDENCE,
-    }, provider="email-adapter", idempotency_key="uat004-receipt-dup-0001").data
+    }, idempotency_key="uat004-receipt-dup-0001").data
     assert duplicate["status"] == "duplicate"
-    unknown = service.receive_service_response_receipt(messaging_adapter, {
+    unknown = receive_receipt(m13, messaging_adapter, {
         "event_id": str(uuid4()), "response_id": str(uuid4()), "provider_message_ref": "ref-404",
         "provider_status": "delivered", "provider_occurred_at": wire_time(NOW), "provider_receipt_asset_id": RECEIPT_EVIDENCE,
-    }, provider="email-adapter", idempotency_key="uat004-receipt-unknown-0001").data
+    }, idempotency_key="uat004-receipt-unknown-0001").data
     assert unknown["status"] == "quarantined"
 
 
@@ -127,6 +128,11 @@ def test_uat_m13_005_investment_question_routes_to_analyst_not_adhoc_advice(m13,
     assert draft["state"] == "requires_human"
     assert draft["contains_new_investment_judgment"] is True
     assert draft["text"] is None
+    # Regression for F7(a): baseline 0001_domains.sql CHECK requires
+    # content_asset_id whenever status is 'requires_human'; a prior candidate
+    # left it NULL, which a real PostgreSQL insert would reject outright.
+    stored_draft = m13["repository"].snapshot().response_drafts[(TENANT, draft["id"])]
+    assert stored_draft.content_asset_id is not None
     with pytest.raises(ConflictError) as approve_denied:
         _approve(service, agent_two, draft["id"], "0" * 64, "uat005-approve-0001")
     assert approve_denied.value.code == "draft_not_ready"

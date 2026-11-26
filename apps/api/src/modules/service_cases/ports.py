@@ -32,6 +32,18 @@ class SuppressionRequestPort(Protocol):
     def request(self, tenant_id: str, customer_id: str, scope: str, reason_code: str) -> str: ...
 
 
+class IntegrationKeyPort(Protocol):
+    """Resolves the shared secret bound to an inbound X-Integration-Key-Id.
+
+    Used to verify the X-Webhook-Signature HMAC on receive_service_response_receipt;
+    never stores or returns the secret in any API response.
+    """
+
+    is_fake: bool
+
+    def secret(self, tenant_id: str, key_id: str) -> bytes | None: ...
+
+
 class FakeObjectAssetStore:
     """Synthetic object asset registry. No production evidence is accepted."""
 
@@ -102,3 +114,16 @@ class FakeSuppressionRequests:
         suppression_id = new_id()
         self.requests.append(SuppressionRequestRecord(tenant_id, customer_id, scope, reason_code, suppression_id))
         return suppression_id
+
+
+class FakeIntegrationKeys:
+    is_fake = True
+
+    def __init__(self) -> None:
+        self._secrets: dict[tuple[str, str], bytes] = {}
+
+    def add(self, tenant_id: str, key_id: str, secret: bytes) -> None:
+        self._secrets[(tenant_id, key_id)] = secret
+
+    def secret(self, tenant_id: str, key_id: str) -> bytes | None:
+        return self._secrets.get((tenant_id, key_id))

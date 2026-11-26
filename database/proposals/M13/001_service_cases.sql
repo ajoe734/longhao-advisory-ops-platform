@@ -104,6 +104,30 @@ COMMENT ON COLUMN support.response_dispatch.next_attempt_at IS '下次允許重�
 COMMENT ON COLUMN support.response_dispatch.attempt_count IS '已嘗試送出次數；達上限轉failed，不盲目重送unknown結果。';
 COMMENT ON COLUMN support.response_dispatch.last_error_code IS '最近一次失敗的安全錯誤代碼。';
 
+-- receive_service_response_receipt's integrationSignature security scheme
+-- requires X-Webhook-Nonce replay rejection (api/openapi.yaml WebhookNonce
+-- parameter), which needs its own dedup record; a captured-and-replayed
+-- request must never be re-accepted just because its event_id/payload dedup
+-- in support.response_receipt happens to differ.
+CREATE TABLE IF NOT EXISTS support.webhook_nonce (
+  tenant_id uuid NOT NULL,
+  provider text NOT NULL,
+  nonce text NOT NULL,
+  received_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (tenant_id, provider, nonce),
+  FOREIGN KEY (tenant_id) REFERENCES core.tenant(id),
+  CHECK (length(nonce) BETWEEN 16 AND 128)
+);
+COMMENT ON TABLE support.webhook_nonce IS 'receive_service_response_receipt的X-Webhook-Nonce去重；同nonce重放一律拒絕，不視為應用層duplicate。';
+COMMENT ON COLUMN support.webhook_nonce.tenant_id IS '組織隔離鍵；由可信任服務在交易開始設定。';
+COMMENT ON COLUMN support.webhook_nonce.provider IS '對應X-Integration-Key-Id，與support.response_dispatch.approval_mode無關。';
+COMMENT ON COLUMN support.webhook_nonce.nonce IS 'X-Webhook-Nonce原值；每次webhook請求須為新值。';
+COMMENT ON COLUMN support.webhook_nonce.received_at IS '首次接受此nonce的時間；供TTL清理與告警使用，本提案未附自動清理排程。';
+
+DROP TRIGGER IF EXISTS m13_guard_evidence ON support.webhook_nonce;
+CREATE TRIGGER m13_guard_evidence BEFORE UPDATE OR DELETE ON support.webhook_nonce
+FOR EACH ROW EXECUTE FUNCTION core.reject_evidence_mutation();
+
 -- The baseline migration only defines core.touch_version()/core.reject_evidence_mutation()
 -- without wiring them to any support.* table. M13 is the sole owner of this
 -- schema, so this proposal wires CAS version-bump triggers to the three
@@ -144,7 +168,7 @@ DECLARE
 BEGIN
   FOREACH table_name IN ARRAY ARRAY[
     'case_file', 'interaction', 'sla_event', 'response_draft', 'response_approval',
-    'response_dispatch', 'response_attempt', 'response_receipt', 'case_resolution'
+    'response_dispatch', 'response_attempt', 'response_receipt', 'case_resolution', 'webhook_nonce'
   ]
   LOOP
     EXECUTE format('ALTER TABLE support.%I ENABLE ROW LEVEL SECURITY', table_name);

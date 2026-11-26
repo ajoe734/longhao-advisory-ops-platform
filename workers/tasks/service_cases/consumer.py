@@ -24,9 +24,13 @@ _CONTRACTS: dict[str, tuple[str, str, set[str]]] = {
     "delivery.status_changed": ("M09", "delivery", {"delivery_id", "publication_id", "customer_id", "channel", "state", "receipt_id", "read_at"}),
     "ownership.assignment_changed": ("M11", "maintenance_assignment", {"assignment_id", "customer_id", "salesperson_id", "effective_at", "state"}),
     "finance.refund_confirmed": ("M14", "refund", {"refund_id", "contract_id", "original_payment_id", "allocation_snapshot_id", "confirmed_at"}),
+    "support.case_opened": ("M13", "service_case", {"case_id", "customer_id", "category", "priority"}),
     "support.case_escalated": ("M13", "service_case", {"case_id", "target_queue", "due_at"}),
     "support.response_status_changed": ("M13", "service_response", {"response_id", "case_id", "state", "receipt_id"}),
 }
+
+_ASSIGNMENT_CLEARED_STATES = {"released", "departure"}
+_ASSIGNMENT_IGNORED_STATES = {"superseded"}
 
 
 @dataclass(frozen=True)
@@ -91,7 +95,10 @@ class M13EventConsumer:
         payload = envelope["payload"]
         tenant_id = envelope["tenant_id"]
 
-        if event_type in {"customer.created", "delivery.status_changed", "support.case_escalated", "support.response_status_changed"}:
+        if event_type in {
+            "customer.created", "delivery.status_changed",
+            "support.case_opened", "support.case_escalated", "support.response_status_changed",
+        }:
             # M13 does not maintain its own customer or delivery projection and
             # already applies case/response escalation state synchronously
             # inside the producing command's own transaction; this consumer
@@ -102,8 +109,9 @@ class M13EventConsumer:
             changed = 0
             for (tenant, _), case in state.cases.items():
                 if tenant == tenant_id and case.publication_id == payload["publication_id"] and case.status not in {"resolved", "closed"}:
-                    state.sla_events[(tenant_id, new_id())] = SlaEvent(
-                        id=new_id(), tenant_id=tenant_id, case_id=case.id, action="escalated",
+                    sla_event_id = new_id()
+                    state.sla_events[(tenant_id, sla_event_id)] = SlaEvent(
+                        id=sla_event_id, tenant_id=tenant_id, case_id=case.id, action="escalated",
                         occurred_at=utc_now(), actor_id="00000000-0000-0000-0000-000000000001",
                         reason_code="publication_withdrawn",
                     )
@@ -121,10 +129,14 @@ class M13EventConsumer:
             return f"publication_reference_corrected:{changed}"
 
         if event_type == "ownership.assignment_changed":
+            assignment_state = payload["state"]
+            if assignment_state in _ASSIGNMENT_IGNORED_STATES:
+                return "maintenance_owner_superseded_ignored:0"
+            new_owner_id = None if assignment_state in _ASSIGNMENT_CLEARED_STATES else payload["salesperson_id"]
             changed = 0
             for (tenant, _), case in state.cases.items():
                 if tenant == tenant_id and case.customer_id == payload["customer_id"]:
-                    case.maintenance_owner_id = payload["salesperson_id"]
+                    case.maintenance_owner_id = new_owner_id
                     case.version += 1
                     case.updated_at = utc_now()
                     changed += 1

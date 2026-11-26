@@ -20,10 +20,15 @@ catalog.json／data-dictionary.md／grants，並在 disposable PostgreSQL 16 實
 4. 基線 migration 定義了 `core.touch_version()` 與
    `core.reject_evidence_mutation()`，但未對任何 `support.*` 表接線；本提案
    替三個可變狀態表（case_file／response_draft／response_dispatch）接上
-   CAS version-bump trigger，替五個證據表（interaction／sla_event／
-   response_approval／response_attempt／response_receipt）與新表
-   （case_resolution）接上 append-only guard，並對全部九個表加上
+   CAS version-bump trigger，替六個證據表（interaction／sla_event／
+   response_approval／response_attempt／response_receipt／webhook_nonce）與
+   新表（case_resolution）接上 append-only guard，並對全部十個表加上
    tenant_isolation RLS policy。
+5. 新增 `support.webhook_nonce`：`receive_service_response_receipt` 的
+   `integrationSignature` 安全機制（`api/openapi.yaml` 的 `WebhookNonce`
+   參數）要求拒絕重放的 `X-Webhook-Nonce`；此表與
+   `support.response_receipt` 的 event_id/payload 去重邏輯分離（防重放
+   ≠ 應用層 idempotency），`(tenant_id, provider, nonce)` 唯一。
 
 ## 整合步驟
 
@@ -44,10 +49,10 @@ attempt 歷史或 `support.interaction` 之後不可直接 drop 新欄位／表�
 
 ## 驗證證據
 
-本提案 SQL 已在本機 disposable PostgreSQL 16（`pgserver` standalone 引擎）
-依序套用 `database/migrations/0001_domains.sql` → `0004_database_roles.sql`
-→ `database/seeds/001_synthetic.sql` → 本檔，全部無錯誤（`ON_ERROR_STOP=1`）。
-`--standalone` 模式略過 RLS／角色執行期測試（該模式以 superuser 執行，RLS
-策略不會真正生效），完整 RLS／並行測試仍須 `--dsn-env` 或 `--ephemeral`
-對一般使用者連線執行；本次僅確認 DDL／FK／CHECK／trigger 語法與相容性，
-不代表已完成正式 RLS 執行期驗收。
+本提案 SQL（含新增 `support.webhook_nonce`）已在本機 disposable PostgreSQL 16
+（`pgserver` standalone single-user 引擎，PostgreSQL 16.2）依序套用
+`database/migrations/0001_domains.sql` → `0004_database_roles.sql` →
+`database/seeds/001_synthetic.sql` → 本檔，全部無 `ERROR`/`FATAL`/`PANIC`。
+standalone 模式以 superuser 執行、RLS 策略不會真正生效，完整 RLS／並行測試
+仍須 `--dsn-env` 或 `--ephemeral` 對一般使用者連線執行；本次僅確認
+DDL／FK／CHECK／trigger 語法與相容性，不代表已完成正式 RLS 執行期驗收。

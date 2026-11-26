@@ -27,12 +27,15 @@
    `support.response_dispatch` 進入 `queued`。
 2. 將 `LocalMessagingProvider.failure_mode` 設為 `"timeout"`，呼叫
    `ResponseDispatchSender.run_once`；確認 `attempt_count` 遞增、
-   `support.response_attempt` 新增一筆 `outcome="timeout"`、狀態轉
-   `retry` 且 `next_attempt_at` 依指數退避設定。
+   `support.response_attempt` 新增一筆 `outcome="timeout"`、狀態轉回
+   `queued`（可重試的逾時；`retry` 不是合法列舉值）且 `next_attempt_at`
+   依指數退避設定。
 3. 將 `failure_mode` 設為 `None`，手動把 `next_attempt_at` 往前移後再跑一次；
    確認同一 dispatch 只送出一次（不重複發送）、狀態轉 `accepted`。
 4. 將 `failure_mode` 設為 `"unknown"`，確認 worker 呼叫 `provider.lookup(...)`
-   查詢外部真實狀態後才決定 retry 或視為已送達，不盲目重送。
+   查詢外部真實狀態後才決定視為已送達或轉 `unknown`（結果未知期間不得轉
+   `queued`/`retry` 盲目重送；`unknown` 仍在下次 lease 範圍內，但每次重新
+   送出前都必須先經過上述 lookup 判斷）。
 5. 連續失敗超過 `max_attempts` 的 dispatch 必須進入 `failed`
    （OutboxPublisher/SuppressionJobRunner 的等價任務則進入 `dead_letter`）；
    `TaskRunner.redrive(tenant_id, job_id, reason)` 只接受非空理由字串，且只能

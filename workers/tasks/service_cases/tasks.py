@@ -216,7 +216,7 @@ class ResponseDispatchSender:
                     self._complete(tenant_id, dispatch_id, worker_id, exc.provider_ref)
                     processed += 1
                 else:
-                    is_dead = self._fail(tenant_id, dispatch_id, worker_id, "provider_unknown")
+                    is_dead = self._fail(tenant_id, dispatch_id, worker_id, "provider_unknown", retry_status="unknown")
                     dead += int(is_dead)
                     retried += int(not is_dead)
             except RetryableTaskError as exc:
@@ -245,7 +245,7 @@ class ResponseDispatchSender:
             candidates = sorted(
                 (
                     (key, dispatch) for key, dispatch in state.response_dispatches.items()
-                    if dispatch.status in {"queued", "retry"}
+                    if dispatch.status in {"queued", "unknown"}
                     and (dispatch.next_attempt_at is None or dispatch.next_attempt_at <= now)
                     and (dispatch.lease_until is None or dispatch.lease_until <= now)
                 ),
@@ -276,7 +276,10 @@ class ResponseDispatchSender:
 
         self.repository.atomic(complete)
 
-    def _fail(self, tenant_id: str, dispatch_id: str, worker_id: str, code: str, *, terminal: bool = False) -> bool:
+    def _fail(
+        self, tenant_id: str, dispatch_id: str, worker_id: str, code: str, *,
+        terminal: bool = False, retry_status: str = "queued",
+    ) -> bool:
         now = utc_now()
 
         def fail(state: StoreState) -> bool:
@@ -292,7 +295,7 @@ class ResponseDispatchSender:
             if terminal or dispatch.attempt_count >= self.max_attempts:
                 dispatch.status = "failed"
                 return True
-            dispatch.status = "retry"
+            dispatch.status = retry_status
             dispatch.next_attempt_at = now + timedelta(seconds=min(300, 2 ** dispatch.attempt_count))
             return False
 

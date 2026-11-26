@@ -61,24 +61,22 @@ export function AppealRefundPanel({
       <h2 id="response-status">客服回覆送達狀態</h2>
       {!model.response && <p role="status">尚未送出回覆。</p>}
       {model.response && (
-        <div>
-          <p role="status">
-            {model.response.state === "queued" && "已受理，尚未送出（queued）"}
-            {model.response.state === "accepted" && "供應商已接受，尚未確認送達（accepted）"}
-            {model.response.state === "sent" && "已送出，尚未確認送達（sent）"}
-            {model.response.state === "delivered" && "已確認送達（delivered）"}
-            {model.response.state === "unknown" && "送達結果未知，正在查詢外部狀態，不視為已送達"}
-            {(model.response.state === "failed" || model.response.state === "cancelled" || model.response.state === "expired") && `未送達：${model.response.state}`}
-          </p>
-          <button
-            disabled={!isAllowed(model.case.allowed_actions, "send_service_response")}
-            title={!isAllowed(model.case.allowed_actions, "send_service_response") ? "目前狀態不允許再次送出" : undefined}
-            onClick={onSendResponse}
-          >
-            送出回覆
-          </button>
-        </div>
+        <p role="status">
+          {model.response.state === "queued" && "已受理，尚未送出（queued）"}
+          {model.response.state === "accepted" && "供應商已接受，尚未確認送達（accepted）"}
+          {model.response.state === "sent" && "已送出，尚未確認送達（sent）"}
+          {model.response.state === "delivered" && "已確認送達（delivered）"}
+          {model.response.state === "unknown" && "送達結果未知，正在查詢外部狀態，不視為已送達"}
+          {(model.response.state === "failed" || model.response.state === "cancelled" || model.response.state === "expired") && `未送達：${model.response.state}`}
+        </p>
       )}
+      <button
+        disabled={!isAllowed(model.case.allowed_actions, "send_service_response")}
+        title={!isAllowed(model.case.allowed_actions, "send_service_response") ? "目前狀態不允許送出回覆" : undefined}
+        onClick={onSendResponse}
+      >
+        送出回覆
+      </button>
     </section>
   </main>;
 }
