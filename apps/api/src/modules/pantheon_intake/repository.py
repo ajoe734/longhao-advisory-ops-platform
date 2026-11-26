@@ -21,6 +21,10 @@ class StoreState:
     candidates: dict[tuple[str, str], ResearchCandidate] = field(default_factory=dict)
     # (tenant, producer, external_event_id) -> candidate_id ; business-level source dedup.
     candidates_by_event: dict[tuple[str, str, str], str] = field(default_factory=dict)
+    # (tenant, producer, external_event_id) -> sha256 of the normalized ingest payload that
+    # first claimed this event id; a resend with a different fingerprint is a payload conflict,
+    # not a duplicate, even though both carry the same external_event_id.
+    candidate_event_fingerprints: dict[tuple[str, str, str], str] = field(default_factory=dict)
     # (tenant, producer, external_candidate_id) -> candidate_id of the current (non-superseded) row.
     candidate_lineage_head: dict[tuple[str, str, str], str] = field(default_factory=dict)
     evidence: dict[tuple[str, str], CandidateEvidence] = field(default_factory=dict)

@@ -59,6 +59,7 @@ class _Outcome:
     aggregate_id: str | None
     aggregate_version: int | None
     error: DomainError | None = None
+    reason_code: str | None = None
 
 
 class PantheonIntakeService:
@@ -86,7 +87,7 @@ class PantheonIntakeService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize_integration(context, "pantheon_adapter")
+        self._authorize_integration(context, "pantheon_adapter", operation="ingest_research_candidate", correlation_id=correlation_id)
         allowed = {
             "external_event_id", "origin", "persona_ref", "pool_ref", "ticket_ref", "plan_ref",
             "artifact_ref", "artifact_content_sha256", "evidence_bundle_refs", "source_created_at",
@@ -128,6 +129,25 @@ class PantheonIntakeService:
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
 
+        # core.inbox 的 event-id 去重必須連同 payload 一起比對：同一個 external_event_id
+        # 搭配不同的 artifact/證據內容，是來源端的衝突回報，不是單純重送。
+        event_fingerprint = canonical_hash({
+            "artifact_ref": artifact_ref,
+            "artifact_content_sha256": content_sha256,
+            "origin": origin,
+            "ticket_ref": ticket_ref,
+            "plan_ref": plan_ref,
+            "evidence_bundle_refs": evidence_refs,
+            "source_created_at": wire_time(source_occurred_at),
+            "source_available_at": wire_time(source_available_at),
+            "source_committed_at": wire_time(source_committed_at) if source_committed_at else None,
+            "data_scope": body["data_scope"],
+            "provenance_snapshot_asset_id": provenance_snapshot_asset_id,
+            "license_scope_ref": license_scope_ref,
+            "persona_ref": persona_ref,
+            "pool_ref": pool_ref,
+        })
+
         seeded_codes: set[str] = set()
         if any("checksum_sha256" not in ref for ref in evidence_refs):
             seeded_codes.add("evidence_incomplete")
@@ -137,12 +157,26 @@ class PantheonIntakeService:
             seeded_codes.add("source_occurred_at_in_future")
         if source_available_at > now:
             seeded_codes.add("source_available_at_in_future")
+        # A source cannot claim to have been "available" after the research it describes
+        # occurred (or, once reported, after it was committed) -- that is backfilling research
+        # that was not actually obtainable at the time, which this candidate must not accept as-is.
+        if source_available_at > source_occurred_at:
+            seeded_codes.add("source_available_at_look_ahead")
+        if source_committed_at is not None and source_available_at > source_committed_at:
+            seeded_codes.add("source_available_at_look_ahead")
 
         def mutate(state: StoreState) -> _Outcome:
             event_key = (context.tenant_id, _PRODUCER, external_event_id)
             existing_event_candidate_id = state.candidates_by_event.get(event_key)
             if existing_event_candidate_id:
                 existing = state.candidates[(context.tenant_id, existing_event_candidate_id)]
+                existing_fingerprint = state.candidate_event_fingerprints.get(event_key)
+                if existing_fingerprint != event_fingerprint:
+                    error = ConflictError(
+                        "external_event_id was already received with a different payload",
+                        code="event_payload_conflict",
+                    )
+                    return _Outcome({}, error.status, "research_candidate", existing.id, existing.version, error)
                 return self._candidate_outcome(existing, context, 202)
 
             lineage_key = (context.tenant_id, _PRODUCER, external_candidate_id)
@@ -152,8 +186,9 @@ class PantheonIntakeService:
                 if head.external_version == external_version:
                     if head.content_sha256 == content_sha256:
                         state.candidates_by_event[event_key] = head.id
+                        state.candidate_event_fingerprints[event_key] = event_fingerprint
                         return self._candidate_outcome(head, context, 202)
-                    head.status = "quarantined"
+                    previous_status = head.status
                     head.validation_failure_codes = sorted(set(head.validation_failure_codes) | {"artifact_hash_conflict"})
                     head.conflicting_receipts.append({
                         "external_event_id": external_event_id,
@@ -162,6 +197,30 @@ class PantheonIntakeService:
                     })
                     head.version += 1
                     head.updated_at = now
+                    if previous_status != "rejected":
+                        # A terminal rejection must stay rejected; everything else (including an
+                        # already-"ready" candidate) is downgraded into quarantine so the conflict
+                        # is reviewed before the candidate can move further.
+                        head.status = "quarantined"
+                        if previous_status == "ready":
+                            # M06 may already have this candidate queued for signature off the
+                            # earlier "accepted" event; it must learn the candidate was pulled back.
+                            self._emit(
+                                state,
+                                event_type="research.candidate_validated",
+                                tenant_id=context.tenant_id,
+                                aggregate_id=head.id,
+                                aggregate_version=head.version,
+                                correlation_id=correlation_id,
+                                idempotency_key=f"{idempotency_key}:hash_conflict_quarantined",
+                                payload={
+                                    "candidate_id": head.id,
+                                    "review_case_id": head.review_case_id,
+                                    "artifact_content_sha256": head.content_sha256,
+                                    "validation_result": "quarantined",
+                                },
+                                now=now,
+                            )
                     error = ConflictError(
                         "this artifact version was already received with a different content hash",
                         code="artifact_hash_conflict",
@@ -203,6 +262,7 @@ class PantheonIntakeService:
                 candidate.supersedes_candidate_id = head.id
             state.candidates[(context.tenant_id, candidate.id)] = candidate
             state.candidates_by_event[event_key] = candidate.id
+            state.candidate_event_fingerprints[event_key] = event_fingerprint
             state.candidate_lineage_head[lineage_key] = candidate.id
 
             seen_keys: set[str] = set()
@@ -281,7 +341,7 @@ class PantheonIntakeService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize_service(context, "research_intake_service")
+        self._authorize_service(context, "research_intake_service", operation="validate_research_candidate", correlation_id=correlation_id)
         candidate_id = require_uuid(candidate_id, "candidate_id")
         allowed = {"observed_content_sha256", "evidence_access_confirmed", "license_scope_confirmed", "source_snapshot_asset_id"}
         self._body(body, allowed, allowed)
@@ -349,15 +409,22 @@ class PantheonIntakeService:
         idempotency_key: str,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize_staff(context, {"analyst_reviewer"})
+        self._authorize_staff(context, {"analyst_reviewer"}, operation="reject_research_candidate", correlation_id=correlation_id)
         candidate_id = require_uuid(candidate_id, "candidate_id")
-        self._body(body, {"reason_code", "note"}, {"reason_code"})
+        self._body(body, {"reason_code", "note", "evidence_asset_ids"}, {"reason_code"})
         reason_code = str(body["reason_code"])
         if not 1 <= len(reason_code) <= 80:
             raise ValidationError("reason_code must contain 1 to 80 characters", field_name="reason_code")
         note = body.get("note")
-        if note is not None and (not isinstance(note, str) or len(note) > 2000):
-            raise ValidationError("note must be a string up to 2000 characters", field_name="note")
+        if note is not None and (not isinstance(note, str) or len(note) > 4000):
+            raise ValidationError("note must be a string up to 4000 characters", field_name="note")
+        evidence_asset_ids = body.get("evidence_asset_ids")
+        if evidence_asset_ids is not None:
+            if not isinstance(evidence_asset_ids, list) or len(evidence_asset_ids) > 30:
+                raise ValidationError("evidence_asset_ids must contain 0 to 30 items", field_name="evidence_asset_ids")
+            evidence_asset_ids = [require_uuid(value, "evidence_asset_ids") for value in evidence_asset_ids]
+        else:
+            evidence_asset_ids = []
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
 
@@ -368,6 +435,9 @@ class PantheonIntakeService:
                 raise ConflictError("candidate is already in a terminal state", code="candidate_terminal")
             candidate.status = "rejected"
             candidate.validation_failure_codes = sorted(set(candidate.validation_failure_codes) | {"rejected"})
+            candidate.rejection_reason_code = reason_code
+            candidate.rejection_note = note
+            candidate.rejection_evidence_asset_ids = evidence_asset_ids
             if candidate.review_case_id is None:
                 candidate.review_case_id = deterministic_review_case_id(context.tenant_id, candidate.id)
             candidate.version += 1
@@ -388,7 +458,9 @@ class PantheonIntakeService:
                 },
                 now=now,
             )
-            return self._candidate_outcome(candidate, context, 200)
+            outcome = self._candidate_outcome(candidate, context, 200)
+            outcome.reason_code = reason_code
+            return outcome
 
         return self._run_command(context, "reject_research_candidate", idempotency_key, {"candidate_id": candidate_id, **body}, correlation_id, mutate)
 
@@ -396,7 +468,7 @@ class PantheonIntakeService:
 
     def get_research_candidate(self, context: ActorContext, candidate_id: str, *, correlation_id: str | None = None) -> ServiceResponse:
         candidate_id = require_uuid(candidate_id, "candidate_id")
-        self._authorize_staff(context, {"analyst", "analyst_reviewer"})
+        self._authorize_staff(context, {"analyst", "analyst_reviewer"}, operation="get_research_candidate", correlation_id=correlation_id)
         correlation_id = self._correlation(correlation_id)
 
         def query(state: StoreState) -> ServiceResponse:
@@ -416,7 +488,7 @@ class PantheonIntakeService:
         as_of: datetime | None = None,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize_staff(context, {"analyst", "analyst_reviewer"})
+        self._authorize_staff(context, {"analyst", "analyst_reviewer"}, operation="list_research_candidates", correlation_id=correlation_id)
         if not 1 <= limit <= 200:
             raise ValidationError("limit must be between 1 and 200", field_name="limit")
         wire_states = {"received", "validating", "accepted", "quarantined", "rejected"}
@@ -468,16 +540,20 @@ class PantheonIntakeService:
             if receipt:
                 if receipt.request_sha256 != fingerprint:
                     raise ConflictError("Idempotency-Key was already used with a different payload", code="idempotency_conflict")
-                return _Outcome(receipt.response_value, receipt.response_status, "replay", None, None, receipt.error), True
+                return (
+                    _Outcome(receipt.response_value, receipt.response_status, "replay", None, receipt.response_aggregate_version, receipt.error),
+                    True,
+                )
             outcome = mutate(state)
             self._audit(
                 state, context, operation, outcome.aggregate_id, outcome.aggregate_version, correlation_id,
-                outcome.error.code if outcome.error else "succeeded", outcome.error.code if outcome.error else None,
+                outcome.error.code if outcome.error else "succeeded",
+                outcome.error.code if outcome.error else outcome.reason_code,
             )
             state.idempotency[receipt_key] = IdempotencyReceipt(
                 tenant_id=context.tenant_id, actor_id=context.actor_id, operation=operation, key=key,
                 request_sha256=fingerprint, response_status=outcome.status, response_value=outcome.value,
-                error=outcome.error, completed_at=self._clock(),
+                error=outcome.error, completed_at=self._clock(), response_aggregate_version=outcome.aggregate_version,
             )
             return outcome, False
 
@@ -521,20 +597,25 @@ class PantheonIntakeService:
 
     # ---- authorization and validation ---------------------------------------
 
-    def _authorize_integration(self, context: ActorContext, role: str) -> None:
+    def _authorize_integration(self, context: ActorContext, role: str, *, operation: str, correlation_id: str | None) -> None:
         if context.principal_type == "integration" and role in context.roles:
             return
-        raise ForbiddenError("actor cannot submit integration events for this operation")
+        self._deny(context, operation, correlation_id, "actor cannot submit integration events for this operation")
 
-    def _authorize_service(self, context: ActorContext, role: str) -> None:
+    def _authorize_service(self, context: ActorContext, role: str, *, operation: str, correlation_id: str | None) -> None:
         if context.principal_type == "service" and role in context.roles:
             return
-        raise ForbiddenError("actor cannot perform this service operation")
+        self._deny(context, operation, correlation_id, "actor cannot perform this service operation")
 
-    def _authorize_staff(self, context: ActorContext, roles: set[str]) -> None:
+    def _authorize_staff(self, context: ActorContext, roles: set[str], *, operation: str, correlation_id: str | None) -> None:
         if context.principal_type == "staff" and context.roles & roles:
             return
-        raise ForbiddenError("staff role is not allowed for this operation")
+        self._deny(context, operation, correlation_id, "staff role is not allowed for this operation")
+
+    def _deny(self, context: ActorContext, operation: str, correlation_id: str | None, detail: str) -> None:
+        error = ForbiddenError(detail)
+        self._audit_failure(context, operation, correlation_id, error.code)
+        raise error
 
     @staticmethod
     def _body(body: dict[str, Any], allowed: set[str], required: set[str]) -> None:

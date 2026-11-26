@@ -3,9 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from hashlib import sha256
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
-from modules.pantheon_intake.domain import ConflictError, DependencyUnavailableError, Job, NotFoundError, utc_now
+from modules.pantheon_intake.domain import (
+    ConflictError,
+    DependencyUnavailableError,
+    Job,
+    NotFoundError,
+    StaleVersionError,
+    utc_now,
+)
 from modules.pantheon_intake.ports import SsrfBlockedError, SsrfSafeEvidenceFetcher
 from modules.pantheon_intake.repository import InMemoryRepository, StoreState
 from modules.pantheon_intake.service import PantheonIntakeService
@@ -15,6 +22,16 @@ class RetryableTaskError(Exception):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+class UnknownExternalResult(Exception):
+    """The publish call itself failed (timeout, dropped connection, ...) without telling us
+    whether the event actually reached the bus -- blindly retrying could double-publish, so the
+    caller must confirm via ``lookup()`` before deciding to retry or treat it as delivered."""
+
+    def __init__(self, provider_ref: str) -> None:
+        super().__init__(provider_ref)
+        self.provider_ref = provider_ref
 
 
 class EvidenceSourcePort(Protocol):
@@ -61,6 +78,8 @@ class LocalEventBus:
     def publish(self, envelope: dict[str, Any]) -> str:
         if self.failure_mode == "timeout":
             raise RetryableTaskError("local_bus_timeout")
+        if self.failure_mode == "unknown":
+            raise UnknownExternalResult(envelope["event_id"])
         self.envelopes.setdefault(envelope["event_id"], envelope)
         return "accepted"
 
@@ -92,6 +111,14 @@ class OutboxPublisher:
                     raise RetryableTaskError("publisher_not_accepted")
                 self._complete(tenant_id, event_id, worker_id)
                 processed += 1
+            except UnknownExternalResult:
+                if self.publisher.lookup(event.event_id) == "accepted":
+                    self._complete(tenant_id, event_id, worker_id)
+                    processed += 1
+                else:
+                    is_dead = self._fail(tenant_id, event_id, worker_id, "publisher_unknown")
+                    dead += int(is_dead)
+                    retried += int(not is_dead)
             except RetryableTaskError as exc:
                 is_dead = self._fail(tenant_id, event_id, worker_id, exc.code)
                 dead += int(is_dead)
@@ -160,13 +187,14 @@ class TaskRunner:
     def __init__(self, repository: InMemoryRepository) -> None:
         self.repository = repository
 
-    def lease(self, worker_id: str, limit: int = 20) -> list[Job]:
+    def lease(self, worker_id: str, limit: int = 20, *, kind: str | None = None) -> list[Job]:
         now = utc_now()
 
         def lease_jobs(state: StoreState) -> list[Job]:
             selected = [
                 job for job in state.jobs.values()
                 if job.status in {"pending", "retry"}
+                and (kind is None or job.kind == kind)
                 and (job.next_attempt_at is None or job.next_attempt_at <= now)
                 and (job.lease_until is None or job.lease_until <= now)
             ][:limit]
@@ -246,6 +274,8 @@ class CandidateVerificationWorker:
     never recomputed once a successful attempt lands.
     """
 
+    KIND = "verify_candidate_evidence"
+
     def __init__(
         self,
         repository: InMemoryRepository,
@@ -253,32 +283,53 @@ class CandidateVerificationWorker:
         evidence_source: EvidenceSourcePort,
         fetcher: SsrfSafeEvidenceFetcher,
         *,
-        service_actor_context: Any,
+        service_context_factory: Callable[[str], Any],
     ) -> None:
         self.repository = repository
         self.service = service
         self.evidence_source = evidence_source
         self.fetcher = fetcher
-        self.service_context = service_actor_context
+        self.service_context_factory = service_context_factory
         self.runner = TaskRunner(repository)
 
     def run_once(self, worker_id: str, limit: int = 20) -> WorkerResult:
-        jobs = [job for job in self.runner.lease(worker_id, limit) if job.kind == "verify_candidate_evidence"]
+        # Lease only this worker's own job kind: leasing the whole queue and discarding
+        # whatever doesn't match would hold other kinds' jobs hostage under this lease
+        # until it expires, instead of leaving them available for their own worker.
+        jobs = self.runner.lease(worker_id, limit, kind=self.KIND)
         processed = retried = dead = 0
         for job in jobs:
-            try:
-                self._process(job)
-                self.runner.complete(job.tenant_id, job.id, worker_id)
-                processed += 1
-            except DependencyUnavailableError as exc:
-                is_dead = self.runner.fail(job.tenant_id, job.id, worker_id, exc.code)
-                dead += int(is_dead)
-                retried += int(not is_dead)
-            except SsrfBlockedError as exc:
-                self._report_blocked(job)
-                self._force_dead_letter(job.tenant_id, job.id, worker_id, exc.code)
-                dead += 1
+            outcome = self._run_job(job, worker_id)
+            processed += outcome == "processed"
+            retried += outcome == "retried"
+            dead += outcome == "dead"
         return WorkerResult(processed, retried, dead)
+
+    def _run_job(self, job: Job, worker_id: str) -> str:
+        try:
+            self._process(job)
+            self.runner.complete(job.tenant_id, job.id, worker_id)
+            return "processed"
+        except DependencyUnavailableError as exc:
+            is_dead = self.runner.fail(job.tenant_id, job.id, worker_id, exc.code)
+            return "dead" if is_dead else "retried"
+        except SsrfBlockedError as exc:
+            self._safe_report_blocked(job)
+            self._force_dead_letter(job.tenant_id, job.id, worker_id, exc.code)
+            return "dead"
+        except (ConflictError, StaleVersionError, NotFoundError):
+            # The candidate was already rejected/superseded, moved past this job's
+            # expected version, or disappeared through some other path while this job
+            # sat leased -- there is nothing left to verify. Complete it instead of
+            # crashing the batch and leaving the job stuck in "leased".
+            self.runner.complete(job.tenant_id, job.id, worker_id)
+            return "processed"
+
+    def _safe_report_blocked(self, job: Job) -> None:
+        try:
+            self._report_blocked(job)
+        except (ConflictError, StaleVersionError, NotFoundError):
+            pass
 
     def _process(self, job: Job) -> None:
         candidate_id = job.payload["candidate_id"]
@@ -289,7 +340,7 @@ class CandidateVerificationWorker:
         body = self.fetcher.fetch(url)
         observed_sha256 = sha256(body).hexdigest()
         self.service.validate_research_candidate(
-            self.service_context,
+            self.service_context_factory(job.tenant_id),
             candidate_id,
             {
                 "observed_content_sha256": observed_sha256,
@@ -307,7 +358,7 @@ class CandidateVerificationWorker:
         if candidate is None:
             return
         self.service.validate_research_candidate(
-            self.service_context,
+            self.service_context_factory(job.tenant_id),
             candidate_id,
             {
                 "observed_content_sha256": candidate.content_sha256,

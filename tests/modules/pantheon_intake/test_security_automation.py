@@ -9,7 +9,7 @@ from modules.pantheon_intake.adapter import resolve_pantheon_adapter_context
 from modules.pantheon_intake.automation import CandidateTriageAutomationService, LocalTriageAssistant
 from modules.pantheon_intake.domain import ActorContext, ConflictError, ForbiddenError, NotFoundError, UnauthorizedError, ValidationError, wire_time
 
-from conftest import TENANT, candidate_body, ingest
+from .conftest import TENANT, candidate_body, ingest
 
 
 _KEY_ID = "pantheon-key-1"
@@ -106,6 +106,12 @@ def test_only_the_right_principal_type_can_call_each_command(m05, adapter_contex
 
     rejected = service.reject_research_candidate(reviewer_context, candidate_id, {"reason_code": "sod_test"}, expected_version=1, idempotency_key="sod-reject-002")
     assert rejected.data["state"] == "rejected"
+
+    # Every one of the three denials above left an audit trail, not a silent 403.
+    denied = [row for row in m05["repository"].snapshot().audit_events if row.reason_code == "forbidden"]
+    denied_actions = {row.action for row in denied}
+    assert denied_actions == {"m05.ingest_research_candidate", "m05.validate_research_candidate", "m05.reject_research_candidate"}
+    assert all(row.result == "rejected" for row in denied)
 
 
 def test_terminal_candidate_rejects_further_mutation_without_losing_history(m05, adapter_context, reviewer_context):

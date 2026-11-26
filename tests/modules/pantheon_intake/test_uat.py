@@ -6,7 +6,7 @@ from modules.pantheon_intake.adapter import UnsupportedSchemaVersion
 from modules.pantheon_intake.domain import ActorContext, ConflictError, ForbiddenError, PreconditionRequiredError
 from modules.pantheon_intake.ports import TransportResponse
 
-from conftest import ALLOWED_HOST, DISALLOWED_HOST, GLOBAL_IP, TENANT, candidate_body, ingest
+from .conftest import ALLOWED_HOST, DISALLOWED_HOST, GLOBAL_IP, TENANT, candidate_body, ingest
 
 
 def test_uat_m05_001_persona_autonomous_creates_immutable_candidate_without_ticket(m05, adapter_context):
@@ -62,6 +62,77 @@ def test_uat_m05_004_same_version_different_hash_quarantines_without_overwrite(m
     assert stored.status == "quarantined"
     assert "artifact_hash_conflict" in stored.validation_failure_codes
     assert len(stored.conflicting_receipts) == 1
+
+
+def test_uat_m05_003b_resend_with_different_payload_is_a_conflict_not_a_duplicate(m05, adapter_context):
+    service = m05["service"]
+    event_id = "00000000-0000-0000-0000-000000000113"
+    first = ingest(service, adapter_context, "ingest-003c", external_event_id=event_id, content_sha256="a" * 64)
+    with pytest.raises(ConflictError) as excinfo:
+        ingest(service, adapter_context, "ingest-003d", external_event_id=event_id, content_sha256="f" * 64)
+    assert excinfo.value.code == "event_payload_conflict"
+    snapshot = m05["repository"].snapshot()
+    assert len(snapshot.candidates) == 1
+    stored = snapshot.candidates[(TENANT, first.data["id"])]
+    assert stored.content_sha256 == "a" * 64  # original not overwritten by the conflicting resend
+
+
+def test_available_at_after_occurred_at_is_quarantined_not_backfilled(m05, adapter_context):
+    service = m05["service"]
+    response = ingest(
+        service, adapter_context, "ingest-lookahead-001",
+        external_event_id="00000000-0000-0000-0000-000000000114",
+        source_created_at="2026-11-01T00:00:00Z",
+        source_available_at="2026-11-15T00:00:00Z",  # claims to have been available two weeks after the research occurred
+    )
+    assert "source_available_at_look_ahead" in response.data["validation_failure_codes"]
+    service_context = m05["service_context"]
+    validated = service.validate_research_candidate(
+        service_context, response.data["id"],
+        {"observed_content_sha256": "a" * 64, "evidence_access_confirmed": True, "license_scope_confirmed": True, "source_snapshot_asset_id": "30000000-0000-0000-0000-000000000099"},
+        expected_version=response.data["version"], idempotency_key="validate-lookahead-001",
+    )
+    assert validated.data["state"] == "quarantined"
+    assert "source_available_at_look_ahead" in validated.data["validation_failure_codes"]
+
+
+def test_uat_m05_004b_hash_conflict_against_rejected_head_stays_rejected(m05, adapter_context, reviewer_context):
+    service = m05["service"]
+    first = ingest(service, adapter_context, "ingest-004c", external_event_id="00000000-0000-0000-0000-000000000115", content_sha256="a" * 64)
+    rejected = service.reject_research_candidate(
+        reviewer_context, first.data["id"], {"reason_code": "duplicate_of_v1"},
+        expected_version=first.data["version"], idempotency_key="reject-004c",
+    )
+    assert rejected.data["state"] == "rejected"
+    with pytest.raises(ConflictError) as excinfo:
+        ingest(service, adapter_context, "ingest-004d", external_event_id="00000000-0000-0000-0000-000000000116", content_sha256="c" * 64)
+    assert excinfo.value.code == "artifact_hash_conflict"
+    stored = m05["repository"].snapshot().candidates[(TENANT, first.data["id"])]
+    assert stored.status == "rejected"  # terminal rejection is never reopened into quarantine
+    assert len(stored.conflicting_receipts) == 1  # the conflicting receipt is still recorded for traceability
+
+
+def test_uat_m05_004c_hash_conflict_against_ready_head_notifies_quarantine(m05, adapter_context):
+    service = m05["service"]
+    first = ingest(service, adapter_context, "ingest-004e", external_event_id="00000000-0000-0000-0000-000000000117", content_sha256="a" * 64)
+    service_context = m05["service_context"]
+    validated = service.validate_research_candidate(
+        service_context, first.data["id"],
+        {"observed_content_sha256": "a" * 64, "evidence_access_confirmed": True, "license_scope_confirmed": True, "source_snapshot_asset_id": "30000000-0000-0000-0000-000000000099"},
+        expected_version=first.data["version"], idempotency_key="validate-004e",
+    )
+    assert validated.data["state"] == "accepted"  # now "ready" and eligible for M06's signature queue
+    with pytest.raises(ConflictError):
+        ingest(service, adapter_context, "ingest-004f", external_event_id="00000000-0000-0000-0000-000000000118", content_sha256="c" * 64)
+    stored = m05["repository"].snapshot().candidates[(TENANT, first.data["id"])]
+    assert stored.status == "quarantined"  # pulled back out of the signature-eligible state
+    quarantine_events = [
+        event for event in m05["repository"].snapshot().outbox.values()
+        if event.event_type == "research.candidate_validated"
+        and event.aggregate_id == first.data["id"]
+        and event.payload["validation_result"] == "quarantined"
+    ]
+    assert len(quarantine_events) == 1  # M06 is told the candidate must not enter the signature queue
 
 
 def test_uat_m05_005_missing_evidence_stays_quarantined(m05, adapter_context):

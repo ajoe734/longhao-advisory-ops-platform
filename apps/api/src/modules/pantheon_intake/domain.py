@@ -269,6 +269,9 @@ class ResearchCandidate:
     customer_distribution_allowed: bool = False
     validated_snapshot_asset_id: str | None = None
     conflicting_receipts: list[dict[str, Any]] = field(default_factory=list)
+    rejection_reason_code: str | None = None
+    rejection_note: str | None = None
+    rejection_evidence_asset_ids: list[str] = field(default_factory=list)
 
     def to_api(self, allowed_actions: list[str]) -> dict[str, Any]:
         return {
@@ -383,6 +386,7 @@ class IdempotencyReceipt:
     response_value: Any
     error: DomainError | None
     completed_at: datetime
+    response_aggregate_version: int | None = None
 
 
 @dataclass

@@ -62,7 +62,11 @@ def m05():
     fetcher = SsrfSafeEvidenceFetcher(transport)
     evidence_source = FakeEvidenceSource()
     service_context = ActorContext(TENANT, SERVICE_ACTOR, frozenset({"research_intake_service"}), principal_type="service")
-    worker = CandidateVerificationWorker(repository, service, evidence_source, fetcher, service_actor_context=service_context)
+
+    def service_context_for_tenant(tenant_id: str) -> ActorContext:
+        return ActorContext(tenant_id, SERVICE_ACTOR, frozenset({"research_intake_service"}), principal_type="service")
+
+    worker = CandidateVerificationWorker(repository, service, evidence_source, fetcher, service_context_factory=service_context_for_tenant)
     bus = LocalEventBus()
     publisher = OutboxPublisher(repository, bus)
     signature = FakeWebhookSignatureVerifier(clock=clock)
