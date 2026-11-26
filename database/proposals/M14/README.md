@@ -8,10 +8,10 @@
 
 - `finance.payment`：補 `method`／`return_route`／`checkout_url`／`expires_at`，承接 pre-capture 的 PaymentIntent 投影。
 - `finance.invoice`／`invoice_line`：補業務 `invoice_date`／`due_date`（與既有事件時間 `issued_at`／`due_at` 分開），以及每行 `service_period_start/end`／`quantity`／`tax_code`／`tax_mapping_version`／`service_code`。
-- `finance.reconciliation_item`：補 `settlement_id`／`difference_type`／`expected_amount`／`actual_amount`，與既有 `source_type`／`source_ref`／`difference_amount` 並存供 mapper 轉換。
+- `finance.reconciliation_item`：補 `settlement_id`（`uuid`；永遠是真實 `finance.settlement.id`，或在 unmatched／duplicate 無對應 settlement 列時由應用層產生的合成 uuid，不再是 `batch_ref:transaction_ref` 這種非 uuid 字串）／`difference_type`／`expected_amount`／`actual_amount`，與既有 `source_type`／`source_ref`／`difference_amount` 並存供 mapper 轉換；`status` CHECK 改為應用層實際使用的 `open`／`investigating`／`resolved`／`escalated`（取代基線的 `unmatched`／`matched`／`exception`），預設值同步改為 `open`。
 - `finance.revenue_run`：補 `calculation_detail jsonb`，持久化計算時included／exception schedule id，讓 `approve_revenue_run` 核准時過帳內容可與 `calculation_manifest_sha256` 獨立重算核對。
 - `finance.revenue_recognition`：補 `contract_id`／`contract_service_id`，讓 `finance.revenue_recognized` 事件可從單一列重建而不需每次 replay 都重新 join。
-- `finance.refund`：補 `contract_id`／`customer_request_evidence_id`／`calculation_policy_version`／`approved_amount`／`provider_idempotency_key`（含 tenant 範圍唯一索引），確保 execute_refund 重試永遠使用同一組對外 idempotency key。
+- `finance.refund`：補 `contract_id`／`customer_request_evidence_id`／`calculation_policy_version`／`approved_amount`／`provider_idempotency_key`（含 tenant 範圍唯一索引），確保 execute_refund 重試永遠使用同一組對外 idempotency key；`status` CHECK 加入 `accounting_adjusted`（確認退款過完反向分錄後的終態，基線原本缺這個值）。
 - `finance.refund_allocation`：補 `invoice_line_ref`，讓既有一列一 `allocation_type` 的紀錄可被 mapper 重新分組回 wire 的單一 allocation 物件。
 - `finance.accounting_export`：補 `period_start/end`／`account_mapping_version`／`tax_mapping_version`／`debit_total`／`credit_total`／`entry_count`／`accepted_journal_ids`／`rejected_journal_ids`／`applied_ack_event_ids`，並放寬 `status` CHECK 以涵蓋 wire 的 `exported`／`partially_acknowledged`／`failed`。
 - `finance.control_exception`：補 `description`／`evidence_asset_ids`（複數）／`closed_by`／`closure_evidence_id`，並放寬 `status` CHECK 以涵蓋 `ready_for_review`／`reopened`。

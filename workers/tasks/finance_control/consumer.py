@@ -15,6 +15,7 @@ _CONTRACTS: dict[str, tuple[str, str, set[str]]] = {
     "commission.run_approved": ("M12", "commission_run", {"run_id", "policy_id", "approval_id", "ledger_manifest_sha256"}),
     "commission.adjustment_recorded": ("M12", "commission_adjustment", {"adjustment_id", "original_entry_id", "refund_id", "original_recipient_id"}),
     "finance.accounting_export_acknowledged": ("M14", "accounting_export", {"export_id", "status", "acknowledgement_id", "export_sha256"}),
+    "audit.legal_hold_changed": ("M14", "legal_hold", {"legal_hold_id", "state", "scope"}),
 }
 
 _ENVELOPE_FIELDS = {
@@ -47,6 +48,7 @@ class M14EventConsumer:
             "commission.run_approved": service.apply_commission_run_approved,
             "commission.adjustment_recorded": service.apply_commission_adjustment_recorded,
             "finance.accounting_export_acknowledged": service.apply_accounting_export_acknowledged,
+            "audit.legal_hold_changed": service.apply_legal_hold_changed,
         }
 
     def consume(self, envelope: dict[str, Any]) -> ConsumeResult:

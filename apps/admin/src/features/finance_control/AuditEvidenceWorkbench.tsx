@@ -56,7 +56,9 @@ export function AuditEvidenceWorkbench({
             範圍
             <select value={scope} onChange={event => setScope(event.target.value)}>
               <option value="customer">customer</option>
+              <option value="application">application</option>
               <option value="contract">contract</option>
+              <option value="publication">publication</option>
               <option value="refund">refund</option>
               <option value="commission_run">commission_run</option>
             </select>

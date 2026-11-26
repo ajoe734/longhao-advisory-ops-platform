@@ -72,7 +72,15 @@ _INVOICE_TYPES = {"service", "prepayment", "adjustment"}
 _PAYMENT_METHODS = {"card", "bank_transfer", "approved_wallet"}
 _RETURN_ROUTES = {"application_progress", "member_billing"}
 _PAYMENT_CALLBACK_STATUS = {"authorized", "paid", "failed", "disputed"}
+_PAYMENT_ALLOWED_TRANSITIONS: dict[str, set[str]] = {
+    "pending": {"pending", "authorized", "paid", "failed"},
+    "authorized": {"authorized", "paid", "failed"},
+    "paid": {"paid", "disputed"},
+    "failed": {"failed"},
+    "disputed": {"disputed"},
+}
 _REFUND_CALLBACK_STATUS = {"confirmed", "failed", "pending"}
+_REFUND_EXECUTABLE_CALLBACK_STATUSES = {"submitted", "reconciliation_required"}
 _RECON_DECISIONS = {"match", "correct_mapping", "accept_timing", "reject", "escalate"}
 _RECON_STATES = {"open", "investigating", "resolved", "escalated"}
 _EXPORT_ACK_STATUS = {"accepted", "partial", "rejected"}
@@ -326,19 +334,53 @@ class FinanceControlService:
             payment = state.payments.get((context.tenant_id, payment_intent_id))
             if payment is None:
                 raise NotFoundError("payment intent was not found")
-            payment.version += 1
-            payment.updated_at = now
-            payment.status = body["status"]
-            if body["status"] == "paid":
+
+            incoming_status = body["status"]
+
+            def quarantine() -> _Outcome:
+                state.webhook_receipts[receipt_key] = {"payload_sha256": fingerprint, "status": "quarantined", "payment_id": payment.id}
+                receipt = {"receipt_id": new_id(), "event_id": event_id, "status": "quarantined", "received_at": now, "correlation_id": correlation_id}
+                return _Outcome(self._callback_receipt_api(receipt), 202, "payment", payment.id, payment.version, classification="customer_confidential")
+
+            if incoming_status not in _PAYMENT_ALLOWED_TRANSITIONS.get(payment.status, set()):
+                # out-of-order or stale redelivery attempting an invalid/backward status transition
+                return quarantine()
+
+            if incoming_status == "paid":
+                if payment.amount != amount or payment.currency != currency:
+                    item_id = new_id()
+                    state.reconciliation_items[(context.tenant_id, item_id)] = ReconciliationItem(
+                        id=item_id,
+                        tenant_id=context.tenant_id,
+                        settlement_id=new_id(),
+                        payment_id=payment.id,
+                        difference_type="amount_mismatch",
+                        expected_amount=payment.amount,
+                        actual_amount=amount,
+                        currency=currency,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    return quarantine()
+                if payment.status == "paid":
+                    # the same business fact redelivered under a new event_id; already applied, not a new credit
+                    state.webhook_receipts[receipt_key] = {"payload_sha256": fingerprint, "status": "accepted", "payment_id": payment.id}
+                    receipt = {"receipt_id": new_id(), "event_id": event_id, "status": "duplicate", "received_at": now, "correlation_id": correlation_id}
+                    return _Outcome(self._callback_receipt_api(receipt), 202, "payment", payment.id, payment.version, classification="customer_confidential")
+                payment.version += 1
+                payment.updated_at = now
+                payment.status = "paid"
                 payment.paid_at = provider_occurred_at
                 if payment.provider_transaction_id != body["provider_transaction_ref"]:
                     payment.provider_transaction_id = body["provider_transaction_ref"]
                     state.payment_provider_index[(context.tenant_id, payment.provider, payment.provider_transaction_id)] = payment.id
                 if payment.invoice_id:
                     invoice = state.invoices.get((context.tenant_id, payment.invoice_id))
-                    if invoice and invoice.currency == currency:
+                    if invoice:
                         invoice.paid_amount += amount
                         invoice.updated_at = now
+                        if invoice.status == "issued" and invoice.paid_amount >= invoice.total_amount:
+                            invoice.status = "paid"
                 self._emit(
                     state,
                     event_type="finance.payment_confirmed",
@@ -358,7 +400,10 @@ class FinanceControlService:
                     },
                     now=now,
                 )
-            elif body["status"] == "failed":
+            elif incoming_status == "failed":
+                payment.version += 1
+                payment.updated_at = now
+                payment.status = "failed"
                 self._emit(
                     state,
                     event_type="finance.payment_failed",
@@ -378,6 +423,10 @@ class FinanceControlService:
                     },
                     now=now,
                 )
+            else:  # authorized / disputed: idempotent status sync, no dedicated side effects yet
+                payment.version += 1
+                payment.updated_at = now
+                payment.status = incoming_status
             state.webhook_receipts[receipt_key] = {"payload_sha256": fingerprint, "status": "accepted", "payment_id": payment.id}
             receipt = {"receipt_id": new_id(), "event_id": event_id, "status": "accepted", "received_at": now, "correlation_id": correlation_id}
             return _Outcome(self._callback_receipt_api(receipt), 202, "payment", payment.id, payment.version, classification="customer_confidential")
@@ -447,7 +496,7 @@ class FinanceControlService:
                     state.reconciliation_items[(context.tenant_id, item_id)] = ReconciliationItem(
                         id=item_id,
                         tenant_id=context.tenant_id,
-                        settlement_id=settlement_ref,
+                        settlement_id=new_id(),
                         difference_type="unmatched_settlement",
                         expected_amount=Decimal("0"),
                         actual_amount=line.gross_amount,
@@ -462,7 +511,7 @@ class FinanceControlService:
                     state.reconciliation_items[(context.tenant_id, item_id)] = ReconciliationItem(
                         id=item_id,
                         tenant_id=context.tenant_id,
-                        settlement_id=settlement_ref,
+                        settlement_id=new_id(),
                         payment_id=payment_id,
                         difference_type="duplicate",
                         expected_amount=line.gross_amount,
@@ -636,6 +685,18 @@ class FinanceControlService:
                     continue
                 snapshot = state.contracts.get((context.tenant_id, invoice.contract_id))
                 if snapshot and snapshot.terminated_at and snapshot.terminated_at.date() < schedule.period_end:
+                    excluded.append(schedule_id)
+                    continue
+                if not (
+                    snapshot
+                    and snapshot.accepted
+                    and snapshot.effective_at
+                    and snapshot.effective_at <= cutoff_at
+                    and snapshot.service_starts_at
+                    and snapshot.service_starts_at.date() <= schedule.period_start
+                ):
+                    # the contract was never confirmed accepted/effective (or service has not started yet)
+                    # for this service period; recognizing revenue here would run ahead of the deal itself.
                     excluded.append(schedule_id)
                     continue
                 included.append(schedule_id)
@@ -843,6 +904,17 @@ class FinanceControlService:
                 raise ConflictError("payment is not eligible for refund", code="payment_not_refundable")
             if payment.customer_id != customer_id:
                 raise ValidationError("customer_id does not match the original payment", field_name="customer_id")
+            if currency != payment.currency:
+                raise ValidationError("requested_amount currency must match the original payment", field_name="requested_amount")
+            already_requested = sum(
+                (
+                    r.requested_amount for (tenant, _), r in state.refunds.items()
+                    if tenant == context.tenant_id and r.original_payment_id == original_payment_id and r.status != "rejected"
+                ),
+                Decimal("0"),
+            )
+            if already_requested + requested_amount > payment.amount:
+                raise ConflictError("requested_amount exceeds the original payment amount", code="refund_amount_exceeds_payment")
             nonlocal total
             total = Decimal("0")
             for index, raw in enumerate(raw_allocations):
@@ -951,8 +1023,31 @@ class FinanceControlService:
             raise ValidationError("last_provider_status is not supported", field_name="last_provider_status")
         correlation_id = self._correlation(correlation_id)
         now = self._clock()
+        request = {"refund_id": refund_id, **body}
 
-        def mutate(state: StoreState) -> _Outcome:
+        if not _KEY_RE.fullmatch(idempotency_key):
+            raise ValidationError("Idempotency-Key must match the published contract", field_name="Idempotency-Key")
+        fingerprint = canonical_hash(request)
+        receipt_key = (context.tenant_id, context.actor_id, "execute_refund", idempotency_key)
+
+        def load_replay(state: StoreState) -> IdempotencyReceipt | None:
+            receipt = state.idempotency.get(receipt_key)
+            if receipt is not None and receipt.request_sha256 != fingerprint:
+                raise ConflictError("Idempotency-Key was already used with a different payload", code="idempotency_conflict")
+            return receipt
+
+        replay = self.repository.atomic(load_replay)
+        if replay is not None:
+            if replay.error:
+                raise replay.error
+            return ServiceResponse(replay.response_value, replay.response_status, None, True)
+
+        # Phase 1: durably commit the provider idempotency key and a "submitted" marker
+        # *before* calling the refund provider. If the process crashes or the call times
+        # out after this point, the key survives (unlike inside repository.atomic(), which
+        # rolls back entirely on exception) so a retry is forced through the same key
+        # instead of minting a new one and double-submitting to the provider (UAT-M14-006).
+        def prepare(state: StoreState) -> Refund:
             refund = self._stored_refund(state, context.tenant_id, refund_id)
             self._cas(refund.version, expected_version)
             if refund.approved_by == context.actor_id:
@@ -969,26 +1064,56 @@ class FinanceControlService:
                 raise ConflictError("provider_idempotency_key must stay constant across retries", code="provider_idempotency_key_mismatch")
             refund.version += 1
             refund.updated_at = now
+            if refund.status == "approved":
+                refund.status = "submitted"
+            return refund
 
-            known = self.refund_provider.query(provider_key)
-            if known is None:
-                try:
-                    result = self.refund_provider.submit(provider_key, refund.approved_amount or refund.requested_amount, refund.currency, refund.original_payment_id)
-                except DependencyUnavailableError:
-                    refund.status = "submitted"
-                    raise
-            else:
-                result = known
+        try:
+            prepared = self.repository.atomic(prepare)
+        except DomainError as exc:
+            self._audit_failure(context, "execute_refund", correlation_id, exc.code)
+            raise
 
+        # Phase 2: the provider call itself happens with no open transaction.
+        known = self.refund_provider.query(provider_key)
+        if known is None:
+            try:
+                result = self.refund_provider.submit(provider_key, prepared.approved_amount or prepared.requested_amount, prepared.currency, prepared.original_payment_id)
+            except DependencyUnavailableError as exc:
+                self._audit_failure(context, "execute_refund", correlation_id, exc.code)
+                raise
+        else:
+            result = known
+
+        # Phase 3: commit the provider result.
+        def finalize(state: StoreState) -> _Outcome:
+            refund = self._stored_refund(state, context.tenant_id, refund_id)
+            refund.version += 1
+            refund.updated_at = now
             if result.status == "confirmed":
                 self._finalize_refund_confirmed(state, refund, result.provider_refund_ref or new_id(), result.occurred_at or now, correlation_id, idempotency_key, now)
             elif result.status == "failed":
                 refund.status = "failed"
             else:
                 refund.status = "reconciliation_required"
-            return _Outcome(refund.to_api(self._refund_actions(refund, context)), 202, "refund", refund.id, refund.version, classification="customer_confidential")
+            outcome = _Outcome(refund.to_api(self._refund_actions(refund, context)), 202, "refund", refund.id, refund.version, classification="customer_confidential")
+            self._audit(state, context, "execute_refund", outcome.aggregate_type, outcome.aggregate_id, correlation_id, "success", outcome.classification)
+            state.idempotency[receipt_key] = IdempotencyReceipt(
+                tenant_id=context.tenant_id,
+                actor_id=context.actor_id,
+                operation="execute_refund",
+                key=idempotency_key,
+                request_sha256=fingerprint,
+                response_status=outcome.status,
+                response_value=outcome.value,
+                error=None,
+                completed_at=self._clock(),
+            )
+            return outcome
 
-        return self._run_command(context, "execute_refund", idempotency_key, {"refund_id": refund_id, **body}, correlation_id, mutate)
+        outcome = self.repository.atomic(finalize)
+        etag = self._etag(outcome.aggregate_version) if outcome.aggregate_version else None
+        return ServiceResponse(outcome.value, outcome.status, etag, False)
 
     def receive_refund_webhook(self, context: ActorContext, body: dict[str, Any], *, idempotency_key: str, correlation_id: str | None = None) -> ServiceResponse:
         self._authorize(context, {PAYMENT_ADAPTER}, require_service=True)
@@ -1017,7 +1142,9 @@ class FinanceControlService:
             refund = state.refunds.get((context.tenant_id, refund_id))
             if refund is None:
                 raise NotFoundError("refund was not found")
-            if refund.status in {"confirmed", "accounting_adjusted", "closed", "rejected"}:
+            if refund.status not in _REFUND_EXECUTABLE_CALLBACK_STATUSES:
+                # terminal (confirmed/accounting_adjusted/closed/rejected) or never executed
+                # (requested/approval_pending/approved without an execute_refund call yet)
                 state.webhook_receipts[receipt_key] = {"payload_sha256": fingerprint, "status": "quarantined", "refund_id": refund.id}
                 receipt = {"receipt_id": new_id(), "event_id": event_id, "status": "quarantined", "received_at": now, "correlation_id": correlation_id}
                 return _Outcome(self._callback_receipt_api(receipt), 202, "refund", refund.id, refund.version)
@@ -1145,7 +1272,7 @@ class FinanceControlService:
             existing_id = state.export_hash_index.get((context.tenant_id, _EXPORT_DESTINATION, manifest))
             if existing_id:
                 export = state.accounting_exports[(context.tenant_id, existing_id)]
-                return _Outcome(export.to_api(self._export_actions(export, context)), 201, "accounting_export", export.id, export.version)
+                return _Outcome(export.to_api(self._export_actions(export, context)), 202, "accounting_export", export.id, export.version)
 
             export_id = new_id()
             export = AccountingExport(
@@ -1172,7 +1299,7 @@ class FinanceControlService:
             state.export_hash_index[(context.tenant_id, _EXPORT_DESTINATION, manifest)] = export_id
             for journal_id in journal_ids:
                 state.exported_journal_index[(context.tenant_id, journal_id)] = export_id
-            return _Outcome(export.to_api(self._export_actions(export, context)), 201, "accounting_export", export_id, export.version)
+            return _Outcome(export.to_api(self._export_actions(export, context)), 202, "accounting_export", export_id, export.version)
 
         return self._run_command(context, "create_accounting_export", idempotency_key, body, correlation_id, mutate)
 
@@ -1206,7 +1333,7 @@ class FinanceControlService:
             if export.export_sha256 != export_sha256:
                 raise ConflictError("export_sha256 does not match the prepared export", code="export_hash_mismatch")
             if event_id in export.applied_ack_event_ids:
-                return _Outcome(export.to_api(self._export_actions(export, context)), 200, "accounting_export", export.id, export.version)
+                return _Outcome(export.to_api(self._export_actions(export, context)), 202, "accounting_export", export.id, export.version)
             export.version += 1
             export.updated_at = now
             export.applied_ack_event_ids.add(event_id)
@@ -1232,7 +1359,7 @@ class FinanceControlService:
                 payload={"export_id": export.id, "status": body["status"], "acknowledgement_id": new_id(), "export_sha256": export.export_sha256},
                 now=now,
             )
-            return _Outcome(export.to_api(self._export_actions(export, context)), 200, "accounting_export", export.id, export.version)
+            return _Outcome(export.to_api(self._export_actions(export, context)), 202, "accounting_export", export.id, export.version)
 
         return self._run_command(context, "acknowledge_accounting_export", idempotency_key, {"export_id": export_id, **body}, correlation_id, mutate)
 
@@ -1246,7 +1373,7 @@ class FinanceControlService:
             raise ValidationError("limit must be between 1 and 200", field_name="limit")
         correlation_id = self._correlation(correlation_id)
         snapshot_at = as_of or self._clock()
-        can_see_restricted = INTERNAL_AUDITOR in context.roles
+        can_see_restricted = not context.roles.isdisjoint({COMPLIANCE_REVIEWER, COMPLIANCE_SUPERVISOR})
 
         def query(state: StoreState) -> ServiceResponse:
             rows = sorted(
@@ -1262,7 +1389,9 @@ class FinanceControlService:
             items = []
             for item in page:
                 if item.classification == "aml_restricted" and not can_see_restricted:
-                    items.append({**item.to_api(), "action": "restricted", "aggregate_id": None, "evidence_asset_ids": []})
+                    # mask the specific target too, but the wire aggregate_id stays a non-null
+                    # uuid (self-reference) rather than null, matching the AuditEvent schema.
+                    items.append({**item.to_api(), "action": "restricted", "aggregate_id": item.id, "evidence_asset_ids": []})
                 else:
                     items.append(item.to_api())
             self._audit(state, context, "list_audit_events", "audit_event", None, correlation_id, "success", "internal")
@@ -1313,7 +1442,7 @@ class FinanceControlService:
                 updated_at=now,
             )
             state.evidence_exports[(context.tenant_id, export_id)] = export
-            return _Outcome(export.to_api([]), 201, "evidence_export", export_id, export.version)
+            return _Outcome(export.to_api([]), 202, "evidence_export", export_id, export.version)
 
         return self._run_command(context, "create_evidence_export", idempotency_key, body, correlation_id, mutate)
 
@@ -1326,7 +1455,7 @@ class FinanceControlService:
             export = state.evidence_exports.get((context.tenant_id, export_id))
             if export is None:
                 raise NotFoundError("evidence export was not found")
-            self._audit(state, context, "get_evidence_export", "evidence_export", export.id, correlation_id, "success", "restricted_aml" if export.include_restricted_aml else "internal")
+            self._audit(state, context, "get_evidence_export", "evidence_export", export.id, correlation_id, "success", "aml_restricted" if export.include_restricted_aml else "internal")
             return ServiceResponse(export.to_api([]), etag=self._etag(export.version))
 
         return self.repository.atomic(query)
@@ -1571,6 +1700,9 @@ class FinanceControlService:
     def apply_accounting_export_acknowledged(self, envelope: dict[str, Any]) -> dict[str, Any]:
         return self._apply_event(envelope, "finance.accounting_export_acknowledged", lambda state, tenant, payload, now: None)
 
+    def apply_legal_hold_changed(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        return self._apply_event(envelope, "audit.legal_hold_changed", self._project_legal_hold_changed)
+
     def _apply_event(self, envelope: dict[str, Any], expected_type: str, project: Callable[[StoreState, str, dict[str, Any], datetime], None]) -> dict[str, Any]:
         if envelope.get("event_type") != expected_type:
             raise ValidationError(f"envelope event_type must be {expected_type}", field_name="event_type")
@@ -1654,6 +1786,16 @@ class FinanceControlService:
     @staticmethod
     def _project_commission_adjustment_recorded(state: StoreState, tenant_id: str, payload: dict[str, Any], now: datetime) -> None:
         state.commission_adjustment_receipts[(tenant_id, str(payload["adjustment_id"]))] = payload
+
+    @staticmethod
+    def _project_legal_hold_changed(state: StoreState, tenant_id: str, payload: dict[str, Any], now: datetime) -> None:
+        # M14 both produces and consumes this event (self-loop) so a redelivered or
+        # out-of-process replay stays idempotent; the originating create/release
+        # command already committed the authoritative row in the same transaction.
+        hold_id = require_uuid(payload["legal_hold_id"], "legal_hold_id")
+        hold = state.legal_holds.get((tenant_id, hold_id))
+        if hold is not None:
+            hold.status = payload["state"]
 
     # ======================================================================
     # Internal helpers
@@ -1931,15 +2073,19 @@ class FinanceControlService:
         return actions
 
     def _audit(self, state: StoreState, context: ActorContext, action: str, aggregate_type: str, aggregate_id: str | None, correlation_id: str, outcome: str, classification: str, reason_code: str | None = None) -> None:
+        event_id = new_id()
         state.audit_events.append(
             ModuleAuditEvent(
-                id=new_id(),
+                id=event_id,
                 tenant_id=context.tenant_id,
                 actor_id=context.actor_id,
                 actor_type=context.principal_type,
                 action=f"m14.{action}",
                 aggregate_type=aggregate_type,
-                aggregate_id=aggregate_id,
+                # the wire AuditEvent.aggregate_id is a required UUID; list-level and
+                # security-denial audits have no single target aggregate, so they
+                # self-reference the audit event's own id rather than emitting null.
+                aggregate_id=aggregate_id if aggregate_id is not None else event_id,
                 occurred_at=self._clock(),
                 correlation_id=correlation_id,
                 outcome=outcome,

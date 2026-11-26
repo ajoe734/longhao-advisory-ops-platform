@@ -11,7 +11,7 @@ export function FinanceWorkbench({
   onResolve: (itemId: string, decision: "match" | "correct_mapping" | "accept_timing" | "reject" | "escalate", reasonCode: string) => void;
   onReload: () => void;
 }) {
-  const [reasonCode, setReasonCode] = useState("");
+  const [reasonCodes, setReasonCodes] = useState<Record<string, string>>({});
   if (state.kind === "loading") return <main aria-busy="true"><p role="status">財會工作台載入中…</p></main>;
   if (state.kind === "denied") return <main><h1>無權限</h1><p>此資源不存在或不在你的授權範圍。</p></main>;
   if (state.kind === "error") return <main><h1>資料載入失敗</h1><p role="alert">{state.problem.code}（{state.problem.correlation_id}）</p><button onClick={onReload}>重試</button></main>;
@@ -20,7 +20,8 @@ export function FinanceWorkbench({
   const page = state.value;
   const submit = (itemId: string, decision: "match" | "correct_mapping" | "accept_timing" | "reject" | "escalate") => (event: FormEvent) => {
     event.preventDefault();
-    if (reasonCode.trim()) onResolve(itemId, decision, reasonCode.trim());
+    const reasonCode = (reasonCodes[itemId] ?? "").trim();
+    if (reasonCode) onResolve(itemId, decision, reasonCode);
   };
   return (
     <main className="m14-stack">
@@ -53,6 +54,7 @@ export function FinanceWorkbench({
           <tbody>
             {page.items.map(item => {
               const allowed = isAllowed(item.allowed_actions, "resolve_reconciliation_item");
+              const formId = `resolve-form-${item.id}`;
               return (
                 <tr key={item.id}>
                   <td>{item.difference_type}</td>
@@ -60,14 +62,21 @@ export function FinanceWorkbench({
                   <td>{item.actual_amount.amount} {item.actual_amount.currency}</td>
                   <td>{item.state}</td>
                   <td>
-                    <form onSubmit={submit(item.id, "match")}>
+                    <form id={formId} onSubmit={submit(item.id, "match")}>
                       <label>
                         理由代碼
-                        <input required maxLength={80} value={reasonCode} onChange={event => setReasonCode(event.target.value)} />
+                        <input
+                          required
+                          maxLength={80}
+                          value={reasonCodes[item.id] ?? ""}
+                          onChange={event => setReasonCodes(previous => ({ ...previous, [item.id]: event.target.value }))}
+                        />
                       </label>
-                      <button type="submit" disabled={!allowed} title={!allowed ? "目前角色或狀態不允許覆核" : undefined}>核對一致</button>
-                      <button type="button" disabled={!allowed} onClick={submit(item.id, "escalate")}>升級</button>
                     </form>
+                  </td>
+                  <td>
+                    <button type="submit" form={formId} disabled={!allowed} title={!allowed ? "目前角色或狀態不允許覆核" : undefined}>核對一致</button>
+                    <button type="button" disabled={!allowed} onClick={submit(item.id, "escalate")}>升級</button>
                   </td>
                 </tr>
               );

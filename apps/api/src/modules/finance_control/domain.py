@@ -193,15 +193,15 @@ class InvoiceLine:
     tax_code: str
     tax_mapping_version: str
 
-    def to_api(self) -> dict[str, Any]:
+    def to_api(self, currency: str) -> dict[str, Any]:
         return {
             "contract_service_id": self.contract_service_id,
             "service_code": self.service_code,
             "service_period_start": wire_date(self.service_period_start),
             "service_period_end": wire_date(self.service_period_end),
             "quantity": self.quantity,
-            "untaxed_service_amount": money_to_api(self.untaxed_amount, "TWD"),
-            "tax_amount": money_to_api(self.tax_amount, "TWD"),
+            "untaxed_service_amount": money_to_api(self.untaxed_amount, currency),
+            "tax_amount": money_to_api(self.tax_amount, currency),
             "tax_code": self.tax_code,
             "tax_mapping_version": self.tax_mapping_version,
         }
@@ -259,7 +259,7 @@ class Invoice:
             "untaxed_service_amount": money_to_api(self.untaxed_amount, self.currency),
             "tax_amount": money_to_api(self.tax_amount, self.currency),
             "total_amount": money_to_api(self.total_amount, self.currency),
-            "lines": [line.to_api() for line in self.lines],
+            "lines": [line.to_api(self.currency) for line in self.lines],
         }
 
 

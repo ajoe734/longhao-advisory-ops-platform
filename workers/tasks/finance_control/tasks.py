@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
-from typing import Any, Protocol
+from datetime import datetime, timedelta
+from typing import Any, Callable, Protocol
 
 from modules.finance_control.domain import ActorContext, ConflictError, Job, utc_now
 from modules.finance_control.repository import InMemoryRepository, StoreState
@@ -65,10 +65,11 @@ class OutboxPublisher:
     so a payment/refund/accounting event is never silently re-sent.
     """
 
-    def __init__(self, repository: InMemoryRepository, publisher: EventPublisherPort, *, max_attempts: int = 5) -> None:
+    def __init__(self, repository: InMemoryRepository, publisher: EventPublisherPort, *, max_attempts: int = 5, clock: Callable[[], datetime] = utc_now) -> None:
         self.repository = repository
         self.publisher = publisher
         self.max_attempts = max_attempts
+        self._clock = clock
 
     def run_once(self, worker_id: str, limit: int = 50) -> WorkerResult:
         leased = self._lease(worker_id, limit)
@@ -95,16 +96,29 @@ class OutboxPublisher:
                 retried += int(not is_dead)
         return WorkerResult(processed, retried, dead)
 
+    def _reap_expired_leases(self, state: StoreState, now: datetime) -> None:
+        for event in state.outbox.values():
+            if event.status == "leased" and event.lease_until is not None and event.lease_until <= now:
+                event.attempt_count += 1
+                event.last_error_code = "lease_expired"
+                event.lease_owner = None
+                event.lease_until = None
+                if event.attempt_count >= self.max_attempts:
+                    event.status = "dead_letter"
+                else:
+                    event.status = "retry"
+                    event.next_attempt_at = now
+
     def _lease(self, worker_id: str, limit: int) -> list[tuple[str, str]]:
-        now = utc_now()
+        now = self._clock()
 
         def lease(state: StoreState) -> list[tuple[str, str]]:
+            self._reap_expired_leases(state, now)
             candidates = sorted(
                 (
                     (key, event) for key, event in state.outbox.items()
                     if event.status in {"pending", "retry"}
                     and (event.next_attempt_at is None or event.next_attempt_at <= now)
-                    and (event.lease_until is None or event.lease_until <= now)
                 ),
                 key=lambda item: (item[1].emitted_at, item[1].sequence_no),
             )[:limit]
@@ -131,7 +145,7 @@ class OutboxPublisher:
         self.repository.atomic(complete)
 
     def _fail(self, tenant_id: str, event_id: str, worker_id: str, code: str) -> bool:
-        now = utc_now()
+        now = self._clock()
 
         def fail(state: StoreState) -> bool:
             event = state.outbox[(tenant_id, event_id)]
@@ -155,18 +169,34 @@ class TaskRunner:
     """Lease and run M14 operational jobs (settlement parsing, scheduled
     purge checks, ...) with bounded retry and safe manual redrive."""
 
-    def __init__(self, repository: InMemoryRepository) -> None:
+    def __init__(self, repository: InMemoryRepository, *, clock: Callable[[], datetime] = utc_now) -> None:
         self.repository = repository
+        self._clock = clock
+
+    @staticmethod
+    def _reap_expired_leases(state: StoreState, now: datetime) -> None:
+        for job in state.jobs.values():
+            if job.status == "leased" and job.lease_until is not None and job.lease_until <= now:
+                job.attempt_count += 1
+                job.last_error_code = "lease_expired"
+                job.lease_owner = None
+                job.lease_until = None
+                job.updated_at = now
+                if job.attempt_count >= job.max_attempts:
+                    job.status = "dead_letter"
+                else:
+                    job.status = "retry"
+                    job.next_attempt_at = now
 
     def lease(self, worker_id: str, limit: int = 20) -> list[Job]:
-        now = utc_now()
+        now = self._clock()
 
         def lease_jobs(state: StoreState) -> list[Job]:
+            self._reap_expired_leases(state, now)
             selected = [
                 job for job in state.jobs.values()
                 if job.status in {"pending", "retry"}
                 and (job.next_attempt_at is None or job.next_attempt_at <= now)
-                and (job.lease_until is None or job.lease_until <= now)
             ][:limit]
             for job in selected:
                 job.status = "leased"
@@ -180,17 +210,18 @@ class TaskRunner:
     def redrive(self, tenant_id: str, job_id: str, reason: str) -> Job:
         if not reason.strip():
             raise ValueError("manual redrive requires a reason")
+        now = self._clock()
 
         def redrive_job(state: StoreState) -> Job:
             job = state.jobs[(tenant_id, job_id)]
             if job.status != "dead_letter":
                 raise ConflictError("only dead-letter jobs can be redriven", code="job_not_dead_letter")
             job.status = "retry"
-            job.next_attempt_at = utc_now()
+            job.next_attempt_at = now
             job.lease_owner = None
             job.lease_until = None
             job.redrive_reason = reason[:500]
-            job.updated_at = utc_now()
+            job.updated_at = now
             return job
 
         return self.repository.atomic(redrive_job)

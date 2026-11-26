@@ -76,6 +76,38 @@ def test_restricted_evidence_export_requires_compliance_clearance(m14, auditor):
     assert excinfo.value.code == "restricted_evidence_forbidden"
 
 
+def test_restricted_audit_events_mask_for_auditor_but_not_compliance_reviewer(m14, auditor):
+    """Compliance clearance ({compliance_reviewer, compliance_supervisor}), not
+    internal_auditor, gates visibility of aml_restricted audit entries -- the
+    same clearance create_evidence_export already requires for
+    include_restricted_aml. Previously list_audit_events inverted this: an
+    internal_auditor saw restricted entries unmasked while a compliance
+    reviewer did not."""
+    service = m14["service"]
+    m14["evidence"].add(TENANT, "00000000-0000-0000-0000-00000000c003")
+    # create_evidence_export requires internal_auditor to call it at all, *and*
+    # compliance clearance to request include_restricted_aml: both roles together.
+    cleared_auditor = ActorContext(TENANT, str(uuid4()), frozenset({"internal_auditor", "compliance_reviewer"}))
+    export = service.create_evidence_export(
+        cleared_auditor,
+        {"scope": "customer", "subject_id": str(uuid4()), "purpose": "regulatory_exam", "include_restricted_aml": True, "approval_record_id": "00000000-0000-0000-0000-00000000c003", "expires_at": "2027-01-01T00:00:00Z"},
+        idempotency_key="rbac-ee-restricted-001",
+    ).data
+    service.get_evidence_export(auditor, export["id"])  # records an aml_restricted audit event
+
+    masked = service.list_audit_events(auditor).data
+    restricted_entries = [item for item in masked["items"] if item["aggregate_type"] == "evidence_export" and item.get("action") == "restricted"]
+    assert restricted_entries, "an internal_auditor without compliance clearance must see the aml_restricted event masked"
+    assert restricted_entries[0]["aggregate_id"] != export["id"]
+    assert restricted_entries[0]["evidence_asset_ids"] == []
+
+    compliance_reviewer = ActorContext(TENANT, str(uuid4()), frozenset({"compliance_reviewer"}))
+    unmasked = service.list_audit_events(compliance_reviewer).data
+    unmasked_entries = [item for item in unmasked["items"] if item["aggregate_type"] == "evidence_export" and item["classification"] == "aml_restricted"]
+    assert unmasked_entries, "a compliance_reviewer must see the aml_restricted event unmasked"
+    assert unmasked_entries[0]["aggregate_id"] == export["id"]
+
+
 def test_minimized_automation_is_untrusted_and_has_no_resolution_authority(m14, operator):
     service = ReconciliationNarrationService(m14["repository"], LocalReconciliationAssistant())
     records = [

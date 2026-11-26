@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import pytest
 
-from modules.finance_control.domain import ConflictError, ForbiddenError, Payment, utc_now
+from modules.finance_control.domain import ConflictError, DependencyUnavailableError, ForbiddenError, Payment, utc_now
 from modules.finance_control.ports import RefundProviderResult, SettlementLine
 
 from conftest import (
@@ -30,10 +30,18 @@ def _evidence(fixture, *assets: str) -> None:
         fixture.add(TENANT, asset)
 
 
+def _envelope(event_type: str, producer: str, aggregate_type: str, aggregate_id: str, sequence: int, payload: dict) -> dict:
+    return {
+        "event_id": str(uuid4()), "event_type": event_type, "producer": producer, "tenant_id": TENANT,
+        "aggregate_type": aggregate_type, "aggregate_id": aggregate_id, "sequence_no": sequence, "payload": payload,
+    }
+
+
 EV1 = "00000000-0000-0000-0000-000000000001"
 EV2 = "00000000-0000-0000-0000-000000000002"
 EV3 = "00000000-0000-0000-0000-000000000003"
 EV4 = "00000000-0000-0000-0000-000000000004"
+EV5 = "00000000-0000-0000-0000-000000000005"
 
 
 def test_uat_m14_001_duplicate_payment_webhook_applies_once(m14, operator, payment_adapter_ctx):
@@ -70,6 +78,58 @@ def test_uat_m14_001_duplicate_payment_webhook_applies_once(m14, operator, payme
     assert len(outbox) == 1
     refreshed_invoice = state.invoices[(TENANT, invoice["id"])]
     assert refreshed_invoice.paid_amount == Decimal("1050")  # not doubled
+    assert refreshed_invoice.status == "paid"  # fully covered -> no second payment intent should be offerable
+
+
+def test_uat_m14_001b_payment_webhook_rejects_new_event_id_double_credit_downgrade_and_mismatch(m14, operator, payment_adapter_ctx):
+    """A second 'paid' webhook under a *different* event_id (a provider retry
+    that mints a new id, or two independent deliveries of the same fact) must
+    not double-credit the invoice or re-emit finance.payment_confirmed; a
+    stale downgrade to 'authorized' must be quarantined, not applied; and a
+    'paid' webhook with a mismatched amount must raise a reconciliation
+    exception instead of silently crediting the wrong figure."""
+    service = m14["service"]
+    _evidence(m14["evidence"], EV5)
+    customer_id, contract_id, contract_service_id = str(uuid4()), str(uuid4()), str(uuid4())
+    invoice = service.create_invoice(operator, invoice_body(customer_id=customer_id, contract_id=contract_id, contract_service_id=contract_service_id), idempotency_key="idem-inv-001b").data
+    intent = service.create_payment_intent(
+        operator,
+        {"application_id": str(uuid4()), "invoice_id": invoice["id"], "amount": money("1050"), "method": "card", "return_route": "application_progress"},
+        idempotency_key="idem-pi-001b",
+    ).data
+
+    def callback(event_id: str, *, status: str, amount: str) -> dict:
+        return {
+            "event_id": event_id, "provider_transaction_ref": "ptx-uat-001b", "payment_intent_id": intent["id"],
+            "status": status, "amount": money(amount), "provider_occurred_at": "2026-01-02T00:00:00Z", "evidence_asset_id": EV5,
+        }
+
+    first = service.receive_payment_webhook(payment_adapter_ctx, callback(str(uuid4()), status="paid", amount="1050"), idempotency_key="idem-wh-001b-1")
+    assert first.data["status"] == "accepted"
+
+    # a brand-new event_id reporting the *same* fact must be a no-op, not a second credit
+    second = service.receive_payment_webhook(payment_adapter_ctx, callback(str(uuid4()), status="paid", amount="1050"), idempotency_key="idem-wh-001b-2")
+    assert second.data["status"] == "duplicate"
+
+    # a stale/out-of-order downgrade must never move a paid payment backwards
+    third = service.receive_payment_webhook(payment_adapter_ctx, callback(str(uuid4()), status="authorized", amount="1050"), idempotency_key="idem-wh-001b-3")
+    assert third.data["status"] == "quarantined"
+
+    # an amount mismatch against the already-settled payment must raise an exception, not credit blindly
+    fourth = service.receive_payment_webhook(payment_adapter_ctx, callback(str(uuid4()), status="paid", amount="999"), idempotency_key="idem-wh-001b-4")
+    assert fourth.data["status"] == "quarantined"
+
+    state = m14["repository"].snapshot()
+    payment = state.payments[(TENANT, intent["id"])]
+    assert payment.status == "paid"
+    assert payment.version == 2  # only the first webhook ever mutated the payment
+    refreshed_invoice = state.invoices[(TENANT, invoice["id"])]
+    assert refreshed_invoice.paid_amount == Decimal("1050")  # never doubled by the duplicate or the mismatch
+    confirmed_events = [e for e in state.outbox.values() if e.aggregate_id == intent["id"] and e.event_type == "finance.payment_confirmed"]
+    assert len(confirmed_events) == 1
+    mismatches = [item for item in state.reconciliation_items.values() if item.payment_id == intent["id"] and item.difference_type == "amount_mismatch"]
+    assert len(mismatches) == 1
+    assert mismatches[0].expected_amount == Decimal("1050") and mismatches[0].actual_amount == Decimal("999")
 
 
 def test_uat_m14_002_prepayment_separated_from_recognized_revenue(m14, operator, checker, payment_adapter_ctx):
@@ -106,6 +166,50 @@ def test_uat_m14_002_prepayment_separated_from_recognized_revenue(m14, operator,
     refreshed_invoice = state.invoices[(TENANT, invoice["id"])]
     assert refreshed_invoice.paid_amount == Decimal("1050")
     assert len(state.revenue_recognitions) == 0  # no commission-eligible revenue booked yet
+
+    # a schedule whose contract was never confirmed accepted/effective must be excluded from
+    # recognition, not silently recognized, even when its period and cutoff otherwise match.
+    customer2, contract2, service2 = str(uuid4()), str(uuid4()), str(uuid4())
+    invoice2 = service.create_invoice(
+        operator,
+        invoice_body(customer_id=customer2, contract_id=contract2, contract_service_id=service2, period_start="2026-03-01", period_end="2026-04-01"),
+        idempotency_key="idem-inv-002b",
+    ).data
+    intent2 = service.create_payment_intent(
+        operator,
+        {"application_id": str(uuid4()), "invoice_id": invoice2["id"], "amount": money("1050"), "method": "card", "return_route": "application_progress"},
+        idempotency_key="idem-pi-002b",
+    ).data
+    service.receive_payment_webhook(
+        payment_adapter_ctx,
+        {
+            "event_id": str(uuid4()), "provider_transaction_ref": "ptx-uat-002b", "payment_intent_id": intent2["id"], "status": "paid",
+            "amount": money("1050"), "provider_occurred_at": "2026-03-02T00:00:00Z", "evidence_asset_id": EV2,
+        },
+        idempotency_key="idem-wh-002b",
+    )
+    run_unaccepted = service.run_revenue_recognition(
+        operator,
+        {"period_start": "2026-03-01", "period_end": "2026-04-01", "recognition_policy_version": RECOGNITION_POLICY_VERSION, "cutoff_at": "2026-03-15T00:00:00Z", "dry_run": False},
+        idempotency_key="idem-run-002b",
+    ).data
+    assert run_unaccepted["entry_count"] == 0
+    assert run_unaccepted["exception_count"] == 1  # excluded for lacking contract acceptance, not dropped silently
+
+    # once the contract is confirmed accepted/effective with service already started, the
+    # same schedule becomes eligible under a fresh run.
+    service.apply_application_company_decided(_envelope("application.company_decided", "M02", "application", str(uuid4()), 1, {"decision": "accept", "contract_id": contract2}))
+    service.apply_contract_effective(_envelope("contract.effective", "M02", "contract", contract2, 1, {
+        "contract_id": contract2, "customer_id": customer2,
+        "effective_at": "2026-02-15T00:00:00Z", "service_starts_at": "2026-02-15T00:00:00Z", "service_ends_at": "2027-02-15T00:00:00Z",
+    }))
+    run_accepted = service.run_revenue_recognition(
+        operator,
+        {"period_start": "2026-03-01", "period_end": "2026-04-01", "recognition_policy_version": RECOGNITION_POLICY_VERSION, "cutoff_at": "2026-03-20T00:00:00Z", "dry_run": False},
+        idempotency_key="idem-run-002c",
+    ).data
+    assert run_accepted["entry_count"] == 1
+    assert run_accepted["recognized_untaxed_total"]["amount"] == "1000"
 
 
 def test_uat_m14_003_settlement_fee_and_revenue_kept_in_separate_columns(m14, operator):
@@ -207,6 +311,54 @@ def test_uat_m14_005_refund_maker_checker_executor_separation_of_duties(m14, ope
     assert executed["state"] == "accounting_adjusted"
 
 
+def test_uat_m14_005b_refund_amount_cannot_exceed_original_payment_and_unapproved_webhook_is_quarantined(m14, operator, checker, executor):
+    service = m14["service"]
+    _evidence(m14["evidence"], EV5)
+    customer_id, payment_id = str(uuid4()), str(uuid4())
+    seed_paid_payment(m14["repository"], tenant=TENANT, payment_id=payment_id, customer_id=customer_id, amount=Decimal("100"), provider_transaction_id="ptx-uat-005b")
+
+    with pytest.raises(ConflictError) as excinfo:
+        service.request_refund(
+            operator,
+            {
+                "customer_id": customer_id, "contract_id": str(uuid4()), "original_payment_id": payment_id, "reason_code": "service_cancelled",
+                "requested_amount": money("9999"),
+                "allocations": [{"invoice_line_ref": str(uuid4()), "recognition_id": None, "unearned_amount": money("9999"), "earned_reversal_amount": money("0"), "tax_adjustment_amount": money("0")}],
+                "calculation_policy_version": "v1", "customer_request_evidence_id": EV5,
+            },
+            idempotency_key="idem-refund-005b-bad",
+        )
+    assert excinfo.value.code == "refund_amount_exceeds_payment"
+
+    refund = service.request_refund(
+        operator,
+        {
+            "customer_id": customer_id, "contract_id": str(uuid4()), "original_payment_id": payment_id, "reason_code": "service_cancelled",
+            "requested_amount": money("100"),
+            "allocations": [{"invoice_line_ref": str(uuid4()), "recognition_id": None, "unearned_amount": money("100"), "earned_reversal_amount": money("0"), "tax_adjustment_amount": money("0")}],
+            "calculation_policy_version": "v1", "customer_request_evidence_id": EV5,
+        },
+        idempotency_key="idem-refund-005b-ok",
+    ).data
+
+    # a refund that was never approved/executed must never be confirmed by a provider callback
+    callback = {
+        "event_id": str(uuid4()), "refund_id": refund["id"], "provider_refund_ref": "provref-005b-rogue", "status": "confirmed",
+        "amount": money("100"), "provider_occurred_at": "2026-01-02T00:00:00Z", "evidence_asset_id": EV5,
+    }
+    from conftest import PAYMENT_ADAPTER_ACTOR
+
+    from modules.finance_control.domain import ActorContext
+
+    payment_adapter_ctx = ActorContext(TENANT, PAYMENT_ADAPTER_ACTOR, frozenset({"payment_adapter"}), principal_type="service")
+    response = service.receive_refund_webhook(payment_adapter_ctx, callback, idempotency_key="idem-refund-webhook-005b")
+    assert response.data["status"] == "quarantined"
+
+    state = m14["repository"].snapshot()
+    persisted = state.refunds[(TENANT, refund["id"])]
+    assert persisted.status == "approval_pending"  # untouched by the rogue callback
+
+
 def test_uat_m14_006_refund_timeout_queries_before_resubmitting(m14, operator, checker, executor):
     service = m14["service"]
     _evidence(m14["evidence"], EV1)
@@ -240,6 +392,51 @@ def test_uat_m14_006_refund_timeout_queries_before_resubmitting(m14, operator, c
     third = service.execute_refund(executor, refund["id"], exec_body, expected_version=second["version"], idempotency_key="idem-exec-006-3").data
     assert third["state"] == "accounting_adjusted"
     assert m14["refund_provider"].submit_calls == ["prov-key-006"]
+
+
+def test_uat_m14_006b_refund_timeout_retry_with_a_new_provider_key_is_rejected(m14, operator, checker, executor):
+    """A true provider timeout (no outcome ever registered) must durably persist
+    provider_idempotency_key and status='submitted' *before* the provider call, so
+    that even a crash/redrive that forgets the original key and sends a new one on
+    retry is rejected -- the provider must never see two distinct submissions for
+    the same refund (UAT-M14-006)."""
+    service = m14["service"]
+    _evidence(m14["evidence"], EV5)
+    customer_id, payment_id = str(uuid4()), str(uuid4())
+    seed_paid_payment(m14["repository"], tenant=TENANT, payment_id=payment_id, customer_id=customer_id, amount=Decimal("300"), provider_transaction_id="ptx-uat-006b")
+    refund = service.request_refund(
+        operator,
+        {
+            "customer_id": customer_id,
+            "contract_id": str(uuid4()),
+            "original_payment_id": payment_id,
+            "reason_code": "service_cancelled",
+            "requested_amount": money("300"),
+            "allocations": [{"invoice_line_ref": str(uuid4()), "recognition_id": None, "unearned_amount": money("300"), "earned_reversal_amount": money("0"), "tax_adjustment_amount": money("0")}],
+            "calculation_policy_version": "v1",
+            "customer_request_evidence_id": EV5,
+        },
+        idempotency_key="idem-refund-006b",
+    ).data
+    approved = service.approve_refund(checker, refund["id"], {"decision": "approve", "reason_code": "ok"}, expected_version=1, idempotency_key="idem-approve-006b").data
+
+    # no outcome registered for this key at all -> a genuine, unresolved provider timeout
+    exec_body_1 = {"approval_record_id": refund["id"], "original_payment_id": payment_id, "provider_idempotency_key": "prov-timeout-key-1", "last_provider_status": "not_submitted"}
+    with pytest.raises(DependencyUnavailableError):
+        service.execute_refund(executor, refund["id"], exec_body_1, expected_version=approved["version"], idempotency_key="idem-exec-006b-1")
+
+    state = m14["repository"].snapshot()
+    persisted = state.refunds[(TENANT, refund["id"])]
+    assert persisted.provider_idempotency_key == "prov-timeout-key-1"  # durably recorded, not rolled back by the raised error
+    assert persisted.status == "submitted"
+    assert m14["refund_provider"].submit_calls == ["prov-timeout-key-1"]
+
+    # a retry that does not preserve the original provider key must never reach the provider again
+    exec_body_2 = {**exec_body_1, "provider_idempotency_key": "prov-timeout-key-2"}
+    with pytest.raises(ConflictError) as excinfo:
+        service.execute_refund(executor, refund["id"], exec_body_2, expected_version=persisted.version, idempotency_key="idem-exec-006b-2")
+    assert excinfo.value.code == "provider_idempotency_key_mismatch"
+    assert m14["refund_provider"].submit_calls == ["prov-timeout-key-1"]  # exactly one external submission, ever
 
 
 def test_uat_m14_007_refund_splits_unearned_and_earned_reversal(m14, operator):

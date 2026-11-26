@@ -57,16 +57,25 @@ COMMENT ON COLUMN finance.invoice_line.tax_mapping_version IS 'Approved finance 
 -- a specific difference_type enum and both expected/actual amounts; the
 -- existing source_type/source_ref/difference_amount stay as the append-only
 -- source-of-record for the dedup unique key and are populated by the mapper.
+-- settlement_id is always a real uuid (either the matched finance.settlement
+-- id, or a freshly minted one for unmatched/duplicate rows that never got a
+-- settlement row), matching the OpenAPI wire contract. ReconciliationItem.state
+-- also uses the application's own open/investigating/resolved/escalated
+-- vocabulary, not the baseline's provisional unmatched/matched/exception set.
 ALTER TABLE finance.reconciliation_item
-  ADD COLUMN IF NOT EXISTS settlement_id text,
+  ADD COLUMN IF NOT EXISTS settlement_id uuid,
   ADD COLUMN IF NOT EXISTS difference_type text,
   ADD COLUMN IF NOT EXISTS expected_amount numeric(20,6),
   ADD COLUMN IF NOT EXISTS actual_amount numeric(20,6),
+  ALTER COLUMN status SET DEFAULT 'open',
+  DROP CONSTRAINT IF EXISTS reconciliation_item_status_check,
+  ADD CONSTRAINT m14_reconciliation_item_status_ck
+    CHECK (status IN ('open','investigating','resolved','escalated')),
   ADD CONSTRAINT m14_reconciliation_difference_type_ck
     CHECK (difference_type IS NULL OR difference_type IN (
       'unmatched_payment','unmatched_settlement','amount_mismatch','duplicate','fee_mismatch','timing'
     )) NOT VALID;
-COMMENT ON COLUMN finance.reconciliation_item.settlement_id IS 'ReconciliationItem.settlement_id; mapper-populated alias of source_ref when source_type=settlement.';
+COMMENT ON COLUMN finance.reconciliation_item.settlement_id IS 'ReconciliationItem.settlement_id; the matched finance.settlement id, or a synthetic uuid when no settlement row exists (unmatched/duplicate).';
 COMMENT ON COLUMN finance.reconciliation_item.difference_type IS 'ReconciliationItem.difference_type; wire enum, independent of the legacy reason_code free text.';
 COMMENT ON COLUMN finance.reconciliation_item.expected_amount IS 'ReconciliationItem.expected_amount.';
 COMMENT ON COLUMN finance.reconciliation_item.actual_amount IS 'ReconciliationItem.actual_amount; actual_amount - expected_amount reconciles with the legacy difference_amount.';
@@ -97,6 +106,8 @@ COMMENT ON COLUMN finance.revenue_recognition.contract_service_id IS 'finance.re
 -- Refund also separates requested_amount (existing "amount" column) from
 -- approved_amount, and execute_refund needs a provider-call idempotency key
 -- that is distinct from and must outlive the Idempotency-Key request header.
+-- The baseline status CHECK also lacks 'accounting_adjusted', the state a
+-- confirmed refund settles into once its reversing journal posts.
 ALTER TABLE finance.refund
   ADD COLUMN IF NOT EXISTS contract_id uuid,
   ADD COLUMN IF NOT EXISTS customer_request_evidence_id uuid,
@@ -106,7 +117,13 @@ ALTER TABLE finance.refund
   ADD FOREIGN KEY (tenant_id, contract_id) REFERENCES contract.contract(tenant_id, id),
   ADD FOREIGN KEY (tenant_id, customer_request_evidence_id) REFERENCES core.object_asset(tenant_id, id),
   ADD CONSTRAINT m14_refund_approved_amount_ck
-    CHECK (approved_amount IS NULL OR approved_amount > 0) NOT VALID;
+    CHECK (approved_amount IS NULL OR approved_amount > 0) NOT VALID,
+  DROP CONSTRAINT IF EXISTS refund_status_check,
+  ADD CONSTRAINT m14_refund_status_ck
+    CHECK (status IN (
+      'requested','checking','approval_pending','approved','submitted','confirmed',
+      'failed','reconciliation_required','accounting_adjusted','closed','rejected'
+    ));
 CREATE UNIQUE INDEX IF NOT EXISTS ux_m14_refund_provider_idempotency_key
   ON finance.refund (tenant_id, provider_idempotency_key)
   WHERE provider_idempotency_key IS NOT NULL;

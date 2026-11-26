@@ -65,10 +65,24 @@ def test_controller_rejects_malformed_if_match(m14, operator):
     assert response.status == 422
 
 
+def _envelope(event_type: str, producer: str, aggregate_type: str, aggregate_id: str, sequence: int, payload: dict) -> dict:
+    return {
+        "event_id": str(uuid4()), "event_type": event_type, "producer": producer, "tenant_id": TENANT,
+        "aggregate_type": aggregate_type, "aggregate_id": aggregate_id, "sequence_no": sequence, "payload": payload,
+    }
+
+
 def test_m14_producer_envelopes_validate_against_shared_json_schemas(m14, operator, checker, payment_adapter_ctx):
     service = m14["service"]
     m14["evidence"].add(TENANT, "00000000-0000-0000-0000-0000000000e1")
     customer_id, contract_id, contract_service_id = str(uuid4()), str(uuid4()), str(uuid4())
+    # run_revenue_recognition only recognizes schedules whose contract is confirmed
+    # accepted/effective with service already started (UAT-M14-002 gate).
+    service.apply_application_company_decided(_envelope("application.company_decided", "M02", "application", str(uuid4()), 1, {"decision": "accept", "contract_id": contract_id}))
+    service.apply_contract_effective(_envelope("contract.effective", "M02", "contract", contract_id, 1, {
+        "contract_id": contract_id, "customer_id": customer_id,
+        "effective_at": "2025-12-01T00:00:00Z", "service_starts_at": "2025-12-01T00:00:00Z", "service_ends_at": "2027-12-01T00:00:00Z",
+    }))
     invoice = service.create_invoice(operator, invoice_body(customer_id=customer_id, contract_id=contract_id, contract_service_id=contract_service_id), idempotency_key="contract-inv-001").data
     intent = service.create_payment_intent(
         operator, {"application_id": str(uuid4()), "invoice_id": invoice["id"], "amount": money("1050"), "method": "card", "return_route": "application_progress"},
@@ -254,6 +268,53 @@ def test_outbox_worker_uses_lease_bounded_retry_and_no_duplicate_publish(m14, op
     assert len(bus.envelopes) == 1
     third = publisher.run_once("worker-c")
     assert third.processed == 0 and len(bus.envelopes) == 1
+
+
+def test_outbox_worker_reclaims_a_lease_abandoned_by_a_crashed_worker(m14):
+    m14["evidence"].add(TENANT, "00000000-0000-0000-0000-0000000000ea")
+    service = m14["service"]
+    service.create_legal_hold(
+        ActorContext(TENANT, str(uuid4()), frozenset({"compliance_supervisor"})),
+        {"scope": "customer", "subject_ids": [str(uuid4())], "reason_code": "audit", "authority_evidence_asset_id": "00000000-0000-0000-0000-0000000000ea", "review_due_at": "2027-01-01T00:00:00Z"},
+        idempotency_key="worker-hold-002",
+    )
+    bus = LocalEventBus()
+    clock_state = {"now": NOW}
+    publisher = OutboxPublisher(m14["repository"], bus, max_attempts=3, clock=lambda: clock_state["now"])
+
+    # worker-a leases the row but crashes before ever calling _complete/_fail
+    leased = publisher._lease("worker-a", 50)
+    assert len(leased) == 1
+
+    # before the 30s lease expires, nobody else may steal it
+    clock_state["now"] = NOW + timedelta(seconds=10)
+    assert publisher._lease("worker-b", 50) == []
+
+    # once the lease has expired, a different worker reclaims and publishes it
+    clock_state["now"] = NOW + timedelta(seconds=31)
+    second = publisher.run_once("worker-b")
+    assert second.processed == 1
+    assert len(bus.envelopes) == 1
+
+
+def test_consumer_applies_audit_legal_hold_changed_idempotently(m14):
+    service = m14["service"]
+    m14["evidence"].add(TENANT, "00000000-0000-0000-0000-0000000000eb")
+    hold = service.create_legal_hold(
+        ActorContext(TENANT, str(uuid4()), frozenset({"compliance_supervisor"})),
+        {"scope": "customer", "subject_ids": [str(uuid4())], "reason_code": "audit", "authority_evidence_asset_id": "00000000-0000-0000-0000-0000000000eb", "review_due_at": "2027-01-01T00:00:00Z"},
+        idempotency_key="consumer-hold-001",
+    ).data
+
+    consumer = M14EventConsumer(service)
+    payload = {"legal_hold_id": hold["id"], "state": "active", "scope": "customer"}
+    envelope = _incoming("audit.legal_hold_changed", "M14", "legal_hold", hold["id"], 1, payload)
+    first = consumer.consume(envelope)
+    assert first.status == "applied"
+    assert consumer.consume(envelope).status == "duplicate"  # redelivery is a no-op, not a second apply
+
+    state = m14["repository"].snapshot()
+    assert state.legal_holds[(TENANT, hold["id"])].status == "active"
 
 
 def test_production_composition_refuses_fake_adapters():
