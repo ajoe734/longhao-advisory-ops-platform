@@ -170,11 +170,13 @@ def test_consumer_deduplicates_checks_hash_and_recovers_sequence_gap(m04, office
     assert consumer.consume(seq1).status == "applied"
 
     decided_payload = {"submission_id": str(uuid4()), "application_id": APPLICATION_A, "decision": "approved", "next_review_due_at": None}
+    # M04 does not subscribe to kyc.refresh_required, so gaps in the M03 submission
+    # stream are expected: apply the newer event, ignore a later-arriving older one.
     seq3 = incoming("kyc.decision_recorded", "M03", "kyc_submission", APPLICATION_A, 3, decided_payload)
-    assert consumer.consume(seq3).status == "retry"
-    seq2 = incoming("kyc.decision_recorded", "M03", "kyc_submission", APPLICATION_A, 2, decided_payload)
-    assert consumer.consume(seq2).status == "applied"
     assert consumer.consume(seq3).status == "applied"
+    assert consumer.consume(seq3).status == "duplicate"
+    seq2 = incoming("kyc.decision_recorded", "M03", "kyc_submission", APPLICATION_A, 2, decided_payload)
+    assert consumer.consume(seq2).result_code == "stale_sequence_ignored"
 
 
 def test_consumer_rejects_wrong_schema_and_isolates_tenant(m04):

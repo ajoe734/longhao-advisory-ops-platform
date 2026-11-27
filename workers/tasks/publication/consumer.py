@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from longhao_platform.event_ordering import is_sequence_gap
+
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -69,7 +71,7 @@ class M08EventConsumer:
                 ),
                 default=0,
             )
-            if envelope["sequence_no"] > last_sequence + 1:
+            if is_sequence_gap("M08", envelope, last_sequence):
                 state.inbox[key] = self._receipt(envelope, "retry", "sequence_gap", None)
                 return ConsumeResult("retry", "sequence_gap")
             if envelope["sequence_no"] <= last_sequence:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from longhao_platform.event_ordering import is_sequence_gap
+
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -1758,7 +1760,7 @@ class FinanceControlService:
                 ),
                 default=0,
             )
-            if sequence_no > last_sequence + 1:
+            if is_sequence_gap("M14", envelope, last_sequence):
                 state.inbox[key] = InboxReceipt(tenant_id, "M14", producer, event_id, expected_type, payload_sha256, aggregate_id, sequence_no, "retry", "sequence_gap", None)
                 return {"status": "retry", "result_code": "sequence_gap"}
             if sequence_no <= last_sequence:

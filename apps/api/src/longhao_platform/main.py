@@ -11,6 +11,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the Longhao modular monolith API.")
     parser.add_argument("--check", action="store_true", help="Load contracts/modules and print readiness.")
     parser.add_argument("--port", type=int, help="Override LONGHAO_PORT for this process.")
+    parser.add_argument("--seed", choices=["demo"], help="Development only: create synthetic demo data through the API before serving.")
     args = parser.parse_args(argv)
     config = PlatformConfig.from_env()
     if args.port is not None:
@@ -33,7 +34,20 @@ def main(argv: list[str] | None = None) -> int:
 
     from longhao_platform.http import create_app
 
-    uvicorn.run(create_app(runtime), host=config.bind_host, port=config.port, log_config=None)
+    app = create_app(runtime)
+    if args.seed:
+        if config.environment == "production" or not config.synthetic_providers:
+            parser.error("--seed is only available in development with synthetic providers")
+        from longhao_platform.synthetic_seed import seed_app
+
+        summary = seed_app(app, runtime)
+        print(json.dumps({
+            "seeded_customers": [{k: row.get(k) for k in ("display_name", "stage", "customer_id")} for row in summary["customers"]],
+            "requests": summary["requests"],
+            "relayed_events": summary["relayed_events"],
+            "failures": len(summary["failures"]),
+        }, ensure_ascii=False))
+    uvicorn.run(app, host=config.bind_host, port=config.port, log_config=None)
     return 0
 
 

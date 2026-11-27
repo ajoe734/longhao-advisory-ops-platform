@@ -154,12 +154,15 @@ def test_consumer_deduplicates_checks_hash_and_recovers_sequence_gap(m06):
         consumer.consume(tampered)
 
     candidate_012 = "30000000-0000-0000-0000-000000000012"
+    # M06 subscribes to research.candidate_validated only, not the whole M05 candidate
+    # stream, so a jump in sequence_no is expected and must not block (events/README.md).
     seq2 = candidate_validated_envelope(candidate_012, "40000000-0000-0000-0000-000000000012", sequence=2)
-    assert consumer.consume(seq2).status == "retry"
+    assert consumer.consume(seq2).result_code == "case_created"
     seq1 = candidate_validated_envelope(candidate_012, "40000000-0000-0000-0000-000000000013", sequence=1, validation_result="quarantined")
-    assert consumer.consume(seq1).status == "applied"
-    assert consumer.consume(seq2).status == "applied"
+    assert consumer.consume(seq1).result_code == "stale_sequence_ignored"
+    assert consumer.consume(seq2).status == "duplicate"
     assert m06["repository"].snapshot().cases.get((TENANT, "40000000-0000-0000-0000-000000000012")) is not None
+    assert m06["repository"].snapshot().cases.get((TENANT, "40000000-0000-0000-0000-000000000013")) is None
 
 
 def test_consumer_rejects_wrong_schema_and_isolates_tenant(m06):
