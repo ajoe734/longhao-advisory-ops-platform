@@ -42,13 +42,9 @@ editable 時多一層保險。）
 
 ## 已知限制
 
-- 全部測試直接呼叫 `CrmService`／`M10EventConsumer`，不經過
-  `longhao_platform.http` 的 FastAPI router；本模組尚未提供
-  `plugin.py`／`register(runtime)`（見
-  `apps/api/src/modules/crm/README.md`），`longhao_platform.app.SyntheticAuthenticator`
-  目前也只提供 `platform_admin`/`internal_auditor`/`platform_worker`，沒有
-  `sales`/`sales_supervisor`/`marketing`/`service_agent` 的測試
-  principal，無法端到端走完整授權路徑。
+- 本目錄測試直接呼叫 `CrmService`／`M10EventConsumer`，不經過
+  `longhao_platform.http` 的 FastAPI router；平台層的 HTTP 組裝與合成身分授權由
+  `qa/test_module_integration.py`、`qa/test_synthetic_identities.py` 覆蓋。
 - `core.object_asset` 存在性以 `FakeEvidencePort` 模擬；
   `database/proposals/M10` 尚未併入正式 migration 前，無法對真實
   PostgreSQL 執行對應 constraint 測試。
