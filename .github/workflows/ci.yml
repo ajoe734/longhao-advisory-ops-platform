@@ -23,7 +23,7 @@ jobs:
       - run: python scripts/validate_docs.py
       - run: python scripts/validate_contracts.py
       - run: python scripts/validate_sql.py
-      - run: python -m pytest -q mocks/test_server.py qa/test_platform_runtime.py qa/test_cross_module_runtime.py qa/test_ui_registry.py qa/test_module_integration.py qa/test_synthetic_identities.py qa/test_event_ordering.py
+      - run: python -m pytest -q mocks/test_server.py qa/test_platform_runtime.py qa/test_cross_module_runtime.py qa/test_ui_registry.py qa/test_module_integration.py qa/test_synthetic_identities.py qa/test_event_ordering.py qa/test_synthetic_world.py
       - name: Module test suites (each directory separately; test file names repeat across modules)
         run: |
           status=0

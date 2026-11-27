@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from longhao_platform.app import PlatformRuntime, SyntheticAuthenticator
+from longhao_platform.synthetic_world import existing_world
 from longhao_platform.types import PlatformError, Principal, Request
 
 
@@ -27,6 +28,10 @@ def create_app(runtime: PlatformRuntime | None = None) -> FastAPI:
         correlation_id = str(uuid4())
         request.state.correlation_id = correlation_id
         response = await call_next(request)
+        world = existing_world(runtime)
+        if world is not None and request.method not in {"GET", "HEAD", "OPTIONS"}:
+            # Development only: deliver the events this request produced to subscribed modules.
+            world.tick()
         response.headers["X-Correlation-Id"] = correlation_id
         response.headers["Cache-Control"] = "no-store"
         return response
@@ -70,6 +75,11 @@ def create_app(runtime: PlatformRuntime | None = None) -> FastAPI:
         @app.get("/internal/platform/dev-identities", include_in_schema=False)
         async def dev_identities():
             return {"tenant_id": str(runtime.authenticator.tenant_id()), "items": runtime.authenticator.personas()}
+
+    if existing_world(runtime) is not None:
+        @app.get("/internal/platform/world", include_in_schema=False)
+        async def world_status(_principal: Principal = Depends(operations_reader)):
+            return existing_world(runtime).status()
 
     @app.get("/internal/platform/modules", include_in_schema=False)
     async def modules(_principal: Principal = Depends(operations_reader)):
