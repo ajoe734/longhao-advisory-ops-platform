@@ -105,3 +105,17 @@ def test_signed_research_is_published_automatically_and_delivered_to_entitled_me
     assert [row["action"] for row in entitled] == ["entry"]
     not_entitled = client.get("/api/v1/member/feed", headers=auth("member-b")).json()["items"]
     assert not_entitled == []
+
+
+def test_synthetic_evidence_upload_needs_an_identity_and_reaches_every_module(seeded):
+    runtime, app, _summary = seeded
+    client = TestClient(app)
+    assert client.post("/internal/platform/world/assets", json={"label": "x"}).status_code == 401
+    bad = client.post("/internal/platform/world/assets", json={"label": "x", "classification": "public"}, headers=auth("kyc-reviewer"))
+    assert bad.status_code == 422
+    created = client.post("/internal/platform/world/assets", json={"label": "kyc evidence"}, headers=auth("kyc-reviewer"))
+    assert created.status_code == 201
+    asset_id = created.json()["asset_id"]
+    world = existing_world(runtime)
+    assert world.service("M02", "applications") is not None
+    assert asset_id in world.assets

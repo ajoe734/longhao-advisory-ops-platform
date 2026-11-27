@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { currentPath, fetchReadiness, matchScreen, screens, type Readiness } from "./platform";
+import { SCREENS } from "./screens";
+import { authorizedFetch, fetchDevIdentities, storeIdentityKey, storedIdentityKey, type DevIdentity } from "./shell/runtime";
 import "./styles.css";
 
 type LoadState =
@@ -17,9 +19,29 @@ function useHashPath(): string {
   return path;
 }
 
+function useDevIdentity(): [DevIdentity[] | null, DevIdentity | null, (key: string) => void] {
+  const [identities, setIdentities] = useState<DevIdentity[] | null>(null);
+  // ?as=<identity key> selects an identity directly (shareable demo links); otherwise the stored one.
+  const [selectedKey, setSelectedKey] = useState<string | null>(() => {
+    const requested = new URLSearchParams(window.location.search).get("as");
+    if (requested) storeIdentityKey(requested);
+    return requested ?? storedIdentityKey();
+  });
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchDevIdentities(controller.signal).then(setIdentities).catch(() => setIdentities(null));
+    return () => controller.abort();
+  }, []);
+  const selected = identities?.find((row) => row.key === selectedKey) ?? identities?.find((row) => row.key === "platform-admin") ?? null;
+  const choose = (key: string) => { storeIdentityKey(key); setSelectedKey(key); };
+  return [identities, selected, choose];
+}
+
 export function App() {
   const path = useHashPath();
   const [loadState, setLoadState] = useState<LoadState>({kind: "loading"});
+  const [identities, identity, chooseIdentity] = useDevIdentity();
+  const fetcher = useMemo(() => authorizedFetch(identity), [identity]);
   const selected = matchScreen(path);
   const groups = useMemo(() => [...new Set(screens.map((screen) => screen.group))], []);
 
@@ -39,6 +61,8 @@ export function App() {
     selected?.moduleId === "SHARED" || loadState.kind !== "loaded"
       ? undefined
       : loadState.readiness.modules?.find((module) => module.module_id === selected?.moduleId);
+  const ScreenView = selected ? SCREENS[selected.id] : undefined;
+  const moduleReady = selected?.moduleId === "SHARED" || moduleStatus?.status === "loaded";
 
   return (
     <>
@@ -49,13 +73,29 @@ export function App() {
             <p className="eyebrow">Longhao advisory operations</p>
             <h1>龍好營運管理平台</h1>
           </div>
-          <div className={`status ${loadState.kind}`} role="status" aria-live="polite">
-            {loadState.kind === "loading" && "正在檢查模組…"}
-            {loadState.kind === "error" && `狀態服務失敗・${loadState.reference}`}
-            {loadState.kind === "loaded" &&
-              (loadState.readiness.status === "ready"
-                ? "14/14 模組已載入"
-                : `${loadState.readiness.loaded_modules}/14 已載入・${loadState.readiness.status === "degraded" ? "本機降級模式" : "平台未就緒"}`)}
+          <div className="topbar-tools">
+            {identities && (
+              <label className="identity">
+                <span>目前身分（開發環境）</span>
+                <select value={identity?.key ?? ""} onChange={(event) => chooseIdentity(event.target.value)}>
+                  {[...new Set(identities.map((row) => row.group))].map((group) => (
+                    <optgroup key={group} label={group}>
+                      {identities.filter((row) => row.group === group).map((row) => (
+                        <option key={row.key} value={row.key}>{row.label}（{row.roles.join(", ")}）</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </label>
+            )}
+            <div className={`status ${loadState.kind}`} role="status" aria-live="polite">
+              {loadState.kind === "loading" && "正在檢查模組…"}
+              {loadState.kind === "error" && `狀態服務失敗・${loadState.reference}`}
+              {loadState.kind === "loaded" &&
+                (loadState.readiness.status === "ready"
+                  ? "14/14 模組已載入"
+                  : `${loadState.readiness.loaded_modules}/14 已載入・${loadState.readiness.status === "degraded" ? "本機降級模式" : "平台未就緒"}`)}
+            </div>
           </div>
         </header>
         <aside className="sidebar" aria-label="主要導覽">
@@ -80,7 +120,6 @@ export function App() {
           <section className="page-heading">
             <p className="eyebrow">{selected?.id ?? "ROUTE-NOT-FOUND"}・{selected?.moduleId ?? "共用"}</p>
             <h2>{selected?.title ?? "找不到畫面"}</h2>
-            <p>共用 shell 僅呈現整合狀態；模組功能在對應 workstream 合併後登錄。</p>
           </section>
           {!selected && (
             <section className="panel error" role="alert">
@@ -94,23 +133,24 @@ export function App() {
           {selected && loadState.kind === "error" && (
             <section className="panel error" role="alert"><h3>無法載入</h3><p>這不是空資料。參考代碼：{loadState.reference}</p></section>
           )}
-          {selected && loadState.kind === "loaded" && (
+          {selected && loadState.kind === "loaded" && !moduleReady && (
             <section className="panel">
               <h3>模組狀態</h3>
-              {selected.moduleId === "SHARED" ? (
-                <p>平台共用功能；目前載入 {loadState.readiness.loaded_modules}/14 個模組。</p>
-              ) : moduleStatus ? (
+              {moduleStatus ? (
                 <>
                   <p><strong>{moduleStatus.module_id} {moduleStatus.title}</strong></p>
-                  <span className={`badge ${moduleStatus.status}`}>
-                    {moduleStatus.status === "loaded" ? "已整合" : moduleStatus.status === "broken" ? "載入失敗" : "尚未整合"}
-                  </span>
+                  <span className={`badge ${moduleStatus.status}`}>{moduleStatus.status === "broken" ? "載入失敗" : "尚未整合"}</span>
                   {moduleStatus.error_code && <p>參考代碼：{moduleStatus.error_code}</p>}
                 </>
               ) : (
                 <p>模組明細在此環境不公開；請由授權的營運狀態端點查詢。</p>
               )}
             </section>
+          )}
+          {selected && ScreenView && loadState.kind === "loaded" && moduleReady && (
+            <div className="screen" key={`${identity?.key ?? "anonymous"}:${path}`}>
+              <ScreenView path={path} template={selected.path} fetcher={fetcher} identity={identity} />
+            </div>
           )}
           <section className="panel notice">
             <h3>安全執行模式</h3>

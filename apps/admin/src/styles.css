@@ -53,3 +53,17 @@ main { max-width: 72rem; width: 100%; padding: 2.25rem clamp(1.2rem, 4vw, 4rem);
   .sidebar nav { display: flex; gap: .75rem; overflow-x: auto; }
   .nav-group { min-width: 13rem; }
 }
+
+/* admin shell: identity switcher, lookups, API gap notes, record tables */
+.topbar-tools { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+.identity { display: grid; gap: 0.2rem; font-size: 0.85rem; }
+.identity select { min-width: 18rem; padding: 0.35rem; }
+.lookup { display: flex; gap: 0.5rem; align-items: end; flex-wrap: wrap; margin: 0.5rem 0; }
+.lookup input { min-width: 22rem; }
+.api-gap { border-left: 4px solid #b26a00; background: #fff6e5; padding: 0.5rem 0.75rem; margin: 0.5rem 0; }
+.action-error { border-left: 4px solid #b00020; background: #fdecee; padding: 0.5rem 0.75rem; }
+table.data { border-collapse: collapse; width: 100%; margin: 0.5rem 0 1rem; font-size: 0.9rem; }
+table.data caption { text-align: left; font-weight: 600; padding: 0.25rem 0; }
+table.data th, table.data td { border-bottom: 1px solid #ddd; padding: 0.35rem 0.5rem; text-align: left; }
+pre.json { overflow: auto; max-height: 28rem; background: #f6f6f6; padding: 0.75rem; }
+.screen { display: grid; gap: 1rem; }
