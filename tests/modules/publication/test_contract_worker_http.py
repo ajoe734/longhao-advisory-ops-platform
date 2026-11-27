@@ -228,7 +228,7 @@ def test_fastapi_router_dispatches_to_the_controller(m08, analyst):
 
     router = create_fastapi_router(m08["service"], lambda request: analyst)
     app = FastAPI()
-    app.include_router(router)
+    app.include_router(router, prefix="/api/v1")
     client = TestClient(app)
 
     response = client.post(

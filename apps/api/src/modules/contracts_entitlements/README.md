@@ -4,7 +4,7 @@
 
 ## 架構決策
 
-- 沿用 M01 的獨立模組模式：本模組擁有自己的 `InMemoryRepository`／`StoreState`（`repository.py`），而非直接掛上 `longhao_platform.store.InMemoryAtomicStore`。`app.py`／`bus.py` 是共用 composition root 的參考行為；尚未有模組（包含 M01、M02）註冊 `plugin.py`，production PostgreSQL repository 與路由整合由 integration steward 在契約凍結後補上。
+- 沿用 M01 的獨立模組模式：本模組擁有自己的 `InMemoryRepository`／`StoreState`（`repository.py`），而非直接掛上 `longhao_platform.store.InMemoryAtomicStore`。`app.py`／`bus.py` 是共用 composition root 的參考行為；`plugin.py` 以本模組的 `InMemoryRepository` 與 fake ports 註冊 router（僅限非 production）；production PostgreSQL repository 與跨模組 port 由 integration steward 在契約凍結後補上。
 - Gate 狀態（KYC、適合度、AML clearance、付款）一律透過 `ApplicationSourcePort`／`KycPort`／`SuitabilityPort`／`ClearancePort`／`PaymentPort` 即時查詢，對應 `database/migrations/0004_database_roles.sql` 已授予 `longhao_m02` 的 SELECT 權限（`customer.application`、`customer.customer`、`kyc.submission`、`kyc.suitability_assessment`、`aml.business_clearance`、`finance.payment`）。事件只觸發重查（見 `workers/tasks/contracts_entitlements/consumer.py`），不被當成已獲授權的證據。
 - `contract.contract` 只在 `decide_company_acceptance(decision=accept)` 成功時建立（而非簽署時）；`contract.customer_signature`／`SignatureSession` 在簽署階段先行存在。這與 `database/catalog.json` 的 `contract.contract` CHECK（`status IN ('accepted','effective')` 要求 `company_acceptance_id IS NOT NULL`）一致。
 - `evaluate_entitlements` 的回應是「本次評估批次」的單一 `EntitlementDecision` 投影，彙總該次所有受影響的 entitlement；production schema（`contract.entitlement_decision`）每個 entitlement 各一列，由 repository/read-model adapter 在落地時展開，詳見 `database/README.md` 的 API/資料表 mapper 慣例。

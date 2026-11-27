@@ -206,7 +206,7 @@ def create_fastapi_router(service: AgoraReviewService, context_resolver: Callabl
         raise RuntimeError("FastAPI must be supplied by the shared application build") from exc
 
     controller = M06Controller(service)
-    router = APIRouter(prefix="/api/v1", tags=["M06"])
+    router = APIRouter(tags=["M06"])
 
     def endpoint_for(operation_id: str, method: str) -> Callable[..., Any]:
         async def endpoint(request: Request) -> JSONResponse:

@@ -198,7 +198,7 @@ def create_fastapi_router(service: ContractsEntitlementsService, webhook_verifie
         raise RuntimeError("FastAPI must be supplied by the shared application build") from exc
 
     controller = M02Controller(service, webhook_verifier)
-    router = APIRouter(prefix="/api/v1", tags=["M02"])
+    router = APIRouter(tags=["M02"])
 
     def endpoint_for(operation_id: str, method: str) -> Callable[..., Any]:
         async def endpoint(request: Request) -> JSONResponse:

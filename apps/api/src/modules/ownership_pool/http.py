@@ -185,7 +185,7 @@ def create_fastapi_router(service: OwnershipPoolService, context_resolver: Calla
         raise RuntimeError("FastAPI must be supplied by the shared application build") from exc
 
     controller = M11Controller(service)
-    router = APIRouter(prefix="/api/v1", tags=["M11"])
+    router = APIRouter(tags=["M11"])
 
     def endpoint_for(operation_id: str, method: str) -> Callable[..., Any]:
         async def endpoint(request: Request) -> JSONResponse:

@@ -23,7 +23,16 @@ jobs:
       - run: python scripts/validate_docs.py
       - run: python scripts/validate_contracts.py
       - run: python scripts/validate_sql.py
-      - run: python -m pytest -q mocks/test_server.py qa/test_platform_runtime.py qa/test_cross_module_runtime.py qa/test_ui_registry.py
+      - run: python -m pytest -q mocks/test_server.py qa/test_platform_runtime.py qa/test_cross_module_runtime.py qa/test_ui_registry.py qa/test_module_integration.py
+      - name: Module test suites (each directory separately; test file names repeat across modules)
+        run: |
+          status=0
+          for suite in tests/modules/*/; do
+            echo "::group::$suite"
+            python -m pytest -q -p no:cacheprovider "$suite" || status=1
+            echo "::endgroup::"
+          done
+          exit $status
       - run: python -m longhao_platform.main --check
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
