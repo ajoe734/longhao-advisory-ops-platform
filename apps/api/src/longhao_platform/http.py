@@ -81,6 +81,21 @@ def create_app(runtime: PlatformRuntime | None = None) -> FastAPI:
         async def world_status(_principal: Principal = Depends(operations_reader)):
             return existing_world(runtime).status()
 
+        @app.post("/internal/platform/world/assets", include_in_schema=False)
+        async def register_synthetic_asset(request: FastAPIRequest, principal: Principal = Depends(current_principal)):
+            """Development only: stand-in for an upload to the object store, so a signed-in
+            operator can attach synthetic evidence to an action from the admin shell."""
+            body = await request.json()
+            label = str(body.get("label") or "admin shell evidence")[:160]
+            classification = str(body.get("classification") or "internal")
+            if classification not in {"internal", "customer_confidential", "aml_restricted", "research_confidential"}:
+                raise PlatformError(422, "ASSET_CLASSIFICATION_INVALID")
+            record = existing_world(runtime).register_asset(
+                f"{label} by {principal.subject} {uuid4()}", classification=classification,
+                customer_id=body.get("customer_id"), content=body.get("content"),
+            )
+            return JSONResponse(status_code=201, content=record.public_view())
+
     @app.get("/internal/platform/modules", include_in_schema=False)
     async def modules(_principal: Principal = Depends(operations_reader)):
         status, body = runtime.readiness(disclose_modules=True)
