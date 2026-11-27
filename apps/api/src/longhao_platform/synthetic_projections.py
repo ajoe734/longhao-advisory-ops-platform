@@ -158,7 +158,136 @@ def project_payment_condition(world: SyntheticWorld, envelope: dict[str, Any]) -
         payments.set_condition(world.tenant_id, payload["application_id"], payload["payment_id"])
 
 
+# ------------------------------------------------- research -> publication
+def project_validated_candidate_to_m07(world: SyntheticWorld, envelope: dict[str, Any]) -> None:
+    """M07 only drafts reports for an existing review case and a known candidate lineage."""
+    payload = envelope["payload"]
+    if payload.get("validation_result") not in (None, "validated", "passed", "accepted"):
+        return
+    review_cases = world.service("M07", "review_cases")
+    candidates = world.service("M07", "candidates")
+    if review_cases is not None and payload.get("review_case_id"):
+        review_cases.add(world.tenant_id, payload["review_case_id"])
+    if candidates is not None:
+        candidates.add(world.tenant_id, payload["candidate_id"])
+
+
+def _active_entitlements(world: SyntheticWorld) -> list[Any]:
+    return _read(world, "M02", lambda state: [
+        row for (tenant, _), row in state.entitlements.items() if tenant == world.tenant_id and row.status == "active"
+    ]) or []
+
+
+def project_signed_report_to_m08(world: SyntheticWorld, envelope: dict[str, Any]) -> None:
+    """Before M08 publishes: the signed bundle it verifies and the audience it resolves.
+
+    The bundle is registered for every M08 recommendation version that cites
+    the signed report version (M08's own matching rule). Audience candidates
+    are the currently active M02 entitlements.
+    """
+    payload = envelope["payload"]
+    bundles = world.service("M08", "report_bundles")
+    audiences = world.service("M08", "audiences")
+    if bundles is None or audiences is None:
+        return
+    from modules.publication.ports import AudienceCandidate
+
+    report_version_id = payload["report_version_id"]
+    versions, series = _read(world, "M08", lambda state: (
+        [v for (t, _), v in state.versions.items() if t == world.tenant_id and report_version_id in v.supporting_report_version_ids],
+        {k[1]: s for k, s in state.series.items() if k[0] == world.tenant_id},
+    ))
+    candidates = tuple(
+        AudienceCandidate(customer_id=row.customer_id, entitlement_id=row.id, contract_id=row.contract_id,
+                          entitlement_version=row.version, eligible=True, reason_code="active_entitlement")
+        for row in _active_entitlements(world)
+    )
+    for version in versions:
+        bundles.register(world.tenant_id, report_version_id, version.id,
+                         content_sha256=version.content_sha256, report_content_sha256=payload["report_content_sha256"])
+        # M08's fake derives its own manifest digest; the signed manifest is the one M07 actually
+        # signed (carried by report.signature_verified), so that is what the bundle must present.
+        bundles._manifests[(world.tenant_id, report_version_id)] = {
+            "report_content_sha256": payload["report_content_sha256"],
+            "bundle_manifest_sha256": payload["bundle_manifest_sha256"],
+        }
+        instrument_ref = series[version.series_id].instrument_ref
+        audiences.set_candidates(world.tenant_id, instrument_ref, candidates)
+
+
+def _entitlement_status(world: SyntheticWorld, entitlement_id: str) -> Any:
+    from modules.legendflow_delivery.ports import EntitlementStatus
+
+    row = _read(world, "M02", lambda state: state.entitlements.get((world.tenant_id, entitlement_id)))
+    if row is None:
+        return None
+    return EntitlementStatus(entitlement_id=row.id, customer_id=row.customer_id, state=row.status,
+                             decision_id=row.last_decision_id or row.id, valid_until=row.valid_until)
+
+
+def project_publication_to_m09(world: SyntheticWorld, envelope: dict[str, Any]) -> None:
+    """Before M09 dispatches: the published snapshot, its recipients and their entitlements."""
+    payload = envelope["payload"]
+    publications = world.service("M09", "publications")
+    if publications is None:
+        return
+    from modules.legendflow_delivery.ports import PublicationSnapshot, RecipientSnapshot
+
+    publication_id = payload["publication_id"]
+    publication, version, recipients = _read(world, "M08", lambda state: (
+        state.publications.get((world.tenant_id, publication_id)),
+        None,
+        [r for (t, _), r in state.recipients.items() if t == world.tenant_id and r.publication_id == publication_id],
+    ))
+    if publication is None:
+        return
+    version = _read(world, "M08", lambda state: state.versions.get((world.tenant_id, publication.recommendation_version_id)))
+    report = _read(world, "M07", lambda state: state.versions.get((world.tenant_id, publication.report_version_id)))
+    texts = list(getattr(report, "channel_texts", None) or [])
+    text = next((row for row in texts if row.get("channel") == "legendflow"), texts[0] if texts else {})
+    publications.register(world.tenant_id, PublicationSnapshot(
+        publication_id=publication.id,
+        report_version_id=publication.report_version_id,
+        signature_id=publication.signature_id,
+        recommendation_series_id=version.series_id,
+        recommendation_version_id=version.id,
+        action=version.action,
+        approved_text=text.get("body", ""),
+        body_sha256=text.get("body_sha256", ""),
+        report_version_ids=tuple(version.supporting_report_version_ids),
+        published_at=publication.published_at or publication.created_at,
+        valid_until=publication.valid_until,
+    ))
+    world.service("M09", "recipients").set(world.tenant_id, publication_id, [
+        RecipientSnapshot(recipient_id=r.id, customer_id=r.customer_id, entitlement_id=r.entitlement_id,
+                          entitlement_version=r.entitlement_version, eligibility_reason=r.eligibility_reason)
+        for r in recipients
+    ])
+    for r in recipients:
+        status = _entitlement_status(world, r.entitlement_id)
+        if status is not None:
+            world.service("M09", "entitlements").set(world.tenant_id, status)
+    if report is not None:
+        world.service("M09", "report_access").register(
+            world.tenant_id, publication.report_version_id, report.bundle_manifest.get("report_content_sha256", ""))
+
+
+def project_entitlement_to_m09(world: SyntheticWorld, envelope: dict[str, Any]) -> None:
+    entitlements = world.service("M09", "entitlements")
+    status = _entitlement_status(world, envelope["payload"]["entitlement_id"])
+    if entitlements is not None and status is not None:
+        entitlements.set(world.tenant_id, status)
+
+
+EARLY_PROJECTIONS: dict[str, tuple[Callable[[SyntheticWorld, dict[str, Any]], None], ...]] = {
+    "report.signature_verified": (project_signed_report_to_m08,),
+    "publication.created": (project_publication_to_m09,),
+}
+
+
 PROJECTIONS: dict[str, tuple[Callable[[SyntheticWorld, dict[str, Any]], None], ...]] = {
+    "research.candidate_validated": (project_validated_candidate_to_m07,),
+    "entitlement.changed": (project_entitlement_to_m09,),
     "finance.payment_confirmed": (project_payment_condition,),
     "kyc.decision_recorded": (project_kyc_gate,),
     "suitability.assessed": (project_suitability_gate,),
@@ -173,6 +302,9 @@ PROJECTIONS: dict[str, tuple[Callable[[SyntheticWorld, dict[str, Any]], None], .
 
 
 def install(world: SyntheticWorld) -> None:
+    for event_type, projections in EARLY_PROJECTIONS.items():
+        for projection in projections:
+            world.on(event_type, projection, before_consumers=True)
     for event_type, projections in PROJECTIONS.items():
         for projection in projections:
             world.on(event_type, projection)

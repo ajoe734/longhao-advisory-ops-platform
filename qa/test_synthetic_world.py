@@ -35,9 +35,10 @@ def test_world_binds_every_module_with_its_consumer(seeded):
 def test_seed_runs_without_failures_and_no_event_is_left_waiting(seeded):
     runtime, _app, summary = seeded
     assert summary["failures"] == []
-    deliveries = existing_world(runtime).status()["recent_deliveries"]
-    stuck = [(d["event_type"], d["target"], d["code"]) for d in deliveries if d["status"] not in {"applied", "duplicate"}]
-    assert stuck == []
+    status = existing_world(runtime).status()
+    assert status["pending_retries"] == []
+    failed = [(d["event_type"], d["target"], d["code"]) for d in status["recent_deliveries"] if d["status"] in {"failed", "skipped"}]
+    assert failed == []
 
 
 def test_onboarded_customer_has_an_effective_contract_and_active_entitlement(seeded):
@@ -88,3 +89,19 @@ def test_no_world_without_synthetic_providers():
         config = PlatformConfig(environment="test", synthetic_providers=False, allow_missing_modules=True)
 
     assert world_for(Runtime()) is None
+
+
+def test_signed_research_is_published_automatically_and_delivered_to_entitled_members(seeded):
+    runtime, app, summary = seeded
+    research = summary["research"][0]
+    assert research["stage"] == "published"
+    client = TestClient(app)
+    publications = client.get("/api/v1/publications", headers=auth("analyst")).json()["items"]
+    assert [(row["state"], row["recipient_count"]) for row in publications] == [("published", 1)]
+    deliveries = existing_world(runtime).modules["M09"].repository.read(
+        lambda state: [(row.status, row.channel) for row in state.deliveries.values()])
+    assert deliveries == [("accepted", "legendflow")]
+    entitled = client.get("/api/v1/member/feed", headers=auth("member-a")).json()["items"]
+    assert [row["action"] for row in entitled] == ["entry"]
+    not_entitled = client.get("/api/v1/member/feed", headers=auth("member-b")).json()["items"]
+    assert not_entitled == []

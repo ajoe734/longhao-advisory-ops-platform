@@ -21,10 +21,42 @@ from longhao_platform.types import PlatformError, Principal, Request as Platform
 
 from .domain import ActorContext
 from .http import create_fastapi_router
+from longhao_platform.synthetic_identities import SYNTHETIC_TENANT_ID
+
+from .adapter import resolve_pantheon_adapter_context
+from .ports import FakeWebhookSignatureVerifier
 from .repository import InMemoryRepository
 from .service import PantheonIntakeService
 
 MODULE_ID = "M05"
+#: synthetic integration key for the Pantheon webhook adapter (development only).
+SYNTHETIC_PANTHEON_KEY_ID = "pantheon-integration-01"
+SYNTHETIC_PANTHEON_SECRET = b"m05-synthetic-pantheon-webhook-secret-32b!!"
+
+
+def _pantheon_resolver(runtime: Any, verifier: Any):
+    """Candidate ingestion is a signed Pantheon webhook: verify the HMAC at this
+    composition boundary, then mint the integration principal (adapter.py).
+    Every other route uses the platform authenticator."""
+    staff = _context_resolver(runtime)
+
+    def resolve(request: Any) -> Any:
+        if request.method != "POST" or not request.url.path.endswith("/research-candidates"):
+            return staff(request)
+
+        async def integration() -> ActorContext:
+            raw_body = await request.body()
+            try:
+                return resolve_pantheon_adapter_context(
+                    verifier, tenant_id=str(SYNTHETIC_TENANT_ID), method="POST", path=request.url.path,
+                    headers=dict(request.headers), raw_body=raw_body,
+                )
+            except Exception as exc:
+                raise PlatformError(401, "INTEGRATION_SIGNATURE_INVALID", "Webhook signature was not accepted.") from exc
+
+        return integration()
+
+    return resolve
 
 
 def _context_resolver(runtime: Any):
@@ -64,8 +96,9 @@ def _context_resolver(runtime: Any):
 def register(runtime: Any) -> None:
     env = runtime.config.environment
     repository = InMemoryRepository()
+    signature_verifier = FakeWebhookSignatureVerifier({SYNTHETIC_PANTHEON_KEY_ID: SYNTHETIC_PANTHEON_SECRET})
     service = PantheonIntakeService(repository, environment=env)
-    router = create_fastapi_router(service, _context_resolver(runtime))
+    router = create_fastapi_router(service, _pantheon_resolver(runtime, signature_verifier))
 
     world = world_for(runtime)
     if world is not None:
@@ -77,5 +110,6 @@ def register(runtime: Any) -> None:
             consumer=PantheonIntakeEventConsumer(repository),
             evidence_sink=None,
             service=service,
+            signature_verifier=signature_verifier,
         )
     runtime.include_router(router)

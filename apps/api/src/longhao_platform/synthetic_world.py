@@ -33,6 +33,7 @@ from longhao_platform.contracts import ROOT
 from longhao_platform.synthetic_identities import SYNTHETIC_TENANT_ID
 
 _WORLDS_LOCK = threading.Lock()
+_MAX_RETRIES = 10
 _ASSET_NAMESPACE = UUID("0b8c7c55-34f1-5d43-9d3a-6f2a1e5b7c10")
 
 EvidenceSink = Callable[[str, str, "AssetRecord"], None]
@@ -90,6 +91,8 @@ class SyntheticWorld:
         self.assets: dict[str, AssetRecord] = {}
         self._sinks: list[EvidenceSink] = []
         self._projections: dict[str, list[Projection]] = {}
+        self._early_projections: dict[str, list[Projection]] = {}
+        self._retries: dict[tuple[str, str], tuple[dict[str, Any], str, int]] = {}
         self._relayed: set[str] = set()
         self.deliveries: deque[DeliveryRecord] = deque(maxlen=500)
         self.failures: deque[dict[str, Any]] = deque(maxlen=200)
@@ -123,11 +126,12 @@ class SyntheticWorld:
                     evidence_sink(self.tenant_id, record.asset_id, record)
             return binding
 
-    def on(self, event_type: str, projection: Projection) -> None:
+    def on(self, event_type: str, projection: Projection, *, before_consumers: bool = False) -> None:
         if event_type not in self._registry:
             raise ValueError(f"unknown event type {event_type}")
         with self._lock:
-            self._projections.setdefault(event_type, []).append(projection)
+            target = self._early_projections if before_consumers else self._projections
+            target.setdefault(event_type, []).append(projection)
 
     def service(self, module_id: str, name: str) -> Any:
         binding = self.modules.get(module_id)
@@ -186,48 +190,80 @@ class SyntheticWorld:
         rows.sort(key=lambda row: (row[1].emitted_at, row[1].sequence_no))
         return rows
 
+    def _project(self, envelope: dict[str, Any], projections: list[Projection]) -> None:
+        for projection in projections:
+            try:
+                projection(self, envelope)
+            except Exception as exc:
+                self.failures.append({
+                    "event_id": envelope["event_id"],
+                    "event_type": envelope["event_type"],
+                    "target": f"projection:{getattr(projection, '__qualname__', projection)}",
+                    "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+                    "trace": traceback.format_exc(limit=4)[-1200:],
+                })
+
+    def _deliver(self, envelope: dict[str, Any], producer: str, target: str) -> bool:
+        binding = self.modules.get(target)
+        if binding is None or binding.consumer is None:
+            self._record(envelope, producer, target, "skipped", "CONSUMER_NOT_BOUND")
+            return False
+        key = (envelope["event_id"], target)
+        try:
+            result = binding.consumer.consume(envelope)
+        except Exception as exc:  # recorded for the operator; never crashes the request
+            self._retries.pop(key, None)
+            self._record(envelope, producer, target, "failed", type(exc).__name__)
+            self.failures.append({
+                "event_id": envelope["event_id"],
+                "event_type": envelope["event_type"],
+                "target": target,
+                "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+                "trace": traceback.format_exc(limit=4)[-1200:],
+            })
+            return False
+        status = getattr(result, "status", None) or (result.get("status") if isinstance(result, dict) else "ok")
+        code = getattr(result, "result_code", None) or (result.get("result_code") if isinstance(result, dict) else "")
+        self._record(envelope, producer, target, status, code or "")
+        if status == "retry":
+            attempts = self._retries.get(key, (envelope, producer, 0))[2] + 1
+            if attempts < _MAX_RETRIES:
+                self._retries[key] = (envelope, producer, attempts)
+            else:
+                self._retries.pop(key, None)
+                self.failures.append({"event_id": envelope["event_id"], "event_type": envelope["event_type"],
+                                      "target": target, "error": f"still retry after {attempts} attempts: {code}", "trace": ""})
+        else:
+            self._retries.pop(key, None)
+        return True
+
     def relay(self, *, max_rounds: int = 25) -> int:
-        """Deliver every pending outbox event; repeat while consumers emit more."""
+        """Deliver every pending outbox event; repeat while consumers emit more.
+
+        Projections registered with ``before_consumers`` run first (a downstream
+        lookup the consumer itself needs); the others run after the consumers
+        (they read the state the consumers just applied). Deliveries a consumer
+        answered with ``retry`` are attempted again on later rounds.
+        """
         delivered = 0
         with self._lock:
             for _round in range(max_rounds):
                 pending = self._pending()
-                if not pending:
+                retries = list(self._retries.items())
+                if not pending and not retries:
                     break
+                for (_event_id, target), (envelope, producer, _attempts) in retries:
+                    delivered += self._deliver(envelope, producer, target)
                 for producer, event in pending:
                     self._relayed.add(event.event_id)
                     envelope = event.envelope()
                     self.events.append(envelope)
-                    contract = self._registry.get(envelope["event_type"], {})
-                    for target in contract.get("consumers", []):
-                        binding = self.modules.get(target)
-                        if binding is None or binding.consumer is None:
-                            self._record(envelope, producer, target, "skipped", "CONSUMER_NOT_BOUND")
-                            continue
-                        try:
-                            result = binding.consumer.consume(envelope)
-                            self._record(envelope, producer, target, getattr(result, "status", "ok"), getattr(result, "result_code", ""))
-                            delivered += 1
-                        except Exception as exc:  # recorded for the operator; never crashes the request
-                            self._record(envelope, producer, target, "failed", type(exc).__name__)
-                            self.failures.append({
-                                "event_id": envelope["event_id"],
-                                "event_type": envelope["event_type"],
-                                "target": target,
-                                "error": f"{type(exc).__name__}: {str(exc)[:300]}",
-                                "trace": traceback.format_exc(limit=4)[-1200:],
-                            })
-                    for projection in self._projections.get(envelope["event_type"], []):
-                        try:
-                            projection(self, envelope)
-                        except Exception as exc:
-                            self.failures.append({
-                                "event_id": envelope["event_id"],
-                                "event_type": envelope["event_type"],
-                                "target": f"projection:{getattr(projection, '__qualname__', projection)}",
-                                "error": f"{type(exc).__name__}: {str(exc)[:300]}",
-                                "trace": traceback.format_exc(limit=4)[-1200:],
-                            })
+                    self._project(envelope, self._early_projections.get(envelope["event_type"], []))
+                    for target in self._registry.get(envelope["event_type"], {}).get("consumers", []):
+                        delivered += self._deliver(envelope, producer, target)
+                    self._project(envelope, self._projections.get(envelope["event_type"], []))
+                if not pending and len(self._retries) == len(retries):
+                    break  # only unchanged retries left; try again on the next tick
         return delivered
 
     def tick(self, *, rounds: int = 4) -> int:
@@ -267,6 +303,7 @@ class SyntheticWorld:
                 "workers": [name for name, _run in self.workers],
                 "assets": [record.public_view() for record in self.assets.values()],
                 "relayed_events": len(self._relayed),
+                "pending_retries": [{"event_id": k[0], "target": k[1], "attempts": v[2]} for k, v in self._retries.items()],
                 "recent_deliveries": [vars_of(d) for d in list(self.deliveries)[-50:]],
                 "failures": list(self.failures)[-50:],
             }

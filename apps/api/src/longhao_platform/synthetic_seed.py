@@ -55,15 +55,23 @@ class Seeder:
     log: list[str] = field(default_factory=list)
 
     # ---------------------------------------------------------------- helpers
-    def call(self, persona: str, method: str, path: str, body: Any = None, *, etag: str | None = None,
-             expect: tuple[int, ...] = (200, 201, 202), headers: dict[str, str] | None = None) -> Result:
-        sent = {"Authorization": PERSONAS_BY_KEY[persona].authorization}
+    def call(self, persona: str | None, method: str, path: str, body: Any = None, *, etag: str | None = None,
+             expect: tuple[int, ...] = (200, 201, 202), headers: dict[str, str] | None = None,
+             raw: bytes | None = None) -> Result:
+        sent: dict[str, str] = {}
+        if persona is not None:
+            sent["Authorization"] = PERSONAS_BY_KEY[persona].authorization
         if method != "GET":
             sent["Idempotency-Key"] = f"seed:{uuid4()}"
         if etag:
             sent["If-Match"] = etag
         sent.update(headers or {})
-        response = self.client.request(method, f"/api/v1{path}", json=body if method != "GET" else None, headers=sent)
+        if raw is not None:
+            sent["Content-Type"] = "application/json"
+            response = self.client.request(method, f"/api/v1{path}", content=raw, headers=sent)
+        else:
+            response = self.client.request(method, f"/api/v1{path}", json=body if method != "GET" else None, headers=sent)
+        persona = persona or "signed-webhook"
         try:
             payload = response.json()
         except ValueError:
@@ -283,6 +291,144 @@ def onboard_customer(s: Seeder, config: dict[str, Any], member: str, display_nam
     return out
 
 
+# ------------------------------------------------- research -> publication
+def _pantheon_ref(external_id: str, kind: str, version: str = "1", checksum: str | None = None) -> dict[str, Any]:
+    ref: dict[str, Any] = {"system": "pantheon", "external_id": external_id, "kind": kind, "version": version}
+    if checksum:
+        ref["checksum_sha256"] = checksum
+    return ref
+
+
+def publish_research(s: Seeder, *, instrument: str = "2330", title: str = "台積電（2330）研究報告") -> dict[str, Any]:
+    """Pantheon candidate -> review case -> report version, reviews, freeze, signature -> publication."""
+    import hmac
+
+    from modules.pantheon_intake.plugin import SYNTHETIC_PANTHEON_KEY_ID, SYNTHETIC_PANTHEON_SECRET
+    from modules.report_signature.domain import canonical_hash as m07_hash
+    from modules.report_signature.ports import QualifiedCredential
+
+    out: dict[str, Any] = {"instrument": instrument}
+    artifact = s.asset(f"pantheon artifact {instrument}", content=f"synthetic Pantheon research artifact for {instrument}")
+    evidence = s.asset(f"pantheon evidence {instrument}", content=f"synthetic evidence bundle for {instrument}")
+    provenance = s.asset(f"pantheon provenance {instrument}")
+    candidate_body = {
+        "external_event_id": str(uuid4()), "origin": "persona_autonomous",
+        "ticket_ref": _pantheon_ref(f"ticket-{instrument}", "ticket"),
+        "artifact_ref": _pantheon_ref(f"artifact-{instrument}", "report"),
+        "artifact_content_sha256": artifact.sha256,
+        "evidence_bundle_refs": [_pantheon_ref(f"evidence-{instrument}", "evidence", checksum=evidence.sha256)],
+        # the source data was available before the research that used it was produced
+        "source_available_at": iso(s.now - timedelta(hours=3)), "source_created_at": iso(s.now - timedelta(hours=2)),
+        "data_scope": "research_only", "provenance_snapshot_asset_id": provenance.asset_id,
+        "license_scope_ref": "customer_distribution_licensed",
+    }
+    raw = json.dumps(candidate_body, ensure_ascii=False).encode("utf-8")
+    timestamp, nonce, path = str(int(time.time())), uuid4().hex, "/api/v1/research-candidates"
+    material = f"{timestamp}\n{nonce}\nPOST\n{path}\n{hashlib.sha256(raw).hexdigest()}".encode("utf-8")
+    signature = hmac.new(SYNTHETIC_PANTHEON_SECRET, material, hashlib.sha256).hexdigest()
+    candidate = s.call(None, "POST", "/research-candidates", raw=raw, headers={
+        "X-Integration-Key-Id": SYNTHETIC_PANTHEON_KEY_ID, "X-Webhook-Timestamp": timestamp,
+        "X-Webhook-Nonce": nonce, "X-Webhook-Signature": signature,
+    })
+    candidate_id = candidate.body["id"]
+    snapshot = s.asset(f"pantheon source snapshot {instrument}")
+    s.call("research-intake-service", "POST", f"/research-candidates/{candidate_id}/validation", {
+        "observed_content_sha256": artifact.sha256, "evidence_access_confirmed": True,
+        "license_scope_confirmed": True, "source_snapshot_asset_id": snapshot.asset_id,
+    }, etag=candidate.etag)
+    validated = latest_event(s.world, "research.candidate_validated", candidate_id=candidate_id)
+    review_case_id = validated["payload"]["review_case_id"]
+    out.update(candidate_id=candidate_id, review_case_id=review_case_id, stage="review_case")
+
+    # the analyst drafts the report and its first version (M07)
+    instrument_ref = {"market": "TWSE", "instrument_code": instrument, "instrument_type": "equity"}
+    report = s.call("analyst", "POST", "/reports", {
+        "review_case_id": review_case_id, "title": title, "instrument_refs": [instrument_ref], "report_type": "initial",
+    })
+    body_text = f"{title}：研究結論與風險揭露（合成資料，僅供開發環境）"
+    content = s.asset(f"report content {candidate_id}", content=body_text)
+    report_evidence = s.asset(f"report evidence {candidate_id}")
+    # Contract gap: the M07 version must cite M08 recommendation versions and the M08 version must cite this
+    # report version; both ids are server-generated, so the first M07 version can only cite a reserved id.
+    reserved_recommendation_id = str(uuid4())
+    channel_body = f"【{instrument}】進場建議已由分析師簽章確認，詳見研究報告。"
+    audience_base = {"policy_id": str(uuid4()), "policy_version": "audience-2026.11", "service_codes": [SERVICE_CODE],
+                     "required_entitlement_state": "active", "restriction_policy_version": "restriction-2026.11"}
+    version = s.call("analyst", "POST", f"/reports/{report.body['id']}/versions", {
+        "source_candidate_id": candidate_id,
+        "source_artifact_ref": _pantheon_ref(f"artifact-{instrument}", "research_candidate"),
+        "report_asset_id": content.asset_id, "report_content_sha256": content.sha256,
+        "evidence_snapshot_asset_ids": [report_evidence.asset_id],
+        "recommendation_version_ids": [reserved_recommendation_id],
+        "channel_texts": [{"channel": "legendflow", "locale": "zh-TW", "body": channel_body,
+                           "body_sha256": sha256_text(channel_body), "template_version": "template-2026.11",
+                           "recommendation_version_ids": [reserved_recommendation_id]}],
+        "audience_policy": {**audience_base, "audience_policy_sha256": m07_hash(audience_base)},
+        "valid_from": iso(s.now), "valid_until": iso(s.now + timedelta(days=30)),
+    }, etag=report.etag)
+    report_version = version.body
+    out.update(report_id=report.body["id"], report_version_id=report_version["id"], stage="draft")
+
+    # the recommendation the analyst publishes with this report (M08)
+    series = s.call("analyst", "POST", "/recommendation-series", {
+        "instrument_ref": instrument_ref, "strategy_scope_ref": "momentum-core-v1",
+        "research_origin_ref": _pantheon_ref(f"artifact-{instrument}", "report"),
+    })
+    recommendation = s.call("analyst", "POST", f"/recommendation-series/{series.body['id']}/versions", {
+        "action": "entry", "rationale": f"依據已簽章研究報告 {report_version['id']}",
+        "supporting_report_version_ids": [report_version["id"]], "valid_from": iso(s.now),
+        "valid_until": iso(s.now + timedelta(days=30)), "source_candidate_id": candidate_id,
+    }, etag=series.etag)
+    out.update(series_id=series.body["id"], recommendation_version_id=recommendation.body["id"])
+
+    # professional and compliance reviews, freeze
+    checklist = s.asset(f"review checklist {report_version['id']}")
+    reviews = []
+    etag = version.etag
+    for persona, review_type in (("analyst-reviewer", "professional"), ("compliance-reviewer", "compliance")):
+        review = s.call(persona, "POST", f"/report-versions/{report_version['id']}/reviews", {
+            "review_type": review_type, "decision": "approve",
+            "report_content_sha256": report_version["report_content_sha256"],
+            "bundle_manifest_sha256": report_version["bundle_manifest_sha256"],
+            "review_policy_version": "m07-review-policy-v1", "checklist_result_asset_id": checklist.asset_id,
+            "reason_code": "review_passed",
+        }, etag=etag)
+        reviews.append(review.body["id"])
+        etag = s.call("analyst", "GET", f"/report-versions/{report_version['id']}").etag
+    frozen = s.call("analyst", "POST", f"/report-versions/{report_version['id']}/freeze", {
+        "report_content_sha256": report_version["report_content_sha256"],
+        "bundle_manifest_sha256": report_version["bundle_manifest_sha256"],
+        "required_review_ids": reviews, "canonicalization": "RFC8785",
+    }, etag=etag)
+    out["stage"] = "frozen"
+
+    # the qualified analyst signs; the signature provider confirms; publication follows automatically
+    signer = s.actor("analyst-signer")
+    credential_id = str(uuid4())
+    s.service("M07", "qualifications").register(s.world.tenant_id, signer, credential_id, QualifiedCredential(
+        credential_id, signer, "analyst_report", s.now + timedelta(days=365), f"subject:{signer}"))
+    session = s.call("analyst-signer", "POST", f"/report-versions/{report_version['id']}/signature", {
+        "report_content_sha256": report_version["report_content_sha256"],
+        "bundle_manifest_sha256": report_version["bundle_manifest_sha256"],
+        "credential_id": credential_id, "required_review_ids": reviews, "signing_intent_confirmed": True,
+    }, etag=frozen.etag).body
+    signed = s.asset(f"signed report {report_version['id']}", content=f"synthetic signed report {report_version['id']}")
+    verification = s.asset(f"report signature verification {report_version['id']}")
+    s.call("signature-adapter", "POST", "/webhooks/analyst-signatures", {
+        "event_id": str(uuid4()), "signature_request_id": session["id"], "provider_session_ref": session["provider_session_ref"],
+        "report_version_id": report_version["id"], "report_content_sha256": report_version["report_content_sha256"],
+        "bundle_manifest_sha256": report_version["bundle_manifest_sha256"], "verification_result": "verified",
+        "signed_asset_id": signed.asset_id, "signed_file_sha256": signed.sha256, "signer_subject_ref": f"subject:{signer}",
+        "signed_at": iso(datetime.now(timezone.utc)), "verification_evidence_asset_id": verification.asset_id,
+    }, headers=s.webhook_headers("m07-signature-provider", signature="valid"))
+    s.world.tick()
+    s.world.tick()
+    published = latest_event(s.world, "publication.created", report_version_id=report_version["id"])
+    out.update(stage="published" if published else "signed",
+               publication_id=published["payload"]["publication_id"] if published else None)
+    return out
+
+
 # ----------------------------------------------------------------------- run
 def run(client: Any, world: SyntheticWorld) -> dict[str, Any]:
     s = Seeder(client, world)
@@ -291,8 +437,9 @@ def run(client: Any, world: SyntheticWorld) -> dict[str, Any]:
         onboard_customer(s, config, "member-a", "合成客戶甲", "+886900000101"),
         onboard_customer(s, config, "member-b", "合成客戶乙", "+886900000102", stop_after="kyc"),
     ]
+    research = [publish_research(s)]
     world.tick()
-    return {"configuration": config, "customers": customers, "requests": len(s.log),
+    return {"configuration": config, "customers": customers, "research": research, "requests": len(s.log),
             "relayed_events": world.status()["relayed_events"], "failures": list(world.failures)}
 
 
