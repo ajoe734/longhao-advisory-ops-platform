@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import fields
 from typing import Any
 
-from longhao_platform.types import Principal, Request as PlatformRequest
+from longhao_platform.types import PlatformError, Principal, Request as PlatformRequest
 
 from .domain import ActorContext
 from .http import create_fastapi_router
@@ -45,7 +45,10 @@ def _context_resolver(runtime: Any):
             kwargs["customer_id"] = str(principal.actor_id) if principal_type == "customer" else None
         if "actor_type" in names:
             kwargs["actor_type"] = principal.actor_type
-        return ActorContext(**kwargs)
+        try:
+            return ActorContext(**kwargs)
+        except Exception as exc:  # the module rejects this principal type (e.g. customers on staff-only modules)
+            raise PlatformError(403, "PRINCIPAL_NOT_ALLOWED", "This identity type cannot use this module.") from exc
 
     return resolve
 
