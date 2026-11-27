@@ -137,12 +137,12 @@ def test_consumer_deduplicates_checks_hash_and_recovers_sequence_gap(m07, analys
     payload = {"candidate_id": CANDIDATE_ID, "replacement_candidate_id": str(uuid4()), "previous_artifact_sha256": "a" * 64, "replacement_artifact_sha256": "b" * 64}
     seq1 = incoming("research.candidate_superseded", "M05", "research_candidate", CANDIDATE_ID, 1, payload)
     assert consumer.consume(seq1).status == "applied"
+    # M07 consumes only research.candidate_superseded of the M05 candidate stream.
     seq3 = incoming("research.candidate_superseded", "M05", "research_candidate", CANDIDATE_ID, 3, payload)
-    assert consumer.consume(seq3).status == "retry"
-    seq2 = incoming("research.candidate_superseded", "M05", "research_candidate", CANDIDATE_ID, 2, payload)
-    assert consumer.consume(seq2).status == "applied"
     assert consumer.consume(seq3).status == "applied"
     assert consumer.consume(seq3).status == "duplicate"
+    seq2 = incoming("research.candidate_superseded", "M05", "research_candidate", CANDIDATE_ID, 2, payload)
+    assert consumer.consume(seq2).result_code == "stale_sequence_ignored"
     tampered = dict(seq2)
     tampered["payload"] = {**payload, "previous_artifact_sha256": "c" * 64}
     tampered["payload_sha256"] = canonical_hash(tampered["payload"])

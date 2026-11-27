@@ -176,12 +176,14 @@ def test_consumer_detects_sequence_gap_and_recovers(m08, analyst):
         "bundle_manifest_sha256": "b" * 64, "signed_file_sha256": "c" * 64,
         "verified_at": wire_time(NOW), "valid_until": wire_time(NOW + timedelta(hours=6)),
     }
+    # M08 does not subscribe to report.version_frozen, which precedes
+    # report.signature_verified in the M07 report_version stream: the gap is expected.
     seq2 = incoming("report.signature_verified", "M07", "report_version", REPORT_A, 2, payload_seq2)
-    assert consumer.consume(seq2).status == "retry"
+    assert consumer.consume(seq2).status == "applied"
     payload_seq1 = {**payload_seq2, "signature_id": "90000000-0000-0000-0000-000000000099"}
     seq1 = incoming("report.signature_verified", "M07", "report_version", REPORT_A, 1, payload_seq1)
-    assert consumer.consume(seq1).status == "applied"
-    assert consumer.consume(seq2).status == "applied"
+    assert consumer.consume(seq1).result_code == "stale_sequence_ignored"
+    assert consumer.consume(seq2).status == "duplicate"
 
 
 def test_outbox_worker_uses_lease_bounded_retry_and_no_duplicate_publish(m08, analyst):

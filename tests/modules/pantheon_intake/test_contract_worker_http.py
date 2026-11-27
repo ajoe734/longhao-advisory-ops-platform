@@ -160,11 +160,12 @@ def test_consumer_deduplicates_checks_hash_and_recovers_sequence_gap(m05, adapte
     with pytest.raises(ConflictError):
         consumer.consume(tampered)
 
+    # M05 consumes only research.candidate_received of its own candidate stream.
     seq3 = incoming("research.candidate_received", "M05", "research_candidate", candidate_id, 3, received_payload)
-    assert consumer.consume(seq3).status == "retry"
-    seq2 = incoming("research.candidate_received", "M05", "research_candidate", candidate_id, 2, received_payload)
-    assert consumer.consume(seq2).status == "applied"
     assert consumer.consume(seq3).status == "applied"
+    seq2 = incoming("research.candidate_received", "M05", "research_candidate", candidate_id, 2, received_payload)
+    assert consumer.consume(seq2).result_code == "stale_sequence_ignored"
+    assert consumer.consume(seq3).status == "duplicate"
     jobs = [job for job in m05["repository"].snapshot().jobs.values() if job.payload.get("candidate_id") == candidate_id]
     assert len(jobs) == 1  # the real seq=1 apply already queued one job; later synthetic sequences found it queued
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from longhao_platform.event_ordering import is_sequence_gap
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -145,7 +147,7 @@ class M09EventConsumer:
             ),
             default=0,
         )
-        if envelope["sequence_no"] > last_sequence + 1:
+        if is_sequence_gap("M09", envelope, last_sequence):
             return "sequence_gap", None
         if envelope["sequence_no"] <= last_sequence:
             return "stale", None

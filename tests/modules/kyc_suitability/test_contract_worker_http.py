@@ -193,11 +193,12 @@ def test_consumer_deduplicates_checks_hash_and_recovers_sequence_gap(m03):
     profile_payload = {"customer_id": CUSTOMER_A, "changed_field_codes": ["display_name"], "profile_evidence_ref": str(uuid4())}
     seq1 = incoming("customer.profile_updated", "M01", "customer", CUSTOMER_A, 1, profile_payload)
     assert consumer.consume(seq1).status == "applied"
+    # M03 only subscribes to customer.profile_updated of the M01 customer stream.
     seq3 = incoming("customer.profile_updated", "M01", "customer", CUSTOMER_A, 3, profile_payload)
-    assert consumer.consume(seq3).status == "retry"
-    seq2 = incoming("customer.profile_updated", "M01", "customer", CUSTOMER_A, 2, profile_payload)
-    assert consumer.consume(seq2).status == "applied"
     assert consumer.consume(seq3).status == "applied"
+    seq2 = incoming("customer.profile_updated", "M01", "customer", CUSTOMER_A, 2, profile_payload)
+    assert consumer.consume(seq2).result_code == "stale_sequence_ignored"
+    assert consumer.consume(seq3).status == "duplicate"
 
 
 def test_consumer_rejects_wrong_schema_and_isolates_tenant(m03):
