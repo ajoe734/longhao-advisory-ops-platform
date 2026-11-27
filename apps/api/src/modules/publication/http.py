@@ -171,7 +171,7 @@ def create_fastapi_router(
         raise RuntimeError("FastAPI must be supplied by the shared application build") from exc
 
     controller = M08Controller(service)
-    router = APIRouter(prefix="/api/v1", tags=["M08"])
+    router = APIRouter(tags=["M08"])
 
     def endpoint_for(operation_id: str, method: str) -> Callable[..., Any]:
         async def endpoint(request: Request) -> JSONResponse:

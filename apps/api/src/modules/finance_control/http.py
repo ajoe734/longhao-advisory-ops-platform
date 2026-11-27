@@ -241,7 +241,7 @@ def create_fastapi_router(service: FinanceControlService, context_resolver: Call
         raise RuntimeError("FastAPI must be supplied by the shared application build") from exc
 
     controller = M14Controller(service)
-    router = APIRouter(prefix="/api/v1", tags=["M14"])
+    router = APIRouter(tags=["M14"])
 
     def endpoint_for(operation_id: str, method: str) -> Callable[..., Any]:
         async def endpoint(request: Request) -> JSONResponse:

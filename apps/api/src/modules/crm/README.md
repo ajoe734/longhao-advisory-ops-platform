@@ -4,12 +4,10 @@
 本模組的 domain + in-memory adapter 可獨立測試；`http.py` 提供
 framework-neutral controller 及可由 shared app 掛載的 FastAPI router
 （`create_fastapi_router`，不帶 `/api/v1` 前綴，交由
-`longhao_platform.http.create_app()` 統一掛載）。跟 M01 一致，本模組目前不
-提供 `plugin.py`／`PlatformRuntime.discover_modules()` 註冊入口：platform
-manifest 尚未有任何模組登記為 `loaded`，整合者接上
-`core.object_asset`／shared repository／FastAPI auth context resolver 後再補
-`register(runtime)`，而非讓本模組單獨先行掛載並改變
-`qa/test_platform_runtime.py` 既有「全部模組 `missing`」的啟動期望。
+`longhao_platform.http.create_app()` 統一掛載）。`plugin.py`（`MODULE_ID = "M10"`、`register(runtime)`）以本模組的
+`InMemoryRepository` 與 synthetic evidence adapter 組裝 `CrmService` 並掛上
+router；production 因尚無真實 `core.object_asset` adapter，`CrmService` 的
+生產環境防呆會讓註冊失敗並回報 `broken`。shared repository 與跨模組 port 仍待整合。
 
 ## 模組結構
 
