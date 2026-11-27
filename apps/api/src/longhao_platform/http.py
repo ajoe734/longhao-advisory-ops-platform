@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI, Request as FastAPIRequest
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from longhao_platform.app import PlatformRuntime
+from longhao_platform.app import PlatformRuntime, SyntheticAuthenticator
 from longhao_platform.types import PlatformError, Principal, Request
 
 
@@ -64,6 +64,12 @@ def create_app(runtime: PlatformRuntime | None = None) -> FastAPI:
     async def ready():
         status, body = runtime.readiness(disclose_modules=runtime.config.environment != "production")
         return JSONResponse(status_code=status, content=body)
+
+    if runtime.config.environment != "production" and isinstance(runtime.authenticator, SyntheticAuthenticator):
+        # Local/development only: the fixed synthetic markers the admin shell can act as.
+        @app.get("/internal/platform/dev-identities", include_in_schema=False)
+        async def dev_identities():
+            return {"tenant_id": str(runtime.authenticator.tenant_id()), "items": runtime.authenticator.personas()}
 
     @app.get("/internal/platform/modules", include_in_schema=False)
     async def modules(_principal: Principal = Depends(operations_reader)):

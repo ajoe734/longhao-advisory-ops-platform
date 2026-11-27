@@ -14,9 +14,12 @@ from longhao_platform.store import InMemoryAtomicStore
 from longhao_platform.types import PlatformError, Principal, Request
 
 
-SYNTHETIC_TENANT_ID = UUID("3e624789-e990-5c6b-bf39-82de2afce2c8")
-SYNTHETIC_ADMIN_ID = UUID("7dc75c5a-fcc2-5ace-b905-fd5d6405d840")
-SYNTHETIC_WORKER_ID = UUID("3e8b6b56-35ef-5bf8-9cb7-ef680b2f76c2")
+from longhao_platform.synthetic_identities import (  # constants re-exported for existing callers
+    PERSONAS,
+    SYNTHETIC_ADMIN_ID,
+    SYNTHETIC_TENANT_ID,
+    SYNTHETIC_WORKER_ID,
+)
 
 
 class Authenticator(Protocol):
@@ -26,21 +29,15 @@ class Authenticator(Protocol):
 class SyntheticAuthenticator:
     """Exact local markers; claims are never decoded from arbitrary bearer text."""
 
-    _principals = {
-        "Bearer synthetic-platform-admin": Principal(
-            SYNTHETIC_ADMIN_ID,
-            SYNTHETIC_TENANT_ID,
-            "platform-admin@synthetic.invalid",
-            frozenset({"platform_admin", "internal_auditor"}),
-        ),
-        "Bearer synthetic-worker": Principal(
-            SYNTHETIC_WORKER_ID,
-            SYNTHETIC_TENANT_ID,
-            "platform-worker@synthetic.invalid",
-            frozenset({"platform_worker"}),
-            actor_type="service",
-        ),
-    }
+    _principals = {persona.authorization: persona.principal() for persona in PERSONAS}
+
+    @staticmethod
+    def tenant_id() -> UUID:
+        return SYNTHETIC_TENANT_ID
+
+    @staticmethod
+    def personas() -> list[dict[str, object]]:
+        return [persona.public_view() for persona in PERSONAS]
 
     def authenticate(self, request: Request) -> Principal:
         if request.headers.get("x-tenant-id"):

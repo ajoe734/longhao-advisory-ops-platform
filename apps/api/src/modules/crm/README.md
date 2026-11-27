@@ -52,9 +52,6 @@ router；production 因尚無真實 `core.object_asset` adapter，`CrmService` �
 - Pantheon／Agora／LegendFlow／金流／簽章均非本模組依賴；本模組僅消費
   M01/M02/M03/M09/M11/M13/M14 已發布事件的本平台 projection，不直接呼叫對方
   API；真實事件來源接線前標記 `NOT_CONNECTED`。
-- `longhao_platform`目前的 `SyntheticAuthenticator` 僅提供
-  `platform_admin`/`internal_auditor`/`platform_worker` 角色，尚未提供
-  `sales`/`sales_supervisor`/`marketing`/`service_agent` 等本模組角色的測試
-  principal；本模組測試改用 `ActorContext` 直接呼叫 `CrmService`，覆蓋同一
-  授權邏輯，端到端走 HTTP 需等共用平台補上對應 principal 與本模組的
-  `register(runtime)` 入口。
+- 本模組單元測試以 `ActorContext` 直接呼叫 `CrmService`；端到端 HTTP 可用共用平台的合成身分
+  （`synthetic-sales`、`synthetic-sales-2`、`synthetic-sales-supervisor`、`synthetic-marketing`、
+  `synthetic-service-agent`），經 `plugin.py` 掛載的 router 走完整授權路徑。
