@@ -10021,7 +10021,6 @@ components:
       - terminated_at
       - service_selections
       - preceding_contract_id
-      - services
     ContractServiceRead:
       type: object
       additionalProperties: false
