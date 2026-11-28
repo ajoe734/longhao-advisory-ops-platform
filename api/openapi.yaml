@@ -15647,7 +15647,6 @@ components:
           type: string
           maxLength: 80
       required:
-      - invoice_line_id
       - contract_service_id
       - service_code
       - service_period_start
@@ -16384,8 +16383,6 @@ components:
       - updated_at
       - allowed_actions
       - state
-      - period_start
-      - period_end
       - account_mapping_version
       - tax_mapping_version
       - debit_total
