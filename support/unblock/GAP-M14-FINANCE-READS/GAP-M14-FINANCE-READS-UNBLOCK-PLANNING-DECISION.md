@@ -71,3 +71,16 @@ blocker for the narrow parent action above.
 | F1 generator drift | `git diff --name-only 9020b52..origin/dev -- api/build_contracts.py api/openapi.yaml api/operation-catalog.json api/schema-index.json events/registry.json`; source lines cited above | Only `api/openapi.yaml` and `events/registry.json` changed after the generator baseline; no generator update exists. | Reconciliation task has not yet been created or run. |
 | F2 all masked fixture failures | Read-only `jsonschema` validation of the four exact responses from `9d24e627356be894258099296204b40c1c88ae36` against that commit's OpenAPI | Four failures across `Invoice` and `AccountingExport`, as listed above. | Parent's repaired schema/runtime checks remain pending. |
 | This planning revision | [ENG-CONTRACT-01](../../../docs/18-decision-register.md) and this artifact | Decision, scope cut, and parent next step now cover both schema gaps and prohibit destructive regeneration. | Does not certify parent candidate, CI, database, or external provider readiness. |
+
+## Current planning-candidate checks
+
+- `python3 scripts/validate_docs.py` — exit 0: 14 parallel modules, 142 API
+  operations traced, 182 acceptance cases, and 182 trace rows.
+- `python3 scripts/validate_contracts.py` — exit 0: 14 modules, 142 catalog
+  operations, 204 OpenAPI schemas, 47 event contracts, 289 positive and 342
+  negative schema cases.
+- `git diff --check` — exit 0 before this evidence update. The final candidate
+  reruns it after the evidence-only edit.
+
+These are checks of this planning branch. They do not replace the parent branch's
+post-edit full contract validation or its M14 module test run.
