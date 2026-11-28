@@ -7,7 +7,7 @@ import json
 from time import perf_counter
 from typing import Any, Callable
 
-from .domain import ActorContext, DomainError, ValidationError, new_id
+from .domain import ActorContext, DomainError, UnauthorizedError, ValidationError, new_id
 from .service import ServiceCaseService, ServiceResponse
 from .telemetry import M13Telemetry
 
@@ -43,7 +43,7 @@ class M13Controller:
     def handle(
         self,
         operation_id: str,
-        context: ActorContext,
+        context: ActorContext | None,
         *,
         body: dict[str, Any] | None = None,
         path: dict[str, str] | None = None,
@@ -58,6 +58,8 @@ class M13Controller:
         correlation_id = headers.get("x-correlation-id") or new_id()
         started = perf_counter()
         try:
+            if context is None:
+                raise UnauthorizedError("no authenticated principal was supplied")
             response = self._dispatch(operation_id, context, body, path, query, headers, correlation_id, raw_body)
             response_headers = {"X-Correlation-Id": correlation_id}
             if response.etag:
@@ -114,6 +116,11 @@ class M13Controller:
             )
         if operation_id == "get_service_case":
             return self.service.get_service_case(context, path["case_id"], correlation_id=correlation_id)
+        if operation_id == "list_case_interactions":
+            return self.service.list_case_interactions(
+                context, path["case_id"], cursor=query.get("cursor"), limit=self._limit(query.get("limit")),
+                as_of=self._as_of(query.get("as_of")), correlation_id=correlation_id,
+            )
         if operation_id == "add_case_interaction":
             return self.service.add_case_interaction(
                 context, path["case_id"], body, expected_version=version, idempotency_key=key, correlation_id=correlation_id,
@@ -143,6 +150,11 @@ class M13Controller:
         if operation_id == "send_service_response":
             return self.service.send_service_response(
                 context, path["case_id"], body, expected_version=version, idempotency_key=key, correlation_id=correlation_id,
+            )
+        if operation_id == "list_case_responses":
+            return self.service.list_case_responses(
+                context, path["case_id"], cursor=query.get("cursor"), limit=self._limit(query.get("limit")),
+                as_of=self._as_of(query.get("as_of")), correlation_id=correlation_id,
             )
         if operation_id == "get_service_response":
             return self.service.get_service_response(context, path["response_id"], correlation_id=correlation_id)
@@ -194,6 +206,7 @@ ROUTES: tuple[tuple[str, str, str], ...] = (
     ("GET", "/service-cases", "list_service_cases"),
     ("GET", "/service-cases/{case_id}", "get_service_case"),
     ("POST", "/service-cases/{case_id}/interactions", "add_case_interaction"),
+    ("GET", "/service-cases/{case_id}/interactions", "list_case_interactions"),
     ("POST", "/service-cases/{case_id}/assignment", "assign_service_case"),
     ("POST", "/service-cases/{case_id}/escalations", "escalate_service_case"),
     ("POST", "/service-cases/{case_id}/response-drafts", "draft_service_response"),
@@ -201,6 +214,7 @@ ROUTES: tuple[tuple[str, str, str], ...] = (
     ("POST", "/service-cases/{case_id}/reopen", "reopen_service_case"),
     ("GET", "/service-response-drafts/{draft_id}", "get_service_response_draft"),
     ("POST", "/service-cases/{case_id}/responses", "send_service_response"),
+    ("GET", "/service-cases/{case_id}/responses", "list_case_responses"),
     ("GET", "/service-responses/{response_id}", "get_service_response"),
     ("POST", "/webhooks/service-response-receipts", "receive_service_response_receipt"),
     ("POST", "/service-response-drafts/{draft_id}/approval", "approve_service_response_draft"),
