@@ -173,3 +173,20 @@ def test_service_case_answer_is_approved_by_a_second_agent_and_sent(seeded):
     assert cases[waiting["case_id"]]["state"] == "new"
     # the case queue is staff-only
     assert client.get("/api/v1/service-cases", headers=auth("member-b")).status_code == 403
+
+
+def test_finance_queues_have_work_and_nothing_was_paid_out(seeded):
+    _runtime, app, summary = seeded
+    client = TestClient(app)
+    finance = summary["finance"]
+    items = client.get("/api/v1/finance/reconciliation-items", headers=auth("finance-operator")).json()["items"]
+    # only the provider line no payment matches is left to resolve; the member's payment reconciles
+    assert [(row["status"] if "status" in row else row["state"]) for row in items] == ["open"]
+    refund = client.get(f"/api/v1/finance/refunds/{finance['refund_id']}", headers=auth("finance-checker")).json()
+    assert refund["state"] == "approval_pending"
+    export = client.get(f"/api/v1/finance/accounting-exports/{finance['accounting_export_id']}", headers=auth("finance-operator")).json()
+    assert export["state"] == "prepared"
+    # the pending refund has not touched the member's entitlement
+    member_a = summary["customers"][0]
+    entitlements = client.get(f"/api/v1/customers/{member_a['customer_id']}/entitlements", headers=auth("contract-operator")).json()
+    assert [row["state"] for row in entitlements["items"]] == ["active"]

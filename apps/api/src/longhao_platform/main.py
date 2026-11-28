@@ -46,6 +46,9 @@ def main(argv: list[str] | None = None) -> int:
             "published_research": [row.get("publication_id") for row in summary["research"]],
             "month_close": {k: summary["month_close"].get(k) for k in ("recognized", "commission_state")},
             "service_cases": [row.get("stage") for row in summary["service_cases"]],
+            # no list API exists for refunds or accounting exports; print the ids so they can be opened (UI-29, UI-31)
+            "pending_refund_id": summary["finance"]["refund_id"],
+            "accounting_export_id": summary["finance"]["accounting_export_id"],
             "requests": summary["requests"],
             "relayed_events": summary["relayed_events"],
             "failures": len(summary["failures"]),

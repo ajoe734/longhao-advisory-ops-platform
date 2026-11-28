@@ -562,10 +562,63 @@ def close_month(s: Seeder, business: dict[str, Any]) -> dict[str, Any]:
         "approved_run_ids": [run.body["id"]], "payout_period": period_start[:7], "payroll_mapping_version": "payroll-v1",
     })
     s.world.tick()  # the batch job prepares the control totals
-    # The batch is left awaiting the commission approver, so UI-27 has a decision to make.
+    # The batch is left awaiting the commission approver, so UI-24 has a decision to make.
+    posted = s.call("finance-checker", "GET", f"/finance/revenue-runs/{revenue.body['id']}")
     return {"revenue_run_id": revenue.body["id"], "recognized": revenue.body["recognized_untaxed_total"],
+            "journal_ids": posted.body["journal_ids"], "period": [period_start, period_end],
             "commission_run_id": run.body["id"], "commission_state": calculated.body.get("state"),
             "payout_batch_id": batch.body["id"]}
+
+
+# ------------------------------------------------- finance operations (M14)
+def finance_operations(s: Seeder, onboarded: dict[str, Any], month: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
+    """Settlement import with one unmatched line, a refund request awaiting the checker, an accounting export."""
+    from decimal import Decimal
+
+    from modules.finance_control.ports import SettlementLine
+
+    paid = Decimal("36000.00")
+    fee = Decimal("720.00")
+    stray = Decimal("1200.00")
+    lines = [
+        SettlementLine(f"ptx-{onboarded['payment_intent_id'][:8]}", paid, fee, paid - fee, "TWD", "bank-line-0001"),
+        # a provider transaction no payment in M14 knows about: lands in the reconciliation queue
+        SettlementLine("ptx-unknown01", stray, Decimal("24.00"), stray - Decimal("24.00"), "TWD", "bank-line-0002"),
+    ]
+    statement = s.asset(f"settlement statement {s.now.date()}", content=f"synthetic settlement statement {s.now.date()}")
+    s.service("M14", "statements").register(s.world.tenant_id, statement.asset_id, statement.sha256, lines)
+    gross, fees = sum((line.gross_amount for line in lines), Decimal("0")), sum((line.fee_amount for line in lines), Decimal("0"))
+    settlement = s.call("finance-operator", "POST", "/finance/settlement-imports", {
+        "provider": "synthetic_payment_provider", "batch_ref": f"settle-{s.now:%Y%m%d}", "settlement_date": s.now.date().isoformat(),
+        "statement_asset_id": statement.asset_id, "statement_sha256": statement.sha256,
+        "declared_gross": {"amount": f"{gross:.2f}", "currency": "TWD"}, "declared_fee": {"amount": f"{fees:.2f}", "currency": "TWD"},
+        "declared_net": {"amount": f"{gross - fees:.2f}", "currency": "TWD"}, "declared_count": len(lines),
+        "format_version": "settlement-csv-v1",
+    })
+
+    # The member asked about the service period on the case; the agent requests a partial refund of unearned fees.
+    # Contract gap: invoice lines expose no id, so the allocation cites the line's contract_service_id.
+    request = s.asset(f"refund request {case['case_id']}", content=f"synthetic customer refund request {case['case_id']}",
+                      customer_id=onboarded["customer_id"])
+    refund = s.call("service-agent", "POST", "/finance/refunds", {
+        "customer_id": onboarded["customer_id"], "contract_id": onboarded["contract_id"],
+        "original_payment_id": onboarded["payment_id"], "case_id": case["case_id"], "reason_code": "service_start_dispute",
+        "requested_amount": {"amount": "3000.00", "currency": "TWD"},
+        "allocations": [{"invoice_line_ref": onboarded["contract_service_id"], "recognition_id": None,
+                         "unearned_amount": {"amount": "3000.00", "currency": "TWD"},
+                         "earned_reversal_amount": {"amount": "0.00", "currency": "TWD"},
+                         "tax_adjustment_amount": {"amount": "0.00", "currency": "TWD"}}],
+        "calculation_policy_version": "refund-policy-2026.11", "customer_request_evidence_id": request.asset_id,
+    })
+
+    export = s.call("finance-operator", "POST", "/finance/accounting-exports", {
+        "period_start": month["period"][0], "period_end": month["period"][1], "journal_ids": month["journal_ids"],
+        "account_mapping_version": "coa-2026", "tax_mapping_version": TAX_MAPPING_VERSION, "export_format": "csv_v1",
+    })
+    s.world.tick()
+    return {"settlement_import_id": settlement.body.get("id"), "refund_id": refund.body["id"],
+            "refund_state": refund.body.get("state"), "accounting_export_id": export.body["id"],
+            "accounting_export_state": export.body.get("state")}
 
 
 # --------------------------------------------------------- service cases (M13)
@@ -620,9 +673,10 @@ def run(client: Any, world: SyntheticWorld) -> dict[str, Any]:
     research = [publish_research(s)]
     month = close_month(s, business)
     cases = [service_case(s, customers[0], business, answer=True), service_case(s, customers[1], business, answer=False)]
+    finance = finance_operations(s, customers[0], month, cases[0])
     world.tick()
     return {"configuration": config, "business": business, "customers": customers, "research": research,
-            "month_close": month, "service_cases": cases, "requests": len(s.log),
+            "month_close": month, "service_cases": cases, "finance": finance, "requests": len(s.log),
             "relayed_events": world.status()["relayed_events"], "failures": list(world.failures)}
 
 
