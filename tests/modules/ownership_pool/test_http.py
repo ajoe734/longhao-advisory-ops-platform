@@ -232,6 +232,64 @@ def test_company_pool_policy_controller_is_tenant_scoped(m11, supervisor, superv
     assert other_tenant_current.body["code"] == "current_policy_not_found"
 
 
+def test_company_pool_policy_commands_reject_server_controlled_fields_and_stale_versions(m11, supervisor, supervisor_b):
+    controller = M11Controller(m11["service"])
+
+    # Request bodies cannot forge a policy's tenant, policy code, maker, or
+    # approval state. Those values are all derived server-side from the
+    # authenticated ActorContext and the existing policy transition.
+    forged = controller.handle(
+        "create_company_pool_policy",
+        supervisor,
+        body={
+            "lapse_days": 7,
+            "departure_immediate": True,
+            "tenant_id": "10000000-0000-0000-0000-000000000002",
+        },
+        headers={"Idempotency-Key": "pool-policy-forged-field-001"},
+    )
+    assert forged.status == 422
+    assert forged.body["code"] == "validation_failed"
+
+    created = controller.handle(
+        "create_company_pool_policy",
+        supervisor,
+        body={"lapse_days": 7, "departure_immediate": True},
+        headers={"Idempotency-Key": "pool-policy-cas-create-001"},
+    )
+    assert created.status == 201
+
+    missing_version = controller.handle(
+        "approve_company_pool_policy",
+        supervisor_b,
+        body={"decision": "approve"},
+        path={"policy_id": created.body["id"]},
+        headers={"Idempotency-Key": "pool-policy-cas-missing-001"},
+    )
+    assert missing_version.status == 428
+    assert missing_version.body["code"] == "precondition_required"
+
+    stale_version = controller.handle(
+        "approve_company_pool_policy",
+        supervisor_b,
+        body={"decision": "approve"},
+        path={"policy_id": created.body["id"]},
+        headers={"Idempotency-Key": "pool-policy-cas-stale-001", "If-Match": '"2"'},
+    )
+    assert stale_version.status == 412
+    assert stale_version.body["code"] == "stale_version"
+
+    approved = controller.handle(
+        "approve_company_pool_policy",
+        supervisor_b,
+        body={"decision": "approve"},
+        path={"policy_id": created.body["id"]},
+        headers={"Idempotency-Key": "pool-policy-cas-approve-001", "If-Match": '"1"'},
+    )
+    assert approved.status == 200
+    assert approved.body["approved_by"] == SUPERVISOR_B
+
+
 def test_company_pool_policy_operations_and_live_response_match_openapi(m11, supervisor, supervisor_b):
     spec = yaml.safe_load((ROOT / "api" / "openapi.yaml").read_text())
     expected = {
