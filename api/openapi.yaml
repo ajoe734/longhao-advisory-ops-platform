@@ -7633,7 +7633,6 @@ paths:
       - M14
       security:
       - staffBearer: []
-      - serviceBearer: []
       parameters:
       - $ref: '#/components/parameters/CorrelationId'
       - $ref: '#/components/parameters/Cursor'
@@ -7661,9 +7660,7 @@ paths:
       x-module: M14
       x-allowed-roles:
       - finance_operator
-      - service_agent
       - finance_checker
-      - refund_service
       x-resource-ownership: tenant_and_scope
       x-audit-action: m14.list_refunds
       x-idempotency-required: false
@@ -17646,8 +17643,8 @@ components:
       properties:
         close_key:
           type: string
-          minLength: 23
-          maxLength: 23
+          minLength: 21
+          maxLength: 21
           pattern: ^\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}$
         period_start: *id007
         period_end: *id007

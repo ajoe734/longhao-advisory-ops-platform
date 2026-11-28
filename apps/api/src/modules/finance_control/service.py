@@ -1048,7 +1048,7 @@ class FinanceControlService:
         as_of: datetime | None = None,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize(context, {FINANCE_OPERATOR, SERVICE_AGENT, FINANCE_CHECKER, REFUND_SERVICE})
+        self._authorize(context, {FINANCE_OPERATOR, FINANCE_CHECKER})
         self._validate_finance_list_filters(state_filter, _REFUND_STATES, period_start, period_end, limit)
         correlation_id = self._correlation(correlation_id)
         snapshot_at = as_of or self._clock()
@@ -1503,6 +1503,8 @@ class FinanceControlService:
                     close_state = "blocked"
                 elif any(export.status == "failed" for export in period_exports) or any(run.status == "failed" for run in period_runs):
                     close_state = "blocked"
+                elif any(not run.dry_run and run.status != "posted" for run in period_runs):
+                    close_state = "revenue_pending"
                 elif period_exports and all(export.status == "acknowledged" for export in period_exports):
                     close_state = "closed"
                 elif period_exports:
