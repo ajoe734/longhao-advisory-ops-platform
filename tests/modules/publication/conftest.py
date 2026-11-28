@@ -18,7 +18,6 @@ from modules.publication.ports import (
     FakeEntitlementAudienceRegistry,
     FakeEvidenceStore,
     FakeReportBundleRegistry,
-    report_bundle_manifest_sha256,
 )
 from modules.publication.repository import InMemoryRepository
 from modules.publication.service import PublicationService
@@ -31,6 +30,7 @@ COMPLIANCE_SUPERVISOR = "20000000-0000-0000-0000-000000000003"
 SERVICE_AGENT = "20000000-0000-0000-0000-000000000004"
 COMPLIANCE_REVIEWER = "20000000-0000-0000-0000-000000000005"
 EVIDENCE_WITHDRAW = "30000000-0000-0000-0000-000000000001"
+M07_MANIFEST_SHA256 = "b" * 64
 NOW = datetime(2026, 11, 23, 6, 30, 0, tzinfo=timezone.utc)
 
 INSTRUMENT_REF = {"market": "TWSE", "instrument_code": "2330", "instrument_type": "equity"}
@@ -130,12 +130,10 @@ def signature_event(
 ):
     valid_until = valid_until or (NOW + timedelta(hours=6))
     if bundle_manifest_sha256 is None:
-        # Matches what FakeReportBundleRegistry.register() independently
-        # computes for the same (tenant, report_version_id,
-        # report_content_sha256) by default, so the service's cross-check
-        # between the signed event and the bundle registry passes on the
-        # happy path; pass an explicit value to exercise a mismatch.
-        bundle_manifest_sha256 = report_bundle_manifest_sha256(tenant, report_version_id, report_content_sha256)
+        # Fixtures model the digest as an opaque result from M07's verified
+        # signature event. The M08 fake registry must be registered with the
+        # same value; it never reconstructs one from report fields.
+        bundle_manifest_sha256 = M07_MANIFEST_SHA256
     payload = {
         "report_version_id": report_version_id,
         "signature_id": signature_id,
@@ -220,13 +218,23 @@ def default_candidates(count: int = 1) -> tuple[AudienceCandidate, ...]:
     )
 
 
-def register_bundle_for(m08, recommendation_version_id: str, report_version_id: str, *, report_content_sha256: str = "a" * 64, tamper: bool = False):
+def register_bundle_for(
+    m08,
+    recommendation_version_id: str,
+    report_version_id: str,
+    *,
+    report_content_sha256: str = "a" * 64,
+    bundle_manifest_sha256: str = M07_MANIFEST_SHA256,
+    tamper: bool = False,
+):
     snapshot = m08["repository"].snapshot()
     version = snapshot.versions[(TENANT, recommendation_version_id)]
     content_sha256 = ("0" * 64) if tamper else version.content_sha256
     return m08["report_bundles"].register(
         TENANT, report_version_id, recommendation_version_id,
-        content_sha256=content_sha256, report_content_sha256=report_content_sha256,
+        content_sha256=content_sha256,
+        report_content_sha256=report_content_sha256,
+        bundle_manifest_sha256=bundle_manifest_sha256,
     )
 
 

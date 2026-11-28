@@ -168,7 +168,7 @@ class PublicationService:
         series_id = require_uuid(series_id, "series_id")
         self._body(
             body,
-            {"action", "rationale", "supporting_report_version_ids", "valid_from", "valid_until", "supersedes_version_id", "source_candidate_id"},
+            {"action", "rationale", "supporting_report_version_ids", "valid_from", "valid_until", "supersedes_version_id", "source_candidate_id", "client_version_id"},
             {"action", "rationale", "supporting_report_version_ids", "valid_from", "valid_until", "source_candidate_id"},
         )
         if body["action"] not in _ACTIONS:
@@ -196,6 +196,9 @@ class PublicationService:
         if valid_until <= valid_from:
             raise ValidationError("valid_until must be after valid_from", field_name="valid_until")
         source_candidate_id = require_uuid(body["source_candidate_id"], "source_candidate_id")
+        client_version_id = body.get("client_version_id")
+        if client_version_id is not None:
+            client_version_id = require_uuid(client_version_id, "client_version_id")
         supersedes_version_id = body.get("supersedes_version_id")
         if supersedes_version_id is not None:
             supersedes_version_id = require_uuid(supersedes_version_id, "supersedes_version_id")
@@ -209,6 +212,13 @@ class PublicationService:
         def mutate(state: StoreState) -> _Outcome:
             series = self._stored_series(state, context.tenant_id, series_id)
             self._cas(series.version, expected_version)
+            version_id = client_version_id or new_id()
+            if (context.tenant_id, version_id) in state.versions:
+                raise ConflictError(
+                    "client_version_id has already been used in this tenant",
+                    code="client_version_id_conflict",
+                    field_name="client_version_id",
+                )
             if supersedes_version_id is not None:
                 prior = state.versions.get((context.tenant_id, supersedes_version_id))
                 if not prior or prior.series_id != series_id:
@@ -222,7 +232,7 @@ class PublicationService:
                 1 for (tenant, _), item in state.versions.items() if tenant == context.tenant_id and item.series_id == series_id
             )
             version = RecommendationVersion(
-                id=new_id(),
+                id=version_id,
                 tenant_id=context.tenant_id,
                 series_id=series_id,
                 version_number=version_number,

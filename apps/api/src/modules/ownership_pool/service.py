@@ -87,12 +87,42 @@ class OwnershipPoolService:
         self.restriction = restriction
         self._clock = clock
 
-    # ---- internal policy administration ----------------------------------
-    # Not a published operationId: api/openapi.yaml's M11 surface has no policy
-    # lifecycle endpoint, but ownership.policy_version rows are a hard FK
-    # dependency of every assignment/pool_entry row. Ops tooling and tests use
-    # this directly, mirroring customer_identity_application.service's
-    # documented precedent for necessary-but-unpublished commands.
+    # ---- company-pool policy administration -------------------------------
+    # ``propose_policy_version`` and ``approve_policy_version`` pre-date the
+    # public M11 policy lifecycle operations.  Keep these as the single source
+    # of the version/SoD transition rules: the published command adapters below
+    # only validate the wire body and then call them.
+
+    def create_company_pool_policy(
+        self,
+        context: ActorContext,
+        body: dict[str, Any],
+        *,
+        idempotency_key: str,
+        correlation_id: str | None = None,
+    ) -> ServiceResponse:
+        """Create a draft version of the single company-pool lapse policy."""
+        correlation_id = self._correlation(correlation_id)
+        try:
+            self._authorize_staff(context, {"sales_supervisor"})
+            self._body(body, {"lapse_days", "departure_immediate"}, {"lapse_days", "departure_immediate"})
+            lapse_days = body["lapse_days"]
+            departure_immediate = body["departure_immediate"]
+            if not isinstance(lapse_days, int) or isinstance(lapse_days, bool) or lapse_days <= 0:
+                raise ValidationError("lapse_days must be a positive integer", field_name="lapse_days")
+            if not isinstance(departure_immediate, bool):
+                raise ValidationError("departure_immediate must be a boolean", field_name="departure_immediate")
+        except DomainError as exc:
+            self._audit_failure(context, "create_company_pool_policy", correlation_id, exc.code)
+            raise
+        return self.propose_policy_version(
+            context,
+            policy_code=DEFAULT_POLICY_CODE,
+            lapse_days=lapse_days,
+            departure_immediate=departure_immediate,
+            idempotency_key=idempotency_key,
+            correlation_id=correlation_id,
+        )
 
     def propose_policy_version(
         self,
@@ -101,14 +131,26 @@ class OwnershipPoolService:
         policy_code: str = DEFAULT_POLICY_CODE,
         lapse_days: int = 7,
         departure_immediate: bool = True,
+        idempotency_key: str | None = None,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize_staff(context, {"sales_supervisor"})
-        if not isinstance(lapse_days, int) or lapse_days <= 0:
-            raise ValidationError("lapse_days must be a positive integer", field_name="lapse_days")
+        correlation_id = self._correlation(correlation_id)
+        try:
+            self._authorize_staff(context, {"sales_supervisor"})
+            if not isinstance(policy_code, str) or not 1 <= len(policy_code) <= 80:
+                raise ValidationError("policy_code must contain 1 to 80 characters", field_name="policy_code")
+            if not isinstance(lapse_days, int) or isinstance(lapse_days, bool) or lapse_days <= 0:
+                raise ValidationError("lapse_days must be a positive integer", field_name="lapse_days")
+            if not isinstance(departure_immediate, bool):
+                raise ValidationError("departure_immediate must be a boolean", field_name="departure_immediate")
+        except DomainError as exc:
+            if idempotency_key is not None:
+                self._audit_failure(context, "create_company_pool_policy", correlation_id, exc.code)
+            raise
         now = self._clock()
 
-        def mutate(state: StoreState) -> PolicyVersion:
+        def create(state: StoreState) -> PolicyVersion:
+            self._reject_departed_actor(state, context, now)
             existing_versions = [
                 policy.policy_version for (tenant, _), policy in state.policies.items()
                 if tenant == context.tenant_id and policy.policy_code == policy_code
@@ -128,8 +170,49 @@ class OwnershipPoolService:
             state.policy_by_code[(context.tenant_id, policy.wire_code)] = policy.id
             return policy
 
-        policy = self.repository.atomic(mutate)
-        return ServiceResponse(self._policy_api(policy), 201, self._etag(policy.version))
+        if idempotency_key is None:
+            policy = self.repository.atomic(create)
+            return ServiceResponse(self._policy_api(policy, context), 201, self._etag(policy.version))
+
+        def mutate(state: StoreState) -> _Outcome:
+            return self._policy_outcome(create(state), context, 201)
+
+        return self._run_command(
+            context,
+            "create_company_pool_policy",
+            idempotency_key,
+            {"policy_code": policy_code, "lapse_days": lapse_days, "departure_immediate": departure_immediate},
+            correlation_id,
+            mutate,
+        )
+
+    def approve_company_pool_policy(
+        self,
+        context: ActorContext,
+        policy_id: str,
+        body: dict[str, Any],
+        *,
+        expected_version: int | None,
+        idempotency_key: str,
+        correlation_id: str | None = None,
+    ) -> ServiceResponse:
+        """Approve a draft with the existing separate-supervisor rule."""
+        correlation_id = self._correlation(correlation_id)
+        try:
+            self._authorize_staff(context, {"sales_supervisor"})
+            self._body(body, {"decision"}, {"decision"})
+            if body["decision"] != "approve":
+                raise ValidationError("decision must be approve", field_name="decision")
+        except DomainError as exc:
+            self._audit_failure(context, "approve_company_pool_policy", correlation_id, exc.code)
+            raise
+        return self.approve_policy_version(
+            context,
+            policy_id,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            correlation_id=correlation_id,
+        )
 
     def approve_policy_version(
         self,
@@ -137,13 +220,21 @@ class OwnershipPoolService:
         policy_id: str,
         *,
         expected_version: int | None,
+        idempotency_key: str | None = None,
         correlation_id: str | None = None,
     ) -> ServiceResponse:
-        self._authorize_staff(context, {"sales_supervisor"})
-        policy_id = require_uuid(policy_id, "policy_id")
+        correlation_id = self._correlation(correlation_id)
+        try:
+            self._authorize_staff(context, {"sales_supervisor"})
+            policy_id = require_uuid(policy_id, "policy_id")
+        except DomainError as exc:
+            if idempotency_key is not None:
+                self._audit_failure(context, "approve_company_pool_policy", correlation_id, exc.code)
+            raise
         now = self._clock()
 
-        def mutate(state: StoreState) -> PolicyVersion:
+        def approve(state: StoreState) -> PolicyVersion:
+            self._reject_departed_actor(state, context, now)
             policy = state.policies.get((context.tenant_id, policy_id))
             if not policy:
                 raise NotFoundError("policy version was not found")
@@ -159,17 +250,81 @@ class OwnershipPoolService:
             policy.version += 1
             return policy
 
-        policy = self.repository.atomic(mutate)
-        return ServiceResponse(self._policy_api(policy), 200, self._etag(policy.version))
+        if idempotency_key is None:
+            policy = self.repository.atomic(approve)
+            return ServiceResponse(self._policy_api(policy, context), 200, self._etag(policy.version))
 
-    @staticmethod
-    def _policy_api(policy: PolicyVersion) -> dict[str, Any]:
+        def mutate(state: StoreState) -> _Outcome:
+            return self._policy_outcome(approve(state), context, 200)
+
+        return self._run_command(
+            context,
+            "approve_company_pool_policy",
+            idempotency_key,
+            {"policy_id": policy_id, "decision": "approve"},
+            correlation_id,
+            mutate,
+        )
+
+    def get_current_company_pool_policy(
+        self,
+        context: ActorContext,
+        *,
+        correlation_id: str | None = None,
+    ) -> ServiceResponse:
+        """Return the highest approved company-pool version in this tenant."""
+        correlation_id = self._correlation(correlation_id)
+        try:
+            self._authorize_staff(context, {"sales_supervisor"})
+        except DomainError as exc:
+            self._audit_failure(context, "get_current_company_pool_policy", correlation_id, exc.code)
+            raise
+
+        def query(state: StoreState) -> ServiceResponse:
+            approved = [
+                policy for (tenant, _), policy in state.policies.items()
+                if tenant == context.tenant_id
+                and policy.policy_code == DEFAULT_POLICY_CODE
+                and policy.approval_status == "approved"
+            ]
+            if not approved:
+                raise NotFoundError("no approved company pool policy was found", code="current_policy_not_found")
+            policy = max(approved, key=lambda item: item.policy_version)
+            self._audit(
+                state,
+                context,
+                "get_current_company_pool_policy",
+                "company_pool_policy",
+                policy.id,
+                policy.version,
+                correlation_id,
+                "succeeded",
+            )
+            return ServiceResponse(self._policy_api(policy, context), 200, self._etag(policy.version))
+
+        try:
+            return self.repository.atomic(query)
+        except DomainError as exc:
+            self._audit_failure(context, "get_current_company_pool_policy", correlation_id, exc.code)
+            raise
+
+    def _policy_api(self, policy: PolicyVersion, context: ActorContext) -> dict[str, Any]:
         return {
             "id": policy.id,
+            "tenant_id": policy.tenant_id,
+            "version": policy.version,
+            "created_at": wire_time(policy.created_at),
+            "updated_at": wire_time(policy.updated_at),
+            "allowed_actions": self._policy_actions(policy, context),
+            "policy_code": policy.policy_code,
             "policy_version": policy.wire_code,
             "approval_status": policy.approval_status,
+            "lapse_basis": policy.lapse_basis,
             "lapse_days": policy.lapse_days,
             "departure_immediate": policy.departure_immediate,
+            "proposed_by": policy.proposed_by,
+            "approved_by": policy.approved_by,
+            "approved_at": wire_time(policy.approved_at) if policy.approved_at else None,
         }
 
     # ---- published commands -----------------------------------------------
@@ -1001,6 +1156,15 @@ class OwnershipPoolService:
             return ["claim_pool_customer"]
         return []
 
+    def _policy_actions(self, policy: PolicyVersion, context: ActorContext) -> list[str]:
+        if (
+            policy.approval_status == "draft"
+            and self._staff(context, {"sales_supervisor"})
+            and policy.proposed_by != context.actor_id
+        ):
+            return ["approve_company_pool_policy"]
+        return []
+
     def _assignment_actions(self, assignment: Assignment, context: ActorContext) -> list[str]:
         if assignment.wire_state == "active" and self._staff(context, {"sales_supervisor"}):
             return ["release_maintenance_owner", "assign_maintenance_owner"]
@@ -1011,6 +1175,9 @@ class OwnershipPoolService:
 
     def _pool_entry_outcome(self, entry: PoolEntry, context: ActorContext, status: int) -> _Outcome:
         return _Outcome(self._pool_entry_api(entry, context), status, "pool_entry", entry.id, entry.version)
+
+    def _policy_outcome(self, policy: PolicyVersion, context: ActorContext, status: int) -> _Outcome:
+        return _Outcome(self._policy_api(policy, context), status, "company_pool_policy", policy.id, policy.version)
 
     def _audit(
         self,
