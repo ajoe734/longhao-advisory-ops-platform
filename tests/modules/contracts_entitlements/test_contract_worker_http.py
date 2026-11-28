@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "apps" / "api" / "src"))
 sys.path.insert(0, str(ROOT))
 
-from modules.contracts_entitlements.domain import Job, canonical_hash, new_id, wire_time
+from modules.contracts_entitlements.domain import ActorContext, Job, canonical_hash, new_id, wire_time
 from workers.tasks.contracts_entitlements.consumer import M02EventConsumer
 from workers.tasks.contracts_entitlements.tasks import (
     EntitlementRecheckWorker,
@@ -127,6 +127,48 @@ def test_http_if_match_rejects_malformed_etag(m02):
         path={"application_id": APPLICATION_A}, headers={"idempotency-key": "http-sign-0002", "if-match": "not-an-etag"},
     )
     assert result.status == 422
+
+
+def test_http_get_contract_exposes_invoiceable_services_without_relaxing_access(m02):
+    package, package_sha256 = create_approved_package(m02, package_code="advisory-contract-read", idempotency_key="pkg-contract-read")
+    register_application(m02, APPLICATION_A, CUSTOMER_ACTOR, package["id"])
+    _, _, signature_id = sign_application(m02, APPLICATION_A, package, package_sha256)
+    kyc_id, suitability_id, clearance_id = new_id(), new_id(), new_id()
+    set_gates(m02, APPLICATION_A, kyc_id=kyc_id, suitability_id=suitability_id, clearance_id=clearance_id)
+    m02["payments"].set_condition(TENANT, APPLICATION_A, "pay-contract-read")
+    contract_id = accept_application(
+        m02, APPLICATION_A, package, signature_id,
+        kyc_id=kyc_id, suitability_id=suitability_id, clearance_id=clearance_id,
+        idempotency_key="accept-contract-read",
+    ).data["contract_id"]
+    m02["service"].evaluate_entitlements(
+        entitlement_service_ctx(), contract_id, {"cause_event_id": new_id(), "policy_version": "v1"},
+        expected_version=1, idempotency_key="evaluate-contract-read",
+    )
+    stored_service = next(row for row in m02["repository"].snapshot().contract_services.values() if row.contract_id == contract_id)
+
+    result = m02["controller"].handle("get_contract", operator_ctx(), path={"contract_id": contract_id})
+
+    assert result.status == 200
+    assert result.body["services"] == [{
+        "contract_service_id": stored_service.id,
+        "service_code": stored_service.service_code,
+        "service_period_start": wire_time(stored_service.starts_at),
+        "service_period_end": wire_time(stored_service.ends_at),
+        "untaxed_service_amount": {"amount": stored_service.untaxed_contract_amount, "currency": "TWD"},
+        "status": "active",
+    }]
+
+    unauthenticated = m02["controller"].handle("get_contract", None, path={"contract_id": contract_id})
+    assert unauthenticated.status == 401
+
+    platform_admin = ActorContext(TENANT, new_id(), frozenset({"platform_admin"}), principal_type="staff")
+    forbidden = m02["controller"].handle("get_contract", platform_admin, path={"contract_id": contract_id})
+    assert forbidden.status == 403
+
+    other_tenant = ActorContext("10000000-0000-0000-0000-000000000099", new_id(), frozenset({"contract_operator"}), principal_type="staff")
+    cross_tenant = m02["controller"].handle("get_contract", other_tenant, path={"contract_id": contract_id})
+    assert cross_tenant.status == 404
 
 
 # ---- outbox publisher and task runner -----------------------------------------

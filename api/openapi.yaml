@@ -9443,6 +9443,13 @@ components:
           anyOf:
           - *id001
           - type: 'null'
+        services:
+          type: array
+          description: 此契約下所有服務期；`contract_service_id` 可直接用於 M14 InvoiceLineCreate。
+          items:
+            $ref: '#/components/schemas/ContractServiceRead'
+          minItems: 1
+          maxItems: 200
       required:
       - customer_id
       - package_version_id
@@ -10014,6 +10021,36 @@ components:
       - terminated_at
       - service_selections
       - preceding_contract_id
+      - services
+    ContractServiceRead:
+      type: object
+      additionalProperties: false
+      description: M02 contract.contract_service 的可開立發票讀取投影；status 為相應 entitlement 的目前安全狀態。
+      properties:
+        contract_service_id: *id001
+        service_code:
+          type: string
+          maxLength: 80
+        service_period_start: *id003
+        service_period_end: *id003
+        untaxed_service_amount:
+          $ref: '#/components/schemas/Money'
+        status:
+          type: string
+          enum:
+          - locked
+          - eligible
+          - active
+          - suspended
+          - expired
+          - revoked
+      required:
+      - contract_service_id
+      - service_code
+      - service_period_start
+      - service_period_end
+      - untaxed_service_amount
+      - status
     AmendmentRequest:
       type: object
       additionalProperties: false
