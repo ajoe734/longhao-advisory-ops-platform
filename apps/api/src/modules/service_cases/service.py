@@ -365,17 +365,28 @@ class ServiceCaseService:
             case = self._stored_case(state, context.tenant_id, case_id)
             self._authorize_case_timeline_reader(context, case)
             if context.principal_type == "customer":
+                drafts_by_id = {
+                    draft.id: draft
+                    for (tenant, _), draft in state.response_drafts.items()
+                    if tenant == context.tenant_id and draft.case_id == case.id
+                }
                 dispatches = [
                     dispatch for (tenant, _), dispatch in state.response_dispatches.items()
                     if tenant == context.tenant_id
                     and dispatch.case_id == case.id
-                    and dispatch.created_at <= as_of
+                    and dispatch.customer_id == context.customer_id
+                    and dispatch.customer_visible_at() <= as_of
                     and dispatch.status in _CUSTOMER_VISIBLE_DISPATCH_STATES
                 ]
-                dispatches.sort(key=lambda dispatch: (dispatch.created_at, dispatch.id))
+                dispatches.sort(key=lambda dispatch: (dispatch.customer_visible_at(), dispatch.id))
                 page = dispatches[offset:offset + limit]
                 value = self._page_value(
-                    [dispatch.to_customer_timeline_api() for dispatch in page],
+                    [
+                        dispatch.to_customer_timeline_api(
+                            drafts_by_id[dispatch.draft_id].text or "",
+                        )
+                        for dispatch in page
+                    ],
                     offset,
                     limit,
                     len(dispatches),

@@ -15,6 +15,8 @@
 | REQ-M13-011 / UAT-M13-011 | reopen_service_case preserves resolution + SLA dates | `test_uat_m13_011_reopen_preserves_original_resolution_history` |
 | REQ-M13-012 / UAT-M13-012 | assign/resolve vs ownership.assignment_changed projection | `test_uat_m13_012_case_owner_change_does_not_move_maintenance_ownership` |
 
+| GAP-M13-CASE-TIMELINE | `list_case_interactions` / `list_case_responses`: ordered cursor pages, internal draft/approval/dispatch visibility, customer-safe projections | `test_m13_case_timeline.py` |
+
 額外控制由 `test_m13_contract_worker_http.py` 驗 14 route、OpenAPI/event schema、consumer
 hash/sequence-gap/tenant isolation、outbox 與 response-dispatch worker 的
 lease/retry/unknown-result-lookup（含永不落入非合約列舉值 `retry`）、

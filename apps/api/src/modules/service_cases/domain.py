@@ -376,22 +376,29 @@ class ResponseDispatch:
             "outbound_interaction_id": self.outbound_interaction_id,
         }
 
-    def to_customer_timeline_api(self) -> dict[str, Any]:
+    def to_customer_timeline_api(self, text: str) -> dict[str, Any]:
         """Return delivery facts that are safe for the receiving customer.
 
         Draft identifiers, approval evidence, provider references and content
-        hashes are workflow-internal.  The service applies this projection only
-        after a provider reports ``sent`` or ``delivered``.
+        hashes are workflow-internal.  ``text`` is the exact approved draft
+        content that was dispatched.  The service supplies it only after a
+        provider reports ``sent`` or ``delivered``.
         """
+        occurred_at = self.sent_at or self.delivered_at or self.created_at
         return {
             "id": self.id,
             "case_id": self.case_id,
-            "occurred_at": wire_time(self.created_at),
+            "occurred_at": wire_time(occurred_at),
             "channel": self.channel,
             "state": self.status,
+            "text": text,
             "sent_at": wire_time(self.sent_at) if self.sent_at else None,
             "delivered_at": wire_time(self.delivered_at) if self.delivered_at else None,
         }
+
+    def customer_visible_at(self) -> datetime:
+        """Use the actual provider-confirmed send time for public ordering."""
+        return self.sent_at or self.delivered_at or self.created_at
 
 
 @dataclass

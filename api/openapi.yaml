@@ -6207,6 +6207,56 @@ paths:
         '503':
           $ref: '#/components/responses/Error503'
   /service-cases/{case_id}/interactions:
+    get:
+      operationId: list_case_interactions
+      summary: 讀取案件跨通路互動時間軸
+      tags:
+      - M13
+      security:
+      - customerBearer: []
+      - staffBearer: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - in: path
+        name: case_id
+        required: true
+        schema: *id001
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/AsOf'
+      x-module: M13
+      x-allowed-roles:
+      - member
+      - service_agent
+      - service_supervisor
+      x-resource-ownership: self_or_authorized_staff
+      x-audit-action: m13.list_case_interactions
+      x-idempotency-required: false
+      description: 客戶僅能讀取本人案件的 inbound/outbound 摘要；internal 互動及原始內容、員工身分與研究參照不會回傳。
+      responses:
+        '200':
+          description: 依互動實際時間升冪的游標分頁；續頁沿用首頁 as_of。
+          headers:
+            X-Correlation-Id:
+              schema: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseInteractionTimelinePage'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
     post:
       operationId: add_case_interaction
       summary: 記錄跨渠道互動與原始內容證據
@@ -8604,6 +8654,56 @@ paths:
             schema:
               $ref: '#/components/schemas/ControlExceptionActionRequest'
   /service-cases/{case_id}/responses:
+    get:
+      operationId: list_case_responses
+      summary: 讀取案件草稿、核准與回覆送達時間軸
+      tags:
+      - M13
+      security:
+      - customerBearer: []
+      - staffBearer: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - in: path
+        name: case_id
+        required: true
+        schema: *id001
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/AsOf'
+      x-module: M13
+      x-allowed-roles:
+      - member
+      - service_agent
+      - service_supervisor
+      x-resource-ownership: self_or_authorized_staff
+      x-audit-action: m13.list_case_responses
+      x-idempotency-required: false
+      description: 員工可讀草稿、核准與 dispatch 狀態；客戶只可讀本人已由 provider 確認 sent/delivered 的精確回覆文字、通路與送達時間，不會看到草稿、核准、hash 或 provider 證據。
+      responses:
+        '200':
+          description: 依草稿建立、核准或 dispatch 建立時間升冪的游標分頁；客戶回覆依 provider 確認寄送時間排序。
+          headers:
+            X-Correlation-Id:
+              schema: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseResponseTimelinePage'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
     post:
       operationId: send_service_response
       summary: 核定精確草稿或低風險固定模板後由本平台送出客服回覆
@@ -14326,6 +14426,170 @@ components:
       - content_asset_id
       - summary
       - publication_reference_ids
+    CustomerCaseInteraction:
+      type: object
+      additionalProperties: false
+      description: 本人案件可公開的互動摘要；絕不包含原始內容資產、員工身分或內部／研究參照。
+      properties:
+        id: *id001
+        case_id: *id001
+        channel:
+          type: string
+          enum:
+          - web
+          - line
+          - email
+          - phone
+          - onsite
+        direction:
+          type: string
+          enum:
+          - inbound
+          - outbound
+        occurred_at: *id003
+        summary:
+          type: string
+          maxLength: 4000
+      required:
+      - id
+      - case_id
+      - channel
+      - direction
+      - occurred_at
+      - summary
+    CaseInteractionTimelineItem:
+      oneOf:
+      - $ref: '#/components/schemas/CaseInteraction'
+      - $ref: '#/components/schemas/CustomerCaseInteraction'
+    CaseResponseTimelineItem:
+      type: object
+      additionalProperties: false
+      description: 內部案件回覆流程事件；每筆只承載 draft、approval 或 response 其中一種。
+      properties:
+        id: *id001
+        record_type:
+          type: string
+          enum:
+          - draft
+          - approval
+          - response
+        occurred_at: *id003
+        channel:
+          anyOf:
+          - type: string
+            enum:
+            - web
+            - line
+            - sms
+            - email
+          - type: 'null'
+        draft:
+          anyOf:
+          - $ref: '#/components/schemas/ResponseDraft'
+          - type: 'null'
+        approval:
+          anyOf:
+          - $ref: '#/components/schemas/ServiceResponseApproval'
+          - type: 'null'
+        response:
+          anyOf:
+          - $ref: '#/components/schemas/ServiceResponse'
+          - type: 'null'
+      required:
+      - id
+      - record_type
+      - occurred_at
+      - channel
+      - draft
+      - approval
+      - response
+      allOf:
+      - if:
+          properties:
+            record_type:
+              const: draft
+          required:
+          - record_type
+        then:
+          properties:
+            draft:
+              $ref: '#/components/schemas/ResponseDraft'
+            approval:
+              type: 'null'
+            response:
+              type: 'null'
+      - if:
+          properties:
+            record_type:
+              const: approval
+          required:
+          - record_type
+        then:
+          properties:
+            draft:
+              type: 'null'
+            approval:
+              $ref: '#/components/schemas/ServiceResponseApproval'
+            response:
+              type: 'null'
+      - if:
+          properties:
+            record_type:
+              const: response
+          required:
+          - record_type
+        then:
+          properties:
+            draft:
+              type: 'null'
+            approval:
+              type: 'null'
+            response:
+              $ref: '#/components/schemas/ServiceResponse'
+    CustomerCaseResponseTimelineItem:
+      type: object
+      additionalProperties: false
+      description: 本人已確認對外送出的精確回覆；不包含草稿／核准／雜湊／provider 證據。
+      properties:
+        id: *id001
+        case_id: *id001
+        occurred_at: *id003
+        channel:
+          type: string
+          enum:
+          - web
+          - line
+          - sms
+          - email
+        state:
+          type: string
+          enum:
+          - sent
+          - delivered
+        text:
+          type: string
+          maxLength: 12000
+        sent_at:
+          anyOf:
+          - *id003
+          - type: 'null'
+        delivered_at:
+          anyOf:
+          - *id003
+          - type: 'null'
+      required:
+      - id
+      - case_id
+      - occurred_at
+      - channel
+      - state
+      - text
+      - sent_at
+      - delivered_at
+    CaseResponseTimelineItemView:
+      oneOf:
+      - $ref: '#/components/schemas/CaseResponseTimelineItem'
+      - $ref: '#/components/schemas/CustomerCaseResponseTimelineItem'
     CaseEscalationRequest:
       type: object
       additionalProperties: false
@@ -16307,6 +16571,54 @@ components:
       - items
       - next_cursor
       - as_of
+    CaseInteractionTimelinePage:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseInteractionTimelineItem'
+          minItems: 0
+          maxItems: 200
+        next_cursor:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+        as_of: *id003
+        total_estimate:
+          type: integer
+          minimum: 0
+      required:
+      - items
+      - next_cursor
+      - as_of
+      - total_estimate
+    CaseResponseTimelinePage:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseResponseTimelineItemView'
+          minItems: 0
+          maxItems: 200
+        next_cursor:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+        as_of: *id003
+        total_estimate:
+          type: integer
+          minimum: 0
+      required:
+      - items
+      - next_cursor
+      - as_of
+      - total_estimate
     ReconciliationItemPage:
       type: object
       additionalProperties: false

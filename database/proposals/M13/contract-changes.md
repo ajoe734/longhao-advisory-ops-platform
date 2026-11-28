@@ -1,9 +1,32 @@
 # M13 共用契約相容性註記
 
-本模組沒有向 `api/openapi.yaml` 或 `events/registry.json` 提出新增契約；14 個
-M13 operationId 與 4 個 producer 事件（`support.case_opened` /
-`support.case_escalated` / `support.case_resolved` /
-`support.response_status_changed`）已足以實作全部 REQ-M13-001～012。
+## GAP-M13-CASE-TIMELINE：讀取案件互動與回覆紀錄
+
+本提案對 `api/openapi.yaml` 做兩項**向下相容的新增**，不改名、刪除或變更既有
+欄位／operation：
+
+- `GET /service-cases/{case_id}/interactions`（`list_case_interactions`）回傳跨通路
+  互動，依 `(occurred_at, id)` 升冪排序，支援既有 `cursor`／`limit`／`as_of`
+  分頁參數。
+- `GET /service-cases/{case_id}/responses`（`list_case_responses`）把草稿、核准與
+  dispatch 狀態組成同一依時間排序的游標時間軸；內部項目以 `record_type` 區分
+  `draft`／`approval`／`response`，response 項保留實際通路與 queued/accepted/
+  sent/delivered 等狀態。
+
+兩端點都使用可信任 principal 的 tenant 和資源歸屬，而不是瀏覽器傳入的
+`customer_id`。客服只有 `service_agent`／`service_supervisor` 可讀；`platform_admin`
+不因平台角色取得本模組資料。客戶只能讀自己的案件：
+
+- interaction 只投影 `inbound`／`outbound` 摘要；`internal` 筆記、`content_asset_id`、
+  `recorded_by` 與 publication references 一律不回傳。
+- response 只在 provider 已確認 `sent` 或 `delivered` 後投影該次已核定文字、通路與
+  送達時間；草稿、核准、hash、channel binding 與 provider receipt 仍是內部證據。
+
+不需要 SQL migration：查詢只讀既有 `support.interaction`、`support.response_draft`、
+`support.response_approval` 與 `support.response_dispatch`，且使用既有 tenant key。
+API schema steward 應審查本次 `api/openapi.yaml` 的新增 `operationId`／oneOf projection
+schema；共享 `api/operation-catalog.json`、mock fixture 與 RBAC matrix 仍由其 steward
+管理，未在本 task 的 write scope 修改。
 
 ## 待 integration/QA steward 核對的落差
 
