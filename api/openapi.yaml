@@ -7133,6 +7133,62 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/RevenueRunRequest'
+    get:
+      operationId: list_revenue_runs
+      summary: 依狀態與期間列出收入認列批次
+      tags:
+      - M14
+      security:
+      - staffBearer: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/AsOf'
+      - $ref: '#/components/parameters/PeriodStart'
+      - $ref: '#/components/parameters/PeriodEnd'
+      - in: query
+        name: state
+        required: false
+        schema:
+          type: string
+          enum:
+          - queued
+          - calculated
+          - review_pending
+          - approved
+          - posted
+          - failed
+      x-module: M14
+      x-allowed-roles:
+      - finance_operator
+      - finance_checker
+      x-resource-ownership: tenant_and_scope
+      x-audit-action: m14.list_revenue_runs
+      x-idempotency-required: false
+      description: 期間使用半開區間 [period_start, period_end)，回傳只讀快照並以 cursor 分頁。
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Correlation-Id:
+              schema: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevenueRunPage'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
   /finance/refunds:
     post:
       operationId: request_refund
@@ -7194,6 +7250,70 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/RefundCreate'
+    get:
+      operationId: list_refunds
+      summary: 依狀態與建立期間列出退款
+      tags:
+      - M14
+      security:
+      - staffBearer: []
+      - serviceBearer: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/AsOf'
+      - $ref: '#/components/parameters/PeriodStart'
+      - $ref: '#/components/parameters/PeriodEnd'
+      - in: query
+        name: state
+        required: false
+        schema:
+          type: string
+          enum:
+          - requested
+          - calculated
+          - approval_pending
+          - approved
+          - submitted
+          - confirmed
+          - failed
+          - reconciliation_required
+          - accounting_adjusted
+          - closed
+          - rejected
+      x-module: M14
+      x-allowed-roles:
+      - finance_operator
+      - service_agent
+      - finance_checker
+      - refund_service
+      x-resource-ownership: tenant_and_scope
+      x-audit-action: m14.list_refunds
+      x-idempotency-required: false
+      description: 期間篩選以退款建立日的半開區間 [period_start, period_end) 計算；平台管理角色不因管理身分取得此讀取權限。
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Correlation-Id:
+              schema: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefundPage'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
   /finance/refunds/{refund_id}/approval:
     post:
       operationId: approve_refund
@@ -7447,6 +7567,118 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/AccountingExportRequest'
+    get:
+      operationId: list_accounting_exports
+      summary: 依狀態與會計期間列出總帳匯出
+      tags:
+      - M14
+      security:
+      - staffBearer: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/AsOf'
+      - $ref: '#/components/parameters/PeriodStart'
+      - $ref: '#/components/parameters/PeriodEnd'
+      - in: query
+        name: state
+        required: false
+        schema:
+          type: string
+          enum:
+          - prepared
+          - approved
+          - exported
+          - partially_acknowledged
+          - acknowledged
+          - failed
+      x-module: M14
+      x-allowed-roles:
+      - finance_operator
+      - finance_checker
+      x-resource-ownership: tenant_and_scope
+      x-audit-action: m14.list_accounting_exports
+      x-idempotency-required: false
+      description: 期間使用匯出資料的半開會計期間 [period_start, period_end)，回傳只讀快照並以 cursor 分頁。
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Correlation-Id:
+              schema: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountingExportPage'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /finance/period-closes:
+    get:
+      operationId: list_period_closes
+      summary: 列出期間關帳的只讀就緒狀態
+      tags:
+      - M14
+      security:
+      - staffBearer: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/AsOf'
+      - $ref: '#/components/parameters/PeriodStart'
+      - $ref: '#/components/parameters/PeriodEnd'
+      - in: query
+        name: state
+        required: false
+        schema:
+          type: string
+          enum:
+          - blocked
+          - revenue_pending
+          - ready_for_export
+          - export_pending
+          - closed
+      x-module: M14
+      x-allowed-roles:
+      - finance_operator
+      - finance_checker
+      x-resource-ownership: tenant_and_scope
+      x-audit-action: m14.list_period_closes
+      x-idempotency-required: false
+      description: 此端點由既有收入批次、GL 匯出和未解對帳投影關帳就緒狀態；它不執行或宣告不可逆的正式關帳。
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Correlation-Id:
+              schema: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PeriodClosePage'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
   /finance/accounting-exports/{export_id}/acknowledgement:
     post:
       operationId: acknowledge_accounting_export
@@ -9037,6 +9269,24 @@ components:
         pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$
         description: UTC RFC3339；不得用來源交易時間倒填發布時間。
       description: 首次query建立snapshot time；續頁游標綁定，不可偷偷換filter/tenant。
+    PeriodStart:
+      in: query
+      name: period_start
+      required: false
+      schema:
+        type: string
+        format: date
+        pattern: ^\d{4}-\d{2}-\d{2}$
+      description: 半開財務期間的起點（inclusive）。
+    PeriodEnd:
+      in: query
+      name: period_end
+      required: false
+      schema:
+        type: string
+        format: date
+        pattern: ^\d{4}-\d{2}-\d{2}$
+      description: 半開財務期間的終點（exclusive），提供時必須晚於 period_start。
     WebhookTimestamp:
       in: header
       name: X-Webhook-Timestamp
@@ -14649,6 +14899,41 @@ components:
       - tax_amount
       - tax_code
       - tax_mapping_version
+    InvoiceLine:
+      type: object
+      additionalProperties: false
+      properties:
+        invoice_line_id: *id001
+        contract_service_id: *id001
+        service_code:
+          type: string
+          maxLength: 80
+        service_period_start: *id007
+        service_period_end: *id007
+        quantity:
+          type: integer
+          minimum: 1
+        untaxed_service_amount:
+          $ref: '#/components/schemas/Money'
+        tax_amount:
+          $ref: '#/components/schemas/Money'
+        tax_code:
+          type: string
+          maxLength: 40
+        tax_mapping_version:
+          type: string
+          maxLength: 80
+      required:
+      - invoice_line_id
+      - contract_service_id
+      - service_code
+      - service_period_start
+      - service_period_end
+      - quantity
+      - untaxed_service_amount
+      - tax_amount
+      - tax_code
+      - tax_mapping_version
     InvoiceCreate:
       type: object
       additionalProperties: false
@@ -14715,7 +15000,7 @@ components:
         lines:
           type: array
           items:
-            $ref: '#/components/schemas/InvoiceLineCreate'
+            $ref: '#/components/schemas/InvoiceLine'
           minItems: 1
           maxItems: 100
       required:
@@ -15340,6 +15625,8 @@ components:
           - partially_acknowledged
           - acknowledged
           - failed
+        period_start: *id007
+        period_end: *id007
         account_mapping_version:
           type: string
           maxLength: 80
@@ -15374,6 +15661,8 @@ components:
       - updated_at
       - allowed_actions
       - state
+      - period_start
+      - period_end
       - account_mapping_version
       - tax_mapping_version
       - debit_total
@@ -16466,6 +16755,146 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ReconciliationItem'
+          minItems: 0
+          maxItems: 200
+        next_cursor:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+        as_of: *id003
+        total_estimate:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+      required:
+      - items
+      - next_cursor
+      - as_of
+    RevenueRunPage:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RevenueRun'
+          minItems: 0
+          maxItems: 200
+        next_cursor:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+        as_of: *id003
+        total_estimate:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+      required:
+      - items
+      - next_cursor
+      - as_of
+    RefundPage:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Refund'
+          minItems: 0
+          maxItems: 200
+        next_cursor:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+        as_of: *id003
+        total_estimate:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+      required:
+      - items
+      - next_cursor
+      - as_of
+    AccountingExportPage:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccountingExport'
+          minItems: 0
+          maxItems: 200
+        next_cursor:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+        as_of: *id003
+        total_estimate:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+      required:
+      - items
+      - next_cursor
+      - as_of
+    PeriodClose:
+      type: object
+      additionalProperties: false
+      properties:
+        close_key:
+          type: string
+          minLength: 23
+          maxLength: 23
+          pattern: ^\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}$
+        period_start: *id007
+        period_end: *id007
+        state:
+          type: string
+          enum:
+          - blocked
+          - revenue_pending
+          - ready_for_export
+          - export_pending
+          - closed
+        revenue_run_ids:
+          type: array
+          items: *id001
+          minItems: 0
+          maxItems: 10000
+        accounting_export_ids:
+          type: array
+          items: *id001
+          minItems: 0
+          maxItems: 10000
+        unresolved_reconciliation_count:
+          type: integer
+          minimum: 0
+      required:
+      - close_key
+      - period_start
+      - period_end
+      - state
+      - revenue_run_ids
+      - accounting_export_ids
+      - unresolved_reconciliation_count
+    PeriodClosePage:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PeriodClose'
           minItems: 0
           maxItems: 200
         next_cursor:

@@ -23,7 +23,7 @@ def test_cross_tenant_staff_cannot_read_finance_resources(m14, operator):
         {
             "customer_id": customer_id, "contract_id": contract_id, "original_payment_id": payment_id, "reason_code": "service_cancelled",
             "requested_amount": money("500"),
-            "allocations": [{"invoice_line_ref": str(uuid4()), "recognition_id": None, "unearned_amount": money("500"), "earned_reversal_amount": money("0"), "tax_adjustment_amount": money("0")}],
+            "allocations": [{"invoice_line_ref": payment_id, "recognition_id": None, "unearned_amount": money("500"), "earned_reversal_amount": money("0"), "tax_adjustment_amount": money("0")}],
             "calculation_policy_version": "v1", "customer_request_evidence_id": "00000000-0000-0000-0000-00000000c001",
         },
         idempotency_key="tenant-refund-001",

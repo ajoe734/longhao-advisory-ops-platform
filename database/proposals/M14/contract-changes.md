@@ -11,5 +11,14 @@
 7. `finance.revenue_run` 新增 `calculation_detail jsonb` 只是審計用的計算輸入快照，不是新的對外欄位；`RevenueRun` wire schema 不變。
 8. 新增的 `finance.reconciliation_automation_run`/`_review` 不在 OpenAPI 中公開；它們支援模組文件第 11 節「LLM 可整理對帳差異說明」的草稿留痕，沒有 API operationId，也沒有解決對帳項目的權限。若未來要把草稿透過 API 曝光，需另外走正式契約變更，不能先開 route 再補 schema。
 9. `execute_refund` 的 `provider_idempotency_key` 與建立退款時的 `Idempotency-Key` header 是兩個獨立的去重鍵；前者對外（provider），後者對內（命令重送）。這不是 schema 缺陷，只是提醒讀者不要混用。
+10. `Invoice.lines[]` 向下相容地新增 required response field `invoice_line_id`，值為既有 `finance.invoice_line.id`。`InvoiceLineCreate` request schema 不變，因此既有建立帳單的 client 不須傳入資料庫識別碼。`request_refund.allocations[].invoice_line_ref` 現在在同一 command transaction 中驗證為 original payment 的 `invoice_id` 下既有明細；缺 invoice 關聯、遺失發票或外來明細一律拒絕，不能再以 `contract_service_id` 或任意 UUID 代替。此項不需要 DB migration：資料字典已定義 `finance.invoice_line.id` 與同 tenant 的 `invoice_id` FK。
+11. 新增相容的唯讀 cursor pages：`GET /finance/refunds`、`GET /finance/revenue-runs`、`GET /finance/accounting-exports`，全部接受 `state`、`period_start`、`period_end`、`cursor`、`limit` 與 `as_of`。退款的期間以建立日判斷；批次／匯出的期間以既有半開 accounting period 判斷。`AccountingExport` response 同時新增已存在於 aggregate 的 `period_start`／`period_end`，讓清單使用者不用反查 ID。`GET /finance/period-closes` 是由收入批次、GL export 與未解對帳投影的只讀就緒頁面（不是新的關帳 command 或資料表，也不宣告不可逆正式關帳）；其 `closed` 僅代表該投影中的 export 已 acknowledged 且沒有未解對帳。所有新讀取端點沿用既有 finance 角色集合，未授與 `platform_admin`。
+
+## GAP-M14-FINANCE-READS repair evidence
+
+| Finding／驗收項 | 原始碼依據與修改位置 | 舊版重現 → 修正版結果 | 命令、退出碼、執行版本與證據位置 | 未驗項與具體限制 |
+| --- | --- | --- | --- | --- |
+| 任意／外來 `invoice_line_ref` 可建立退款 | `InvoiceLine.id`、`InvoiceLine.to_api`、`FinanceControlService.request_refund`；`Invoice.lines[]` OpenAPI schema | anchor `db8c1b8` 上的正式 service regression 為 `DID NOT RAISE ValidationError`；修正版拒絕外來 line，並接受原付款帳單明細 | `python3 -m pytest tests/modules/finance_control/test_m14_contract_worker_http.py -q -k refund_allocation_must_reference_a_line_on_the_original_payment_invoice`：舊版 exit 1；修正版與同檔回歸命令結果見 `tests/modules/finance_control/test_m14_contract_worker_http.py` | PostgreSQL proposal 未在本 VM 執行；不需要新 migration，因既有 `finance.invoice_line.id`／`invoice_id` 已是資料字典權威欄位。 |
+| UI-29／UI-30／UI-31 無法列出財務資源 | `FinanceControlService.list_*`、`M14Controller`、`ROUTES`；`GET /finance/{refunds,revenue-runs,accounting-exports,period-closes}` 及 page schemas | 舊契約只有 `{id}` GET；修正版涵蓋 state／period filter、cursor、same-tenant 分頁，以及 401、403、cross-tenant empty page | `python3 -m pytest tests/modules/finance_control/test_m14_contract_worker_http.py -q`：exit 0，13 passed（實際結果）；細節在 `test_finance_lists_are_paginated_filtered_and_role_isolated` | 真正不可逆「正式關帳」命令／資料表尚未存在；`period-closes` 明確維持 read-only projection，不能作為已完成關帳或外部 ERP 接線證據。 |
 
 在上述列舉聯集與雙欄並存被下游讀者全部確認切換前，`finance.*` 的其他模組只應透過本模組發出的事件（`finance.payment_confirmed`／`finance.revenue_recognized`／`finance.refund_confirmed`／`finance.accounting_export_acknowledged`）或公開 API 讀取，不應直接查詢上述過渡期雙欄位。

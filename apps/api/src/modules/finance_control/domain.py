@@ -182,6 +182,7 @@ class DependencyUnavailableError(DomainError):
 
 @dataclass
 class InvoiceLine:
+    id: str
     line_no: int
     contract_service_id: str
     service_code: str
@@ -195,6 +196,7 @@ class InvoiceLine:
 
     def to_api(self, currency: str) -> dict[str, Any]:
         return {
+            "invoice_line_id": self.id,
             "contract_service_id": self.contract_service_id,
             "service_code": self.service_code,
             "service_period_start": wire_date(self.service_period_start),
@@ -635,6 +637,8 @@ class AccountingExport:
             "updated_at": wire_time(self.updated_at),
             "allowed_actions": allowed_actions,
             "state": self.status,
+            "period_start": wire_date(self.period_start),
+            "period_end": wire_date(self.period_end),
             "account_mapping_version": self.account_mapping_version,
             "tax_mapping_version": self.tax_mapping_version,
             "debit_total": money_to_api(self.debit_total, self.currency),

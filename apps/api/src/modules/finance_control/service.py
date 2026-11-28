@@ -81,9 +81,13 @@ _PAYMENT_ALLOWED_TRANSITIONS: dict[str, set[str]] = {
 }
 _REFUND_CALLBACK_STATUS = {"confirmed", "failed", "pending"}
 _REFUND_EXECUTABLE_CALLBACK_STATUSES = {"submitted", "reconciliation_required"}
+_REFUND_STATES = {"requested", "calculated", "approval_pending", "approved", "submitted", "confirmed", "failed", "reconciliation_required", "accounting_adjusted", "closed", "rejected"}
 _RECON_DECISIONS = {"match", "correct_mapping", "accept_timing", "reject", "escalate"}
 _RECON_STATES = {"open", "investigating", "resolved", "escalated"}
 _EXPORT_ACK_STATUS = {"accepted", "partial", "rejected"}
+_EXPORT_STATES = {"prepared", "approved", "exported", "partially_acknowledged", "acknowledged", "failed"}
+_REVENUE_RUN_STATES = {"queued", "calculated", "review_pending", "approved", "posted", "failed"}
+_PERIOD_CLOSE_STATES = {"blocked", "revenue_pending", "ready_for_export", "export_pending", "closed"}
 _CONTROL_ACTIONS = {"add_remediation_evidence", "request_closure", "approve_closure", "reject_closure", "reopen"}
 
 
@@ -194,6 +198,7 @@ class FinanceControlService:
                 )
             lines.append(
                 InvoiceLine(
+                    id=new_id(),
                     line_no=index + 1,
                     contract_service_id=contract_service_id,
                     service_code=str(raw["service_code"])[:80],
@@ -761,6 +766,48 @@ class FinanceControlService:
 
         return self._run_command(context, "run_revenue_recognition", idempotency_key, body, correlation_id, mutate)
 
+    def list_revenue_runs(
+        self,
+        context: ActorContext,
+        *,
+        state_filter: str | None = None,
+        period_start: date | None = None,
+        period_end: date | None = None,
+        cursor: str | None = None,
+        limit: int = 50,
+        as_of: datetime | None = None,
+        correlation_id: str | None = None,
+    ) -> ServiceResponse:
+        self._authorize(context, {FINANCE_OPERATOR, FINANCE_CHECKER})
+        self._validate_finance_list_filters(state_filter, _REVENUE_RUN_STATES, period_start, period_end, limit)
+        correlation_id = self._correlation(correlation_id)
+        snapshot_at = as_of or self._clock()
+
+        def query(state: StoreState) -> ServiceResponse:
+            rows = sorted(
+                (
+                    run for (tenant, _), run in state.revenue_runs.items()
+                    if tenant == context.tenant_id
+                    and run.created_at <= snapshot_at
+                    and (state_filter is None or run.status == state_filter)
+                    and self._period_overlaps(run.period_start, run.period_end, period_start, period_end)
+                    and (cursor is None or run.id > cursor)
+                ),
+                key=lambda run: run.id,
+            )
+            page = rows[:limit]
+            self._audit(state, context, "list_revenue_runs", "revenue_run", None, correlation_id, "success", "internal")
+            return ServiceResponse(
+                {
+                    "items": [run.to_api(self._revenue_run_actions(run, context)) for run in page],
+                    "next_cursor": page[-1].id if len(rows) > limit else None,
+                    "as_of": wire_time(snapshot_at),
+                    "total_estimate": len(rows),
+                }
+            )
+
+        return self.repository.atomic(query)
+
     def get_revenue_run(self, context: ActorContext, run_id: str, *, correlation_id: str | None = None) -> ServiceResponse:
         run_id = require_uuid(run_id, "run_id")
         self._authorize(context, {FINANCE_OPERATOR, FINANCE_CHECKER})
@@ -917,6 +964,11 @@ class FinanceControlService:
                 raise ValidationError("customer_id does not match the original payment", field_name="customer_id")
             if currency != payment.currency:
                 raise ValidationError("requested_amount currency must match the original payment", field_name="requested_amount")
+            if payment.invoice_id is None:
+                raise ConflictError("original payment is not associated with an invoice", code="payment_invoice_not_found")
+            invoice = state.invoices.get((context.tenant_id, payment.invoice_id))
+            if invoice is None:
+                raise ConflictError("original payment invoice was not found", code="payment_invoice_not_found")
             already_requested = sum(
                 (
                     r.requested_amount for (tenant, _), r in state.refunds.items()
@@ -932,6 +984,12 @@ class FinanceControlService:
                 prefix = f"allocations.{index}"
                 self._body(raw, {"invoice_line_ref", "recognition_id", "unearned_amount", "earned_reversal_amount", "tax_adjustment_amount"}, {"invoice_line_ref", "recognition_id", "unearned_amount", "earned_reversal_amount", "tax_adjustment_amount"})
                 invoice_line_ref = require_uuid(raw["invoice_line_ref"], f"{prefix}.invoice_line_ref")
+                if not any(line.id == invoice_line_ref for line in invoice.lines):
+                    raise ValidationError(
+                        "invoice_line_ref must reference a line on the original payment invoice",
+                        code="invoice_line_not_on_original_payment",
+                        field_name=f"{prefix}.invoice_line_ref",
+                    )
                 recognition_id = require_uuid(raw["recognition_id"], f"{prefix}.recognition_id") if raw.get("recognition_id") else None
                 unearned, c1 = parse_money(raw["unearned_amount"], f"{prefix}.unearned_amount")
                 earned, c2 = parse_money(raw["earned_reversal_amount"], f"{prefix}.earned_reversal_amount")
@@ -977,6 +1035,48 @@ class FinanceControlService:
             return _Outcome(refund.to_api(self._refund_actions(refund, context)), 201, "refund", refund_id, refund.version, classification="customer_confidential")
 
         return self._run_command(context, "request_refund", idempotency_key, body, correlation_id, mutate)
+
+    def list_refunds(
+        self,
+        context: ActorContext,
+        *,
+        state_filter: str | None = None,
+        period_start: date | None = None,
+        period_end: date | None = None,
+        cursor: str | None = None,
+        limit: int = 50,
+        as_of: datetime | None = None,
+        correlation_id: str | None = None,
+    ) -> ServiceResponse:
+        self._authorize(context, {FINANCE_OPERATOR, SERVICE_AGENT, FINANCE_CHECKER, REFUND_SERVICE})
+        self._validate_finance_list_filters(state_filter, _REFUND_STATES, period_start, period_end, limit)
+        correlation_id = self._correlation(correlation_id)
+        snapshot_at = as_of or self._clock()
+
+        def query(state: StoreState) -> ServiceResponse:
+            rows = sorted(
+                (
+                    refund for (tenant, _), refund in state.refunds.items()
+                    if tenant == context.tenant_id
+                    and refund.created_at <= snapshot_at
+                    and (state_filter is None or refund.status == state_filter)
+                    and self._period_overlaps(refund.created_at.date(), refund.created_at.date() + timedelta(days=1), period_start, period_end)
+                    and (cursor is None or refund.id > cursor)
+                ),
+                key=lambda refund: refund.id,
+            )
+            page = rows[:limit]
+            self._audit(state, context, "list_refunds", "refund", None, correlation_id, "success", "customer_confidential")
+            return ServiceResponse(
+                {
+                    "items": [refund.to_api(self._refund_actions(refund, context)) for refund in page],
+                    "next_cursor": page[-1].id if len(rows) > limit else None,
+                    "as_of": wire_time(snapshot_at),
+                    "total_estimate": len(rows),
+                }
+            )
+
+        return self.repository.atomic(query)
 
     def get_refund(self, context: ActorContext, refund_id: str, *, correlation_id: str | None = None) -> ServiceResponse:
         refund_id = require_uuid(refund_id, "refund_id")
@@ -1317,6 +1417,125 @@ class FinanceControlService:
             return _Outcome(export.to_api(self._export_actions(export, context)), 202, "accounting_export", export_id, export.version)
 
         return self._run_command(context, "create_accounting_export", idempotency_key, body, correlation_id, mutate)
+
+    def list_accounting_exports(
+        self,
+        context: ActorContext,
+        *,
+        state_filter: str | None = None,
+        period_start: date | None = None,
+        period_end: date | None = None,
+        cursor: str | None = None,
+        limit: int = 50,
+        as_of: datetime | None = None,
+        correlation_id: str | None = None,
+    ) -> ServiceResponse:
+        self._authorize(context, {FINANCE_OPERATOR, FINANCE_CHECKER})
+        self._validate_finance_list_filters(state_filter, _EXPORT_STATES, period_start, period_end, limit)
+        correlation_id = self._correlation(correlation_id)
+        snapshot_at = as_of or self._clock()
+
+        def query(state: StoreState) -> ServiceResponse:
+            rows = sorted(
+                (
+                    export for (tenant, _), export in state.accounting_exports.items()
+                    if tenant == context.tenant_id
+                    and export.created_at <= snapshot_at
+                    and (state_filter is None or export.status == state_filter)
+                    and self._period_overlaps(export.period_start, export.period_end, period_start, period_end)
+                    and (cursor is None or export.id > cursor)
+                ),
+                key=lambda export: export.id,
+            )
+            page = rows[:limit]
+            self._audit(state, context, "list_accounting_exports", "accounting_export", None, correlation_id, "success", "internal")
+            return ServiceResponse(
+                {
+                    "items": [export.to_api(self._export_actions(export, context)) for export in page],
+                    "next_cursor": page[-1].id if len(rows) > limit else None,
+                    "as_of": wire_time(snapshot_at),
+                    "total_estimate": len(rows),
+                }
+            )
+
+        return self.repository.atomic(query)
+
+    def list_period_closes(
+        self,
+        context: ActorContext,
+        *,
+        state_filter: str | None = None,
+        period_start: date | None = None,
+        period_end: date | None = None,
+        cursor: str | None = None,
+        limit: int = 50,
+        as_of: datetime | None = None,
+        correlation_id: str | None = None,
+    ) -> ServiceResponse:
+        """Return a read-only close-readiness projection; it never closes a period."""
+        self._authorize(context, {FINANCE_OPERATOR, FINANCE_CHECKER})
+        self._validate_finance_list_filters(state_filter, _PERIOD_CLOSE_STATES, period_start, period_end, limit)
+        correlation_id = self._correlation(correlation_id)
+        snapshot_at = as_of or self._clock()
+
+        def query(state: StoreState) -> ServiceResponse:
+            runs = [
+                run for (tenant, _), run in state.revenue_runs.items()
+                if tenant == context.tenant_id and run.created_at <= snapshot_at
+            ]
+            exports = [
+                export for (tenant, _), export in state.accounting_exports.items()
+                if tenant == context.tenant_id and export.created_at <= snapshot_at
+            ]
+            unresolved_reconciliation_count = sum(
+                1
+                for (tenant, _), item in state.reconciliation_items.items()
+                if tenant == context.tenant_id and item.created_at <= snapshot_at and item.status != "resolved"
+            )
+            periods = sorted({(run.period_start, run.period_end) for run in runs} | {(export.period_start, export.period_end) for export in exports})
+            rows: list[dict[str, Any]] = []
+            for item_start, item_end in periods:
+                if not self._period_overlaps(item_start, item_end, period_start, period_end):
+                    continue
+                period_runs = [run for run in runs if (run.period_start, run.period_end) == (item_start, item_end)]
+                period_exports = [export for export in exports if (export.period_start, export.period_end) == (item_start, item_end)]
+                if unresolved_reconciliation_count:
+                    close_state = "blocked"
+                elif any(export.status == "failed" for export in period_exports) or any(run.status == "failed" for run in period_runs):
+                    close_state = "blocked"
+                elif period_exports and all(export.status == "acknowledged" for export in period_exports):
+                    close_state = "closed"
+                elif period_exports:
+                    close_state = "export_pending"
+                elif period_runs and all(run.status == "posted" for run in period_runs):
+                    close_state = "ready_for_export"
+                else:
+                    close_state = "revenue_pending"
+                close_key = f"{wire_date(item_start)}:{wire_date(item_end)}"
+                if (state_filter is None or close_state == state_filter) and (cursor is None or close_key > cursor):
+                    rows.append(
+                        {
+                            "close_key": close_key,
+                            "period_start": wire_date(item_start),
+                            "period_end": wire_date(item_end),
+                            "state": close_state,
+                            "revenue_run_ids": [run.id for run in sorted(period_runs, key=lambda run: run.id)],
+                            "accounting_export_ids": [export.id for export in sorted(period_exports, key=lambda export: export.id)],
+                            "unresolved_reconciliation_count": unresolved_reconciliation_count,
+                        }
+                    )
+            page = rows[:limit]
+            self._audit(state, context, "list_period_closes", "period_close", None, correlation_id, "success", "internal")
+            return ServiceResponse(
+                {
+                    "items": page,
+                    "next_cursor": page[-1]["close_key"] if len(rows) > limit else None,
+                    "as_of": wire_time(snapshot_at),
+                    "total_estimate": len(rows),
+                }
+            )
+
+        return self.repository.atomic(query)
 
     def get_accounting_export(self, context: ActorContext, export_id: str, *, correlation_id: str | None = None) -> ServiceResponse:
         export_id = require_uuid(export_id, "export_id")
@@ -1989,6 +2208,30 @@ class FinanceControlService:
             raise ForbiddenError("this operation requires a service identity", code="service_identity_required")
         if context.roles.isdisjoint(roles):
             raise ForbiddenError("actor role is not permitted for this operation")
+
+    @staticmethod
+    def _validate_finance_list_filters(
+        state_filter: str | None,
+        allowed_states: set[str],
+        period_start: date | None,
+        period_end: date | None,
+        limit: int,
+    ) -> None:
+        if state_filter is not None and state_filter not in allowed_states:
+            raise ValidationError("state is not supported for this resource", field_name="state")
+        if period_start is not None and period_end is not None and period_end <= period_start:
+            raise ValidationError("period_end must be after period_start", field_name="period_end")
+        if not 1 <= limit <= 200:
+            raise ValidationError("limit must be between 1 and 200", field_name="limit")
+
+    @staticmethod
+    def _period_overlaps(
+        item_start: date,
+        item_end: date,
+        period_start: date | None,
+        period_end: date | None,
+    ) -> bool:
+        return (period_start is None or item_end > period_start) and (period_end is None or item_start < period_end)
 
     @staticmethod
     def _body(body: Any, allowed: set[str], required: set[str], min_properties: int = 0) -> None:
