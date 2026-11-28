@@ -150,6 +150,7 @@ class OwnershipPoolService:
         now = self._clock()
 
         def create(state: StoreState) -> PolicyVersion:
+            self._reject_departed_actor(state, context, now)
             existing_versions = [
                 policy.policy_version for (tenant, _), policy in state.policies.items()
                 if tenant == context.tenant_id and policy.policy_code == policy_code
@@ -233,6 +234,7 @@ class OwnershipPoolService:
         now = self._clock()
 
         def approve(state: StoreState) -> PolicyVersion:
+            self._reject_departed_actor(state, context, now)
             policy = state.policies.get((context.tenant_id, policy_id))
             if not policy:
                 raise NotFoundError("policy version was not found")
