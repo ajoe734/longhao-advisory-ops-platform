@@ -39,11 +39,11 @@ from tests.modules.service_cases.conftest import (
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_all_14_openapi_operations_have_http_routes():
+def test_all_openapi_operations_have_http_routes():
     assert {operation for _, _, operation in ROUTES} == {
-        "create_service_case", "list_service_cases", "get_service_case", "add_case_interaction",
+        "create_service_case", "list_service_cases", "get_service_case", "add_case_interaction", "list_case_interactions",
         "assign_service_case", "escalate_service_case", "draft_service_response", "resolve_service_case",
-        "reopen_service_case", "get_service_response_draft", "send_service_response", "get_service_response",
+        "reopen_service_case", "get_service_response_draft", "send_service_response", "list_case_responses", "get_service_response",
         "receive_service_response_receipt", "approve_service_response_draft",
     }
 

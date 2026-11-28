@@ -223,6 +223,23 @@ class CaseInteraction:
             "publication_reference_ids": list(self.publication_reference_ids),
         }
 
+    def to_customer_timeline_api(self) -> dict[str, Any]:
+        """Return the deliberately small, customer-safe interaction projection.
+
+        The original-content asset, staff identity and publication references are
+        internal evidence.  A customer timeline may show only an interaction
+        which was actually between the customer and the service channel; callers
+        enforce that ``direction`` is never ``internal`` before using this view.
+        """
+        return {
+            "id": self.id,
+            "case_id": self.case_id,
+            "channel": self.channel,
+            "direction": self.direction,
+            "occurred_at": wire_time(self.occurred_at),
+            "summary": self.summary,
+        }
+
 
 @dataclass
 class ResponseDraft:
@@ -358,6 +375,30 @@ class ResponseDispatch:
             "valid_until": wire_time(self.valid_until),
             "outbound_interaction_id": self.outbound_interaction_id,
         }
+
+    def to_customer_timeline_api(self, text: str) -> dict[str, Any]:
+        """Return delivery facts that are safe for the receiving customer.
+
+        Draft identifiers, approval evidence, provider references and content
+        hashes are workflow-internal.  ``text`` is the exact approved draft
+        content that was dispatched.  The service supplies it only after a
+        provider reports ``sent`` or ``delivered``.
+        """
+        occurred_at = self.sent_at or self.delivered_at or self.created_at
+        return {
+            "id": self.id,
+            "case_id": self.case_id,
+            "occurred_at": wire_time(occurred_at),
+            "channel": self.channel,
+            "state": self.status,
+            "text": text,
+            "sent_at": wire_time(self.sent_at) if self.sent_at else None,
+            "delivered_at": wire_time(self.delivered_at) if self.delivered_at else None,
+        }
+
+    def customer_visible_at(self) -> datetime:
+        """Use the actual provider-confirmed send time for public ordering."""
+        return self.sent_at or self.delivered_at or self.created_at
 
 
 @dataclass

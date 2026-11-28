@@ -146,6 +146,7 @@
     "schema_version": "1.0.0",
     "producer": "M03",
     "consumers": [
+      "M01",
       "M02",
       "M04"
     ],
@@ -163,6 +164,7 @@
     "schema_version": "1.0.0",
     "producer": "M03",
     "consumers": [
+      "M01",
       "M02"
     ],
     "aggregate_type": "suitability_assessment",
@@ -195,6 +197,7 @@
     "schema_version": "1.0.0",
     "producer": "M04",
     "consumers": [
+      "M01",
       "M02"
     ],
     "aggregate_type": "business_clearance",
@@ -440,6 +443,7 @@
     "schema_version": "1.0.0",
     "producer": "M11",
     "consumers": [
+      "M01",
       "M10",
       "M12",
       "M13"
@@ -740,6 +744,7 @@
     "schema_version": "1.0.0",
     "producer": "M03",
     "consumers": [
+      "M01",
       "M02",
       "M10"
     ],

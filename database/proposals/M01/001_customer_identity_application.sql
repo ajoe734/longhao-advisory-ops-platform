@@ -26,18 +26,19 @@ ALTER TABLE customer.application
 -- M03/M04/M14 status codes into the one M01-owned row. customer_signed_at,
 -- company_accepted_at and contract_id are kept current by the already
 -- consumed application.customer_signed/application.company_decided events
--- (see workers/tasks/customer_identity_application/consumer.py). kyc_status,
--- suitability_status, business_clearance and payment_status stay at their
--- published defaults because M01 is not yet listed as a consumer of the
--- already-registered kyc.decision_recorded/kyc.refresh_required/
--- suitability.assessed/business_clearance.changed/finance.payment_confirmed/
--- finance.refund_confirmed events (see database/proposals/M01/contract-changes.md
--- item 4). Defaults match the OpenAPI Application schema defaults so existing
--- rows remain contract-valid.
+-- (see workers/tasks/customer_identity_application/consumer.py). The M03/M04
+-- gate event projections keep the corresponding status plus immutable gate ID
+-- current; payment_status remains at its published default because payment
+-- events are deliberately outside this proposal. Defaults keep historic rows
+-- contract-valid until their next upstream gate event.
 ALTER TABLE customer.application
   ADD COLUMN IF NOT EXISTS customer_signed_at timestamptz,
   ADD COLUMN IF NOT EXISTS company_accepted_at timestamptz,
   ADD COLUMN IF NOT EXISTS contract_id uuid,
+  ADD COLUMN IF NOT EXISTS customer_signature_id uuid,
+  ADD COLUMN IF NOT EXISTS kyc_submission_id uuid,
+  ADD COLUMN IF NOT EXISTS suitability_assessment_id uuid,
+  ADD COLUMN IF NOT EXISTS business_clearance_id uuid,
   ADD COLUMN IF NOT EXISTS kyc_status text NOT NULL DEFAULT 'not_started',
   ADD COLUMN IF NOT EXISTS suitability_status text NOT NULL DEFAULT 'pending',
   ADD COLUMN IF NOT EXISTS business_clearance text NOT NULL DEFAULT 'pending',
@@ -51,7 +52,15 @@ ALTER TABLE customer.application
   ADD CONSTRAINT m01_application_payment_status_ck
     CHECK (payment_status IN ('not_required', 'pending', 'authorized', 'paid', 'refunded', 'disputed')) NOT VALID,
   ADD CONSTRAINT m01_application_contract_id_fk
-    FOREIGN KEY (tenant_id, contract_id) REFERENCES contract.contract (tenant_id, id) NOT VALID;
+    FOREIGN KEY (tenant_id, contract_id) REFERENCES contract.contract (tenant_id, id) NOT VALID,
+  ADD CONSTRAINT m01_application_customer_signature_id_fk
+    FOREIGN KEY (tenant_id, customer_signature_id) REFERENCES contract.customer_signature (tenant_id, id) NOT VALID,
+  ADD CONSTRAINT m01_application_kyc_submission_id_fk
+    FOREIGN KEY (tenant_id, kyc_submission_id) REFERENCES kyc.submission (tenant_id, id) NOT VALID,
+  ADD CONSTRAINT m01_application_suitability_assessment_id_fk
+    FOREIGN KEY (tenant_id, suitability_assessment_id) REFERENCES kyc.suitability_assessment (tenant_id, id) NOT VALID,
+  ADD CONSTRAINT m01_application_business_clearance_id_fk
+    FOREIGN KEY (tenant_id, business_clearance_id) REFERENCES aml.business_clearance (tenant_id, id) NOT VALID;
 
 -- The OpenAPI Customer response exposes maintenance_owner_id and
 -- original_marketing_attribution_id; both were previously derivable only from
