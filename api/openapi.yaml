@@ -3232,7 +3232,98 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/ReportCreate'
+  /reports/{report_id}:
+    get:
+      operationId: get_report
+      summary: 取得正式投顧報告與目前狀態
+      tags:
+      - M07
+      security:
+      - staffBearer: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - in: path
+        name: report_id
+        required: true
+        schema: *id001
+      x-module: M07
+      x-allowed-roles:
+      - analyst
+      - analyst_reviewer
+      - compliance_reviewer
+      x-resource-ownership: tenant_and_scope
+      x-audit-action: m07.get_report
+      x-idempotency-required: false
+      description: 僅回傳呼叫者租戶內的報告；platform_admin 不因平台角色取得此研究資料讀取權。
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Correlation-Id:
+              schema: *id001
+            ETag:
+              schema:
+                type: string
+                pattern: ^"[1-9][0-9]*"$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdvisoryReport'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '422':
+          $ref: '#/components/responses/Error422'
   /reports/{report_id}/versions:
+    get:
+      operationId: list_report_versions
+      summary: 列出報告的不可覆寫版本
+      tags:
+      - M07
+      security:
+      - staffBearer: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - in: path
+        name: report_id
+        required: true
+        schema: *id001
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      x-module: M07
+      x-allowed-roles:
+      - analyst
+      - analyst_reviewer
+      - compliance_reviewer
+      x-resource-ownership: tenant_and_scope
+      x-audit-action: m07.list_report_versions
+      x-idempotency-required: false
+      description: 依版號遞增排序；cursor 只可指向同一租戶、同一報告的既有版本。platform_admin 不可讀取。
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Correlation-Id:
+              schema: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportVersionPage'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '422':
+          $ref: '#/components/responses/Error422'
     post:
       operationId: create_report_version
       summary: 建立不可覆寫的報告／訊息／受眾規則版本
@@ -11765,6 +11856,11 @@ components:
           maxItems: 8
         audience_policy:
           $ref: '#/components/schemas/AudiencePolicy'
+        recommendation_version_ids:
+          type: array
+          items: *id001
+          minItems: 1
+          maxItems: 50
         valid_from: *id003
         valid_until: *id003
         frozen_at:
@@ -11809,6 +11905,32 @@ components:
       - signed_at
       - signature_id
       - required_review_ids
+    ReportVersionPage:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReportVersion'
+          minItems: 0
+          maxItems: 200
+        next_cursor:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+        as_of: *id003
+        total_estimate:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+      required:
+      - items
+      - next_cursor
+      - as_of
+      - total_estimate
     ReportReviewRequest:
       type: object
       additionalProperties: false

@@ -100,8 +100,18 @@ class M07Controller:
         version = self._if_match(headers.get("if-match"))
         if operation_id == "create_report":
             return self.service.create_report(context, body, idempotency_key=key, correlation_id=correlation_id)
+        if operation_id == "get_report":
+            return self.service.get_report(context, path["report_id"], correlation_id=correlation_id)
         if operation_id == "create_report_version":
             return self.service.create_report_version(context, path["report_id"], body, expected_version=version, idempotency_key=key, correlation_id=correlation_id)
+        if operation_id == "list_report_versions":
+            return self.service.list_report_versions(
+                context,
+                path["report_id"],
+                cursor=query.get("cursor"),
+                limit=self._limit(query.get("limit")),
+                correlation_id=correlation_id,
+            )
         if operation_id == "get_report_version":
             return self.service.get_report_version(context, path["report_version_id"], correlation_id=correlation_id)
         if operation_id == "record_report_review":
@@ -124,10 +134,22 @@ class M07Controller:
             raise ValidationError("If-Match must be a strong integer ETag", field_name="If-Match")
         return int(value[1:-1])
 
+    @staticmethod
+    def _limit(value: Any) -> int:
+        try:
+            limit = int(value) if value is not None else 50
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("limit must be an integer", field_name="limit") from exc
+        if not 1 <= limit <= 200:
+            raise ValidationError("limit must be between 1 and 200", field_name="limit")
+        return limit
+
 
 ROUTES: tuple[tuple[str, str, str], ...] = (
     ("POST", "/reports", "create_report"),
+    ("GET", "/reports/{report_id}", "get_report"),
     ("POST", "/reports/{report_id}/versions", "create_report_version"),
+    ("GET", "/reports/{report_id}/versions", "list_report_versions"),
     ("GET", "/report-versions/{report_version_id}", "get_report_version"),
     ("POST", "/report-versions/{report_version_id}/reviews", "record_report_review"),
     ("POST", "/report-versions/{report_version_id}/freeze", "freeze_report_version"),

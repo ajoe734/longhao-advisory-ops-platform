@@ -9,7 +9,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 import pytest
 import yaml
 
-from modules.report_signature.domain import ConflictError, DependencyUnavailableError, NotFoundError, ValidationError, canonical_hash
+from modules.report_signature.domain import ActorContext, ConflictError, DependencyUnavailableError, NotFoundError, ValidationError, canonical_hash
 from modules.report_signature.http import M07Controller, ROUTES
 from workers.tasks.report_signature.consumer import M07EventConsumer
 from workers.tasks.report_signature.tasks import LocalEventBus, OutboxPublisher, SignatureExpiryReconciler
@@ -17,6 +17,7 @@ from workers.tasks.report_signature.tasks import LocalEventBus, OutboxPublisher,
 from conftest import (
     CANDIDATE_ID,
     NOW,
+    OTHER_TENANT,
     REVIEW_CASE_ID,
     TENANT,
     callback_body,
@@ -31,11 +32,43 @@ from conftest import (
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_all_8_openapi_operations_have_http_routes():
+def test_all_10_openapi_operations_have_http_routes():
     assert {operation for _, _, operation in ROUTES} == {
-        "create_report", "create_report_version", "get_report_version", "record_report_review",
+        "create_report", "get_report", "create_report_version", "list_report_versions", "get_report_version", "record_report_review",
         "freeze_report_version", "request_analyst_signature", "receive_analyst_signature", "revoke_signature",
     }
+
+
+def test_report_read_and_version_list_preserve_existing_staff_and_tenant_boundaries(m07, analyst):
+    controller = M07Controller(m07["service"])
+    report = controller.handle(
+        "create_report", analyst, body=report_create_body(), headers={"Idempotency-Key": "read-report-create-001"},
+    ).body
+    first = controller.handle(
+        "create_report_version", analyst, path={"report_id": report["id"]}, body=report_version_body(),
+        headers={"Idempotency-Key": "read-report-version-001", "If-Match": '"1"'},
+    ).body
+    second = controller.handle(
+        "create_report_version", analyst, path={"report_id": report["id"]}, body=report_version_body(),
+        headers={"Idempotency-Key": "read-report-version-002", "If-Match": '"2"'},
+    ).body
+
+    fetched = controller.handle("get_report", analyst, path={"report_id": report["id"]})
+    listed = controller.handle("list_report_versions", analyst, path={"report_id": report["id"]}, query={"limit": "1"})
+    second_page = controller.handle(
+        "list_report_versions", analyst, path={"report_id": report["id"]}, query={"limit": "1", "cursor": first["id"]},
+    )
+    assert fetched.status == 200 and fetched.body["id"] == report["id"] and fetched.headers["ETag"] == '"3"'
+    assert listed.status == 200 and [row["id"] for row in listed.body["items"]] == [first["id"]]
+    assert listed.body["next_cursor"] == first["id"] and listed.body["total_estimate"] == 2
+    assert [row["id"] for row in second_page.body["items"]] == [second["id"]]
+
+    unauthenticated = ActorContext(TENANT, "20000000-0000-0000-0000-000000000090", frozenset({"analyst"}), principal_type="service")
+    platform_admin = ActorContext(TENANT, "20000000-0000-0000-0000-000000000091", frozenset({"platform_admin"}), principal_type="staff")
+    other_tenant = ActorContext(OTHER_TENANT, "20000000-0000-0000-0000-000000000092", frozenset({"analyst"}), principal_type="staff")
+    assert controller.handle("get_report", unauthenticated, path={"report_id": report["id"]}).status == 401
+    assert controller.handle("list_report_versions", platform_admin, path={"report_id": report["id"]}).status == 403
+    assert controller.handle("get_report", other_tenant, path={"report_id": report["id"]}).status == 404
 
 
 def test_controller_returns_etag_problem_and_replay_headers(m07, analyst):
