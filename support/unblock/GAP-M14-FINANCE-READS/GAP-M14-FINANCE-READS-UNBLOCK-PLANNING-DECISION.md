@@ -1,7 +1,7 @@
 # GAP-M14-FINANCE-READS unblock — planning decision
 
-Task: `GAP-M14-FINANCE-READS-UNBLOCK-PLANNING-DECISION`  
-Parent: `GAP-M14-FINANCE-READS`  
+Task: `GAP-M14-FINANCE-READS-UNBLOCK-PLANNING-DECISION`
+Parent: `GAP-M14-FINANCE-READS`
 Date: 2026-11-28
 
 ## Decision
@@ -51,5 +51,10 @@ decision is part of this follow-up.
 
 ## Final documentation checks
 
-Pending after the initial anchor commit. The owner will append exact results before
-candidate handoff; no pass is implied by this placeholder.
+- `python3 scripts/validate_docs.py` — exit 0: 14 parallel modules, 142 API
+  operations, 182 acceptance cases, and 182 trace rows checked.
+- `git diff --check` — exit 0 after this final evidence update.
+
+The initial anchor's `git show --check` exposed two unnecessary Markdown hard-break
+spaces in the artifact header. They are removed in the final candidate; this is a
+formatting repair only and does not change the routing decision.
