@@ -6,7 +6,7 @@ import inspect
 from time import perf_counter
 from typing import Any, Callable
 
-from .domain import ActorContext, DomainError, ValidationError, new_id
+from .domain import ActorContext, DomainError, UnauthorizedError, ValidationError, new_id, parse_date
 from .service import FinanceControlService, ServiceResponse
 from .telemetry import M14Telemetry
 
@@ -50,7 +50,7 @@ class M14Controller:
     def handle(
         self,
         operation_id: str,
-        context: ActorContext,
+        context: ActorContext | None,
         *,
         body: dict[str, Any] | None = None,
         path: dict[str, str] | None = None,
@@ -64,6 +64,8 @@ class M14Controller:
         correlation_id = headers.get("x-correlation-id") or new_id()
         started = perf_counter()
         try:
+            if context is None:
+                raise UnauthorizedError("authentication is required")
             response = self._dispatch(operation_id, context, body, path, query, headers, correlation_id)
             response_headers = {"X-Correlation-Id": correlation_id}
             if response.etag:
@@ -129,12 +131,34 @@ class M14Controller:
             return service.resolve_reconciliation_item(context, path["item_id"], body, expected_version=version, idempotency_key=key, correlation_id=correlation_id)
         if operation_id == "run_revenue_recognition":
             return service.run_revenue_recognition(context, body, idempotency_key=key, correlation_id=correlation_id)
+        if operation_id == "list_revenue_runs":
+            return service.list_revenue_runs(
+                context,
+                state_filter=query.get("state"),
+                period_start=self._period_bound(query.get("period_start"), "period_start"),
+                period_end=self._period_bound(query.get("period_end"), "period_end"),
+                cursor=query.get("cursor"),
+                limit=self._limit(query.get("limit")),
+                as_of=self._as_of(query.get("as_of")),
+                correlation_id=correlation_id,
+            )
         if operation_id == "get_revenue_run":
             return service.get_revenue_run(context, path["run_id"], correlation_id=correlation_id)
         if operation_id == "approve_revenue_run":
             return service.approve_revenue_run(context, path["run_id"], body, expected_version=version, idempotency_key=key, correlation_id=correlation_id)
         if operation_id == "request_refund":
             return service.request_refund(context, body, idempotency_key=key, correlation_id=correlation_id)
+        if operation_id == "list_refunds":
+            return service.list_refunds(
+                context,
+                state_filter=query.get("state"),
+                period_start=self._period_bound(query.get("period_start"), "period_start"),
+                period_end=self._period_bound(query.get("period_end"), "period_end"),
+                cursor=query.get("cursor"),
+                limit=self._limit(query.get("limit")),
+                as_of=self._as_of(query.get("as_of")),
+                correlation_id=correlation_id,
+            )
         if operation_id == "get_refund":
             return service.get_refund(context, path["refund_id"], correlation_id=correlation_id)
         if operation_id == "approve_refund":
@@ -145,6 +169,28 @@ class M14Controller:
             return service.receive_refund_webhook(context, body, idempotency_key=key, correlation_id=correlation_id)
         if operation_id == "create_accounting_export":
             return service.create_accounting_export(context, body, idempotency_key=key, correlation_id=correlation_id)
+        if operation_id == "list_accounting_exports":
+            return service.list_accounting_exports(
+                context,
+                state_filter=query.get("state"),
+                period_start=self._period_bound(query.get("period_start"), "period_start"),
+                period_end=self._period_bound(query.get("period_end"), "period_end"),
+                cursor=query.get("cursor"),
+                limit=self._limit(query.get("limit")),
+                as_of=self._as_of(query.get("as_of")),
+                correlation_id=correlation_id,
+            )
+        if operation_id == "list_period_closes":
+            return service.list_period_closes(
+                context,
+                state_filter=query.get("state"),
+                period_start=self._period_bound(query.get("period_start"), "period_start"),
+                period_end=self._period_bound(query.get("period_end"), "period_end"),
+                cursor=query.get("cursor"),
+                limit=self._limit(query.get("limit")),
+                as_of=self._as_of(query.get("as_of")),
+                correlation_id=correlation_id,
+            )
         if operation_id == "get_accounting_export":
             return service.get_accounting_export(context, path["export_id"], correlation_id=correlation_id)
         if operation_id == "acknowledge_accounting_export":
@@ -198,6 +244,12 @@ class M14Controller:
         except (ValueError, AttributeError) as exc:
             raise ValidationError("as_of must be an RFC3339 timestamp", field_name="as_of") from exc
 
+    @staticmethod
+    def _period_bound(value: str | None, field_name: str):
+        if value is None:
+            return None
+        return parse_date(value, field_name)
+
 
 ROUTES: tuple[tuple[str, str, str], ...] = (
     ("POST", "/finance/invoices", "create_invoice"),
@@ -207,14 +259,18 @@ ROUTES: tuple[tuple[str, str, str], ...] = (
     ("GET", "/finance/reconciliation-items", "list_reconciliation_items"),
     ("POST", "/finance/reconciliation-items/{item_id}/resolution", "resolve_reconciliation_item"),
     ("POST", "/finance/revenue-runs", "run_revenue_recognition"),
+    ("GET", "/finance/revenue-runs", "list_revenue_runs"),
     ("GET", "/finance/revenue-runs/{run_id}", "get_revenue_run"),
     ("POST", "/finance/revenue-runs/{run_id}/approval", "approve_revenue_run"),
     ("POST", "/finance/refunds", "request_refund"),
+    ("GET", "/finance/refunds", "list_refunds"),
     ("GET", "/finance/refunds/{refund_id}", "get_refund"),
     ("POST", "/finance/refunds/{refund_id}/approval", "approve_refund"),
     ("POST", "/finance/refunds/{refund_id}/execution", "execute_refund"),
     ("POST", "/webhooks/refunds", "receive_refund_webhook"),
     ("POST", "/finance/accounting-exports", "create_accounting_export"),
+    ("GET", "/finance/accounting-exports", "list_accounting_exports"),
+    ("GET", "/finance/period-closes", "list_period_closes"),
     ("GET", "/finance/accounting-exports/{export_id}", "get_accounting_export"),
     ("POST", "/finance/accounting-exports/{export_id}/acknowledgement", "acknowledge_accounting_export"),
     ("GET", "/audit/events", "list_audit_events"),

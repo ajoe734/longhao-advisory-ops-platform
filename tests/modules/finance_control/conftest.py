@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "apps" / "api" / "src"))
 sys.path.insert(0, str(ROOT))
 
-from modules.finance_control.domain import ActorContext, Payment, RevenueRecognition, utc_now
+from modules.finance_control.domain import ActorContext, Invoice, InvoiceLine, Payment, RevenueRecognition, utc_now
 from modules.finance_control.ports import (
     FakeEvidenceAssets,
     FakeRefundProvider,
@@ -173,12 +173,39 @@ def invoice_body(
 
 def seed_paid_payment(repository: InMemoryRepository, *, tenant: str, payment_id: str, customer_id: str, amount: Decimal, currency: str = "TWD", invoice_id: str | None = None, provider: str = "synthetic_payment_provider", provider_transaction_id: str = "ptx-seed", application_id: str | None = None) -> None:
     def seed(state):
+        linked_invoice_id = invoice_id or payment_id
+        if invoice_id is None:
+            invoice_line = InvoiceLine(
+                id=payment_id,
+                line_no=1,
+                contract_service_id=payment_id,
+                service_code="synthetic_paid_service",
+                service_period_start=utc_now().date(),
+                service_period_end=(utc_now() + timedelta(days=30)).date(),
+                quantity=1,
+                untaxed_amount=amount,
+                tax_amount=Decimal("0"),
+                tax_code="synthetic",
+                tax_mapping_version="synthetic-test-v1",
+            )
+            state.invoices[(tenant, linked_invoice_id)] = Invoice(
+                id=linked_invoice_id,
+                tenant_id=tenant,
+                customer_id=customer_id,
+                contract_id=payment_id,
+                invoice_number=f"TEST-INV-{payment_id[:8]}",
+                invoice_date=utc_now().date(),
+                due_date=(utc_now() + timedelta(days=30)).date(),
+                invoice_type="service",
+                currency=currency,
+                lines=[invoice_line],
+            )
         state.payments[(tenant, payment_id)] = Payment(
             id=payment_id,
             tenant_id=tenant,
             customer_id=customer_id,
             application_id=application_id,
-            invoice_id=invoice_id,
+            invoice_id=linked_invoice_id,
             amount=amount,
             currency=currency,
             method="card",
