@@ -12244,6 +12244,10 @@ components:
           - *id001
           - type: 'null'
         source_candidate_id: *id001
+        client_version_id:
+          anyOf:
+          - *id001
+          - type: 'null'
       required:
       - action
       - rationale
@@ -12251,7 +12255,7 @@ components:
       - valid_from
       - valid_until
       - source_candidate_id
-      description: 草稿可先引用候選並保留空report版本集合；建立報告版本時原子綁定，freeze以前必須有完整投顧報告依據。
+      description: 支援循環建立時，呼叫端可先提供 client_version_id（UUID）給 M07 manifest 引用；M08 會以該 UUID 建立版本，重複使用在同一 tenant 回 409。正式建立仍必須帶至少一個 supporting_report_version_id，且該 M07 版本的 immutable manifest 必須列出同一 UUID。
     RecommendationVersion:
       type: object
       additionalProperties: false

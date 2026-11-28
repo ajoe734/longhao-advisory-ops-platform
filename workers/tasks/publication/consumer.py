@@ -65,11 +65,17 @@ class M08EventConsumer:
                     if receipt.tenant_id == tenant_id
                     and receipt.producer == envelope["producer"]
                     and receipt.aggregate_id == envelope["aggregate_id"]
+                    and receipt.event_type == envelope["event_type"]
                     and receipt.status == "applied"
                 ),
                 default=0,
             )
-            if envelope["sequence_no"] > last_sequence + 1:
+            # The registry's sequence_no is shared by the producer aggregate,
+            # but M08 is subscribed only to selected event types. The first
+            # signature_verified event can therefore legitimately be sequence
+            # 2+ after M07's private/frozen event; only detect a gap once this
+            # consumer has observed the same subscribed event stream.
+            if last_sequence and envelope["sequence_no"] > last_sequence + 1:
                 state.inbox[key] = self._receipt(envelope, "retry", "sequence_gap", None)
                 return ConsumeResult("retry", "sequence_gap")
             if envelope["sequence_no"] <= last_sequence:

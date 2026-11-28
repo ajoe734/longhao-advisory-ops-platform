@@ -11,8 +11,20 @@ import yaml
 
 from modules.report_signature.domain import ActorContext, ConflictError, DependencyUnavailableError, NotFoundError, ValidationError, canonical_hash
 from modules.report_signature.http import M07Controller, ROUTES
+from modules.publication.domain import ActorContext as PublicationActorContext
+from modules.publication.ports import (
+    AudienceCandidate,
+    FakeContentAssetStore,
+    FakeEntitlementAudienceRegistry,
+    FakeEvidenceStore,
+    FakeReportBundleRegistry,
+)
+from modules.publication.repository import InMemoryRepository as PublicationRepository
+from modules.publication.service import PublicationService
 from workers.tasks.report_signature.consumer import M07EventConsumer
 from workers.tasks.report_signature.tasks import LocalEventBus, OutboxPublisher, SignatureExpiryReconciler
+from workers.tasks.publication.consumer import M08EventConsumer
+from workers.tasks.publication.tasks import PublicationWorker
 
 from conftest import (
     CANDIDATE_ID,
@@ -21,9 +33,12 @@ from conftest import (
     REVIEW_CASE_ID,
     TENANT,
     callback_body,
+    channel_text,
+    freeze_body,
     incoming,
     report_create_body,
     report_version_body,
+    review_body,
     signature_request_body,
     take_to_ready_to_sign,
 )
@@ -83,6 +98,121 @@ def test_controller_returns_etag_problem_and_replay_headers(m07, analyst):
     assert replay.headers["Idempotency-Replayed"] == "true"
     assert stale.status == 412 and stale.body["current_version"] == 1
     assert stale.headers["Content-Type"] == "application/problem+json"
+
+
+def test_verified_m07_manifest_digest_drives_m08_publication_with_client_stable_version_id(
+    m07,
+    analyst,
+    reviewer_pro,
+    reviewer_compliance,
+    signer,
+    adapter,
+):
+    """Use M07's real outbox envelope rather than an M08-derived fake digest."""
+    client_recommendation_version_id = "70000000-0000-0000-0000-000000000099"
+    service = m07["service"]
+    report = service.create_report(analyst, report_create_body(), idempotency_key="m07-m08-link-report").data
+    report_version_request = report_version_body()
+    report_version_request["recommendation_version_ids"] = [client_recommendation_version_id]
+    signed_channel = channel_text()
+    signed_channel["recommendation_version_ids"] = [client_recommendation_version_id]
+    report_version_request["channel_texts"] = [signed_channel]
+    draft = service.create_report_version(
+        analyst, report["id"], report_version_request, expected_version=1, idempotency_key="m07-m08-link-report-version",
+    ).data
+    professional = service.record_report_review(
+        reviewer_pro, draft["id"], review_body("professional", draft), expected_version=1,
+        idempotency_key="m07-m08-link-professional-review",
+    ).data
+    compliance = service.record_report_review(
+        reviewer_compliance, draft["id"], review_body("compliance", draft), expected_version=2,
+        idempotency_key="m07-m08-link-compliance-review",
+    ).data
+    frozen = service.freeze_report_version(
+        analyst, draft["id"], freeze_body(draft, [professional["id"], compliance["id"]]), expected_version=3,
+        idempotency_key="m07-m08-link-freeze",
+    ).data
+    signature_session = service.request_analyst_signature(
+        signer, frozen["id"], signature_request_body(frozen, frozen["required_review_ids"]), expected_version=4,
+        idempotency_key="m07-m08-link-sign",
+    ).data
+    assert service.receive_analyst_signature(
+        adapter, callback_body(signature_session, frozen), idempotency_key="m07-m08-link-callback",
+    ).status == 202
+
+    content_assets = FakeContentAssetStore()
+    evidence = FakeEvidenceStore()
+    report_bundles = FakeReportBundleRegistry()
+    entitlements = FakeEntitlementAudienceRegistry()
+    publication_repository = PublicationRepository()
+    publication_service = PublicationService(
+        publication_repository, content_assets, evidence, report_bundles, entitlements, clock=m07["clock"],
+    )
+    publication_analyst = PublicationActorContext(TENANT, analyst.actor_id, frozenset({"analyst"}))
+    series = publication_service.create_recommendation_series(
+        publication_analyst,
+        {
+            "instrument_ref": {"market": "TWSE", "instrument_code": "2330", "instrument_type": "equity"},
+            "strategy_scope_ref": "m07-m08-digest-link",
+            "research_origin_ref": {"system": "pantheon", "external_id": "candidate-0001", "kind": "research_candidate"},
+        },
+        idempotency_key="m07-m08-link-series",
+    ).data
+    recommendation = publication_service.create_recommendation_version(
+        publication_analyst,
+        series["id"],
+        {
+            "action": "entry",
+            "rationale": "與已簽 M07 報告相同的合成投資建議",
+            "client_version_id": client_recommendation_version_id,
+            "supporting_report_version_ids": [frozen["id"]],
+            "valid_from": frozen["valid_from"],
+            "valid_until": frozen["valid_until"],
+            "source_candidate_id": CANDIDATE_ID,
+        },
+        expected_version=1,
+        idempotency_key="m07-m08-link-recommendation",
+    ).data
+    assert recommendation["id"] == client_recommendation_version_id
+
+    recommendation_state = publication_repository.snapshot().versions[(TENANT, recommendation["id"])]
+    report_bundles.register(
+        TENANT,
+        frozen["id"],
+        recommendation["id"],
+        content_sha256=recommendation_state.content_sha256,
+        report_content_sha256=frozen["report_content_sha256"],
+        bundle_manifest_sha256=frozen["bundle_manifest_sha256"],
+    )
+    entitlements.set_candidates(
+        TENANT,
+        {"market": "TWSE", "instrument_code": "2330", "instrument_type": "equity"},
+        (
+            AudienceCandidate(
+                "50000000-0000-0000-0000-000000000001",
+                "60000000-0000-0000-0000-000000000001",
+                "70000000-0000-0000-0000-000000000001",
+                1,
+                True,
+                "active_entitlement",
+            ),
+        ),
+    )
+
+    signature_event = next(
+        event.envelope()
+        for event in m07["repository"].snapshot().outbox.values()
+        if event.event_type == "report.signature_verified"
+    )
+    assert signature_event["payload"]["bundle_manifest_sha256"] == frozen["bundle_manifest_sha256"]
+    assert signature_event["sequence_no"] > 1
+    assert M08EventConsumer(publication_service).consume(signature_event).status == "applied"
+    assert PublicationWorker(publication_service).run_once("m07-m08-digest-worker").processed == 1
+
+    publication_id = publication_repository.snapshot().publications_by_version[(TENANT, recommendation["id"])]
+    publication = publication_repository.snapshot().publications[(TENANT, publication_id)]
+    assert publication.report_version_id == frozen["id"]
+    assert publication.bundle_manifest_sha256 == frozen["bundle_manifest_sha256"]
 
 
 def test_m07_producer_envelopes_validate_against_shared_json_schemas(m07, analyst, reviewer_pro, reviewer_compliance, signer, adapter):
