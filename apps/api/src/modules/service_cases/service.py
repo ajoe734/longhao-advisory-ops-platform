@@ -62,6 +62,7 @@ _RESOLUTION_HOURS = {"urgent": 24, "high": 72, "normal": 168}
 
 _SERVICE_AGENT = {"service_agent"}
 _SERVICE_SUPERVISOR = {"service_supervisor"}
+_TIMELINE_READERS = _SERVICE_AGENT | _SERVICE_SUPERVISOR
 _RESPONSE_SENDERS = {"service_agent", "service_supervisor", "service_response_service"}
 _RESPONSE_READERS = {"service_agent", "service_supervisor"}
 _APPROVERS = {"service_agent", "service_supervisor", "service_response_service"}
@@ -75,6 +76,7 @@ _LOW_RISK_TEMPLATE_APPROVERS = {"service_response_service"}
 # per docs/modules/M13-service_cases.md §4, as must any case already routed to
 # the compliance (AML) queue.
 _LOW_RISK_TEMPLATE_BLOCKED_CATEGORIES = {"complaint", "refund", "research_question"}
+_CUSTOMER_VISIBLE_DISPATCH_STATES = {"sent", "delivered"}
 
 
 @dataclass(frozen=True)
@@ -290,6 +292,157 @@ class ServiceCaseService:
 
         outcome = self.repository.atomic(query)
         return ServiceResponse(outcome.value, outcome.status, self._etag(outcome.aggregate_version))
+
+    def list_case_interactions(
+        self,
+        context: ActorContext,
+        case_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 50,
+        as_of: datetime | None = None,
+        correlation_id: str | None = None,
+    ) -> ServiceResponse:
+        """List a case's cross-channel interactions in deterministic time order.
+
+        Staff receive the evidence-bearing record.  Customers receive only their
+        own case's non-internal interaction projection, never asset references,
+        staff identifiers or internal publication links.
+        """
+        case_id = require_uuid(case_id, "case_id")
+        offset = self._page_offset(cursor, limit)
+        as_of = as_of or self._clock()
+        correlation_id = self._correlation(correlation_id)
+
+        def query(state: StoreState) -> _Outcome:
+            case = self._stored_case(state, context.tenant_id, case_id)
+            self._authorize_case_timeline_reader(context, case)
+            interactions = [
+                interaction for (tenant, _), interaction in state.interactions.items()
+                if tenant == context.tenant_id
+                and interaction.case_id == case.id
+                and interaction.created_at <= as_of
+                and (
+                    context.principal_type != "customer"
+                    or interaction.direction != "internal"
+                )
+            ]
+            interactions.sort(key=lambda interaction: (interaction.occurred_at, interaction.id))
+            page = interactions[offset:offset + limit]
+            if context.principal_type == "customer":
+                items = [interaction.to_customer_timeline_api() for interaction in page]
+            else:
+                items = [interaction.to_api(self._interaction_actions(context)) for interaction in page]
+            value = self._page_value(items, offset, limit, len(interactions), as_of)
+            self._audit(state, context, "list_case_interactions", "service_case", case.id, case.version, correlation_id, "succeeded")
+            return _Outcome(value, 200, "service_case", case.id, case.version)
+
+        outcome = self.repository.atomic(query)
+        return ServiceResponse(outcome.value, outcome.status)
+
+    def list_case_responses(
+        self,
+        context: ActorContext,
+        case_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 50,
+        as_of: datetime | None = None,
+        correlation_id: str | None = None,
+    ) -> ServiceResponse:
+        """List drafts, approvals and dispatches as one case response timeline.
+
+        A draft or approval is not customer-facing content.  The customer view is
+        therefore restricted to the customer's own dispatches after a provider
+        reports sent/delivered, and intentionally excludes all workflow evidence.
+        """
+        case_id = require_uuid(case_id, "case_id")
+        offset = self._page_offset(cursor, limit)
+        as_of = as_of or self._clock()
+        correlation_id = self._correlation(correlation_id)
+
+        def query(state: StoreState) -> _Outcome:
+            case = self._stored_case(state, context.tenant_id, case_id)
+            self._authorize_case_timeline_reader(context, case)
+            if context.principal_type == "customer":
+                dispatches = [
+                    dispatch for (tenant, _), dispatch in state.response_dispatches.items()
+                    if tenant == context.tenant_id
+                    and dispatch.case_id == case.id
+                    and dispatch.created_at <= as_of
+                    and dispatch.status in _CUSTOMER_VISIBLE_DISPATCH_STATES
+                ]
+                dispatches.sort(key=lambda dispatch: (dispatch.created_at, dispatch.id))
+                page = dispatches[offset:offset + limit]
+                value = self._page_value(
+                    [dispatch.to_customer_timeline_api() for dispatch in page],
+                    offset,
+                    limit,
+                    len(dispatches),
+                    as_of,
+                )
+            else:
+                timeline: list[tuple[datetime, str, dict[str, Any]]] = []
+                drafts_by_id = {
+                    draft.id: draft
+                    for (tenant, _), draft in state.response_drafts.items()
+                    if tenant == context.tenant_id and draft.case_id == case.id and draft.created_at <= as_of
+                }
+                for draft in drafts_by_id.values():
+                    timeline.append((
+                        draft.created_at,
+                        draft.id,
+                        {
+                            "id": draft.id,
+                            "record_type": "draft",
+                            "occurred_at": wire_time(draft.created_at),
+                            "channel": None,
+                            "draft": draft.to_api(self._draft_actions(draft, context)),
+                            "approval": None,
+                            "response": None,
+                        },
+                    ))
+                for (tenant, _), approval in state.response_approvals.items():
+                    draft = drafts_by_id.get(approval.draft_id)
+                    if tenant != context.tenant_id or draft is None or approval.approved_at > as_of:
+                        continue
+                    timeline.append((
+                        approval.approved_at,
+                        approval.id,
+                        {
+                            "id": approval.id,
+                            "record_type": "approval",
+                            "occurred_at": wire_time(approval.approved_at),
+                            "channel": None,
+                            "draft": None,
+                            "approval": approval.to_api([]),
+                            "response": None,
+                        },
+                    ))
+                for (tenant, _), dispatch in state.response_dispatches.items():
+                    if tenant != context.tenant_id or dispatch.case_id != case.id or dispatch.created_at > as_of:
+                        continue
+                    timeline.append((
+                        dispatch.created_at,
+                        dispatch.id,
+                        {
+                            "id": dispatch.id,
+                            "record_type": "response",
+                            "occurred_at": wire_time(dispatch.created_at),
+                            "channel": dispatch.channel,
+                            "draft": None,
+                            "approval": None,
+                            "response": dispatch.to_api(self._dispatch_actions(dispatch, context)),
+                        },
+                    ))
+                timeline.sort(key=lambda entry: (entry[0], entry[1]))
+                page = timeline[offset:offset + limit]
+                value = self._page_value([entry[2] for entry in page], offset, limit, len(timeline), as_of)
+            self._audit(state, context, "list_case_responses", "service_case", case.id, case.version, correlation_id, "succeeded")
+            return _Outcome(value, 200, "service_case", case.id, case.version)
+
+        outcome = self.repository.atomic(query)
+        return ServiceResponse(outcome.value, outcome.status)
 
     def add_case_interaction(
         self,
@@ -1047,6 +1200,36 @@ class ServiceCaseService:
         if self._authorized(context, staff_roles):
             return
         raise ForbiddenError("actor cannot access this case")
+
+    def _authorize_case_timeline_reader(self, context: ActorContext, case: ServiceCase) -> None:
+        if context.principal_type == "customer":
+            self._authorize_case_actor(context, case, set())
+            return
+        if context.principal_type == "staff" and self._authorized(context, _TIMELINE_READERS):
+            return
+        raise ForbiddenError("actor cannot read this case timeline")
+
+    @staticmethod
+    def _page_offset(cursor: str | None, limit: int) -> int:
+        if not 1 <= limit <= 200:
+            raise ValidationError("limit must be between 1 and 200", field_name="limit")
+        if cursor is None:
+            return 0
+        try:
+            offset = int(cursor)
+            assert offset >= 0
+            return offset
+        except (TypeError, ValueError, AssertionError) as exc:
+            raise ValidationError("cursor is invalid", field_name="cursor") from exc
+
+    @staticmethod
+    def _page_value(items: list[dict[str, Any]], offset: int, limit: int, total: int, as_of: datetime) -> dict[str, Any]:
+        return {
+            "items": items,
+            "next_cursor": str(offset + limit) if offset + limit < total else None,
+            "as_of": wire_time(as_of),
+            "total_estimate": total,
+        }
 
     @staticmethod
     def _body(body: dict[str, Any], allowed: set[str], required: set[str], min_properties: int = 0) -> None:
