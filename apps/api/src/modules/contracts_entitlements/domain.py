@@ -379,6 +379,20 @@ class ContractService:
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
 
+    def to_api(self, *, currency: str, status: str) -> dict[str, Any]:
+        """Expose the invoiceable service identity without leaking gate evidence."""
+        return {
+            "contract_service_id": self.id,
+            "service_code": self.service_code,
+            "service_period_start": wire_time(self.starts_at),
+            "service_period_end": wire_time(self.ends_at),
+            "untaxed_service_amount": {
+                "amount": self.untaxed_contract_amount,
+                "currency": currency,
+            },
+            "status": status,
+        }
+
 
 @dataclass
 class Entitlement:

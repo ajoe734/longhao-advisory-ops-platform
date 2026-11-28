@@ -1,6 +1,8 @@
 # M11 維護歸屬與公司Pool模組
 
-此目錄實作 `api/openapi.yaml` M11 的 7 個 operationId：`list_company_pool`、
+此目錄實作 `api/openapi.yaml` M11 的 10 個 operationId：
+`create_company_pool_policy`、`approve_company_pool_policy`、
+`get_current_company_pool_policy`、`list_company_pool`、
 `assign_maintenance_owner`、`claim_pool_customer`、`release_maintenance_owner`、
 `record_employee_departure`、`evaluate_company_pool`、`get_ownership_history`。
 `domain.py` 保存業務不變量與 `ownership.policy_version`/`ownership.assignment`/
@@ -94,8 +96,10 @@ departure/policy 的寫入方法——無法指派 owner、無法製造活動證
   `repository.py` 換成真正的 PostgreSQL adapter。提案 SQL 已用 `pglast.parse_sql`
   做靜態語法檢查（PASS），但仍需 disposable PostgreSQL 16 實際套用驗證
   （`verify_database.py`，本環境 NOT_RUN）。
-- 本次 7 個 operationId 沒有 policy 生命週期端點，但 `ownership.policy_version`
-  是每筆 assignment/pool_entry 的必要 FK。`service.py` 的 `propose_policy_version`
-  / `approve_policy_version` 是內部／運維管理方法（未發布的 operationId，同
-  M01 `revoke_external_identity` 的先例），供測試與 ops tooling 直接呼叫；正式
-  policy 管理端點若要對外發布，需先送 API steward 做契約變更。
+- `create_company_pool_policy`、`approve_company_pool_policy` 和
+  `get_current_company_pool_policy` 已發布，並委派給既有
+  `propose_policy_version`／`approve_policy_version` 規則；政策版次仍是每筆
+  assignment/pool_entry 的必要 FK。`api/build_contracts.py`、
+  `api/operation-catalog.json` 與 `mocks/fixtures.json` 尚未包含這三個
+  operation，需 API schema steward 在共用產物層完成同步，詳見
+  `database/proposals/M11/contract-changes.md`。

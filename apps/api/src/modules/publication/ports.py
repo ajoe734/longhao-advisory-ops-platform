@@ -83,19 +83,13 @@ class ReportBundlePort(Protocol):
     ) -> SignedBundle: ...
 
 
-def report_bundle_manifest_sha256(tenant_id: str, report_version_id: str, report_content_sha256: str) -> str:
-    """Hash of the per-report signed manifest (REQ-M08-004: one signed report
-
-    can cover many recommendation versions, so this value is a function of
-    the report alone, never of which recommendation version is being
-    checked). Exposed so the ``report.signature_verified`` event fixtures can
-    assert the exact value the registry will independently compute.
-    """
-    return canonical_hash({"tenant_id": tenant_id, "report_version_id": report_version_id, "report_content_sha256": report_content_sha256})
-
-
 class FakeReportBundleRegistry:
-    """Local stand-in for the M07 adapter; NOT_CONNECTED to a real signer."""
+    """Local M07 adapter stand-in that accepts, but never derives, signature output.
+
+    The manifest digest is authority data emitted by M07 after verification.
+    Recomputing a digest from a subset of report fields would allow this fake to
+    disagree with the signed package while still making a publication test pass.
+    """
 
     is_fake = True
 
@@ -112,15 +106,23 @@ class FakeReportBundleRegistry:
         *,
         content_sha256: str,
         report_content_sha256: str,
+        bundle_manifest_sha256: str,
     ) -> str:
+        if not isinstance(bundle_manifest_sha256, str) or len(bundle_manifest_sha256) != 64:
+            raise ValueError("bundle_manifest_sha256 must be supplied from an M07 signature result")
         manifest_key = (tenant_id, report_version_id)
         manifest = self._manifests.get(manifest_key)
-        if manifest is None or manifest["report_content_sha256"] != report_content_sha256:
+        if manifest is None:
             manifest = {
                 "report_content_sha256": report_content_sha256,
-                "bundle_manifest_sha256": report_bundle_manifest_sha256(tenant_id, report_version_id, report_content_sha256),
+                "bundle_manifest_sha256": bundle_manifest_sha256,
             }
             self._manifests[manifest_key] = manifest
+        elif (
+            manifest["report_content_sha256"] != report_content_sha256
+            or manifest["bundle_manifest_sha256"] != bundle_manifest_sha256
+        ):
+            raise ValueError("a report version must retain the one M07-signed manifest digest")
         self._covered_content[(tenant_id, report_version_id, recommendation_version_id)] = content_sha256
         return manifest["bundle_manifest_sha256"]
 

@@ -469,9 +469,36 @@ class ContractsEntitlementsService:
             self._authorize_customer_resource(context, contract.customer_id, {"contract_operator"})
             signature = state.signatures[(context.tenant_id, contract.customer_signature_id)]
             acceptance = state.company_acceptances[(context.tenant_id, contract.company_acceptance_id)]
+            services = sorted(
+                (
+                    row for (tenant_id, _), row in state.contract_services.items()
+                    if tenant_id == context.tenant_id and row.contract_id == contract.id
+                ),
+                key=lambda row: (row.starts_at, row.ends_at, row.id),
+            )
+            service_statuses = {
+                row.contract_service_id: row.status
+                for (tenant_id, _), row in state.entitlements.items()
+                if tenant_id == context.tenant_id and row.contract_id == contract.id
+            }
             self._audit(state, context, "get_contract", "contract", contract.id, contract.version, correlation_id, "succeeded")
             return ServiceResponse(
-                contract.to_api(self._contract_actions(contract, context), customer_signed_at=signature.customer_signed_at, company_accepted_at=acceptance.accepted_at),
+                {
+                    **contract.to_api(
+                        self._contract_actions(contract, context),
+                        customer_signed_at=signature.customer_signed_at,
+                        company_accepted_at=acceptance.accepted_at,
+                    ),
+                    "services": [
+                        service.to_api(
+                            currency=contract.currency,
+                            # A missing entitlement is a persistence invariant failure; exposing it
+                            # as locked keeps a damaged projection fail-closed for finance users.
+                            status=service_statuses.get(service.id, "locked"),
+                        )
+                        for service in services
+                    ],
+                },
                 etag=self._etag(contract.version),
             )
 

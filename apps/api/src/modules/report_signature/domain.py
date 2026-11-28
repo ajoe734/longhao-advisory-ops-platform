@@ -208,6 +208,7 @@ class ReportVersion:
             "state": self.status,
             "channel_texts": self.channel_texts,
             "audience_policy": self.audience_policy,
+            "recommendation_version_ids": self.recommendation_version_ids,
             "valid_from": wire_time(self.valid_from),
             "valid_until": wire_time(self.valid_until),
             "frozen_at": wire_time(self.frozen_at) if self.frozen_at else None,

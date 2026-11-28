@@ -6,7 +6,7 @@ import inspect
 from time import perf_counter
 from typing import Any, Callable
 
-from .domain import ActorContext, DomainError, ValidationError, new_id
+from .domain import ActorContext, DomainError, UnauthorizedError, ValidationError, new_id
 from .service import OwnershipPoolService, ServiceResponse
 from .telemetry import M11Telemetry
 
@@ -19,6 +19,8 @@ class ApiResponse:
 
 
 _IDEMPOTENT_WRITE_OPS = {
+    "create_company_pool_policy",
+    "approve_company_pool_policy",
     "assign_maintenance_owner",
     "claim_pool_customer",
     "release_maintenance_owner",
@@ -37,7 +39,7 @@ class M11Controller:
     def handle(
         self,
         operation_id: str,
-        context: ActorContext,
+        context: ActorContext | None,
         *,
         body: dict[str, Any] | None = None,
         path: dict[str, str] | None = None,
@@ -51,6 +53,8 @@ class M11Controller:
         correlation_id = headers.get("x-correlation-id") or new_id()
         started = perf_counter()
         try:
+            if context is None:
+                raise UnauthorizedError("an authenticated actor context is required")
             response = self._dispatch(operation_id, context, body, path, query, headers, correlation_id)
             response_headers = {"X-Correlation-Id": correlation_id}
             if response.etag:
@@ -94,6 +98,19 @@ class M11Controller:
     ) -> ServiceResponse:
         key = headers.get("idempotency-key", "")
         version = self._if_match(headers.get("if-match"))
+        if operation_id == "create_company_pool_policy":
+            return self.service.create_company_pool_policy(context, body, idempotency_key=key, correlation_id=correlation_id)
+        if operation_id == "approve_company_pool_policy":
+            return self.service.approve_company_pool_policy(
+                context,
+                path["policy_id"],
+                body,
+                expected_version=version,
+                idempotency_key=key,
+                correlation_id=correlation_id,
+            )
+        if operation_id == "get_current_company_pool_policy":
+            return self.service.get_current_company_pool_policy(context, correlation_id=correlation_id)
         if operation_id == "list_company_pool":
             return self.service.list_company_pool(
                 context,
@@ -160,6 +177,9 @@ class M11Controller:
 
 
 ROUTES: tuple[tuple[str, str, str], ...] = (
+    ("POST", "/ownership/company-pool-policies", "create_company_pool_policy"),
+    ("POST", "/ownership/company-pool-policies/{policy_id}/approval", "approve_company_pool_policy"),
+    ("GET", "/ownership/company-pool-policies/current", "get_current_company_pool_policy"),
     ("GET", "/ownership/company-pool", "list_company_pool"),
     ("POST", "/customers/{customer_id}/maintenance-assignments", "assign_maintenance_owner"),
     ("POST", "/ownership/pool-entries/{pool_entry_id}/claim", "claim_pool_customer"),
