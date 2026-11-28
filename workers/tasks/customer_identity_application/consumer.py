@@ -68,6 +68,22 @@ _PARTIAL_VERSIONED_EVENTS = {
     "ownership.assignment_changed",
 }
 _ASSIGNMENT_CLEARED_STATES = {"released", "departure"}
+_EVENT_CLASSIFICATIONS = {
+    "application.customer_signed": "customer_confidential",
+    "application.company_decided": "customer_confidential",
+    "kyc.decision_recorded": "customer_confidential",
+    "kyc.refresh_required": "customer_confidential",
+    "suitability.assessed": "customer_confidential",
+    "business_clearance.changed": "customer_confidential",
+    "ownership.assignment_changed": "customer_confidential",
+    "ownership.employee_departed": "internal",
+}
+_PAYLOAD_ENUMS: dict[str, tuple[str, set[str]]] = {
+    "kyc.decision_recorded": ("decision", {"approved", "rejected", "incomplete"}),
+    "suitability.assessed": ("state", {"suitable", "conditional", "not_suitable"}),
+    "business_clearance.changed": ("decision", {"pending", "approved", "denied", "expired"}),
+    "ownership.assignment_changed": ("state", {"active", "released", "departure", "superseded"}),
+}
 
 
 @dataclass(frozen=True)
@@ -235,9 +251,16 @@ class M01EventConsumer:
                 raise NotFoundError("customer referenced by assignment was not found")
             if payload["state"] == "superseded":
                 return "maintenance_owner_superseded_ignored"
-            customer.maintenance_owner_id = (
-                None if payload["state"] in _ASSIGNMENT_CLEARED_STATES else payload["salesperson_id"]
-            )
+            if payload["state"] in _ASSIGNMENT_CLEARED_STATES:
+                # Assignment IDs identify intervals, so an old interval may
+                # arrive after a newer owner has already been projected.  A
+                # named release/departure may only clear the owner it names;
+                # a null salesperson remains the explicit global clear case.
+                if payload["salesperson_id"] is not None and customer.maintenance_owner_id != payload["salesperson_id"]:
+                    return "maintenance_owner_clear_ignored"
+                customer.maintenance_owner_id = None
+            else:
+                customer.maintenance_owner_id = payload["salesperson_id"]
             customer.version += 1
             customer.updated_at = utc_now()
             return "maintenance_owner_projected"
@@ -265,10 +288,23 @@ class M01EventConsumer:
         if not contract:
             raise ValidationError("event type is not consumed by M01", code="unsupported_event_type")
         producer, aggregate_type, payload_fields = contract
-        if envelope["schema_version"] != "1.0.0" or envelope["producer"] != producer or envelope["aggregate_type"] != aggregate_type:
+        if (
+            envelope["schema_version"] != "1.0.0"
+            or envelope["producer"] != producer
+            or envelope["aggregate_type"] != aggregate_type
+            or envelope["classification"] != _EVENT_CLASSIFICATIONS[envelope["event_type"]]
+        ):
             raise ValidationError("event contract metadata is invalid", code="event_schema_invalid")
         if set(envelope["payload"]) != payload_fields:
             raise ValidationError("event payload fields do not match schema", code="event_schema_invalid")
+        enum_contract = _PAYLOAD_ENUMS.get(envelope["event_type"])
+        if enum_contract:
+            field_name, allowed_values = enum_contract
+            if envelope["payload"][field_name] not in allowed_values:
+                raise ValidationError(
+                    f"{envelope['event_type']} {field_name} is invalid",
+                    field_name=f"payload.{field_name}",
+                )
         if canonical_hash(envelope["payload"]) != envelope["payload_sha256"]:
             raise ConflictError("event payload hash is invalid", code="event_payload_hash_invalid")
         if envelope["event_type"].startswith("application."):

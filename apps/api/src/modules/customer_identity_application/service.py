@@ -835,7 +835,7 @@ class CustomerIdentityApplicationService:
     ) -> ServiceResponse:
         """List the staff application queue without widening M01 read roles."""
         self._authorize_staff(context, {"cms_operator"})
-        if state_filter and state_filter not in {
+        if state_filter is not None and state_filter not in {
             "draft", "customer_signed", "due_diligence_pending", "review_in_progress",
             "accepted", "rejected", "withdrawn",
         }:

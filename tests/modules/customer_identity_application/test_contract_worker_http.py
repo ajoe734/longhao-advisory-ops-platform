@@ -165,6 +165,21 @@ def test_list_applications_filters_pages_and_preserves_read_authorization(m01, o
     assert filtered.status == 200
     assert [item["id"] for item in filtered.body["items"]] == [first["id"]]
 
+    # The wire contract has a scalar state filter. Exercise more than one
+    # allowed state so the queue cannot accidentally treat every valid state
+    # as the initial draft state.
+    consumer = M01EventConsumer(m01["repository"])
+    assert consumer.consume(incoming("application.customer_signed", "M02", "application", second["id"], 1, {
+        "application_id": second["id"], "customer_signature_id": str(uuid4()), "package_version_id": PACKAGE,
+        "document_sha256": "a" * 64, "customer_signed_at": wire_time(NOW),
+    })).result_code == "customer_signature_applied"
+    assert [item["id"] for item in controller.handle(
+        "list_applications", operator, query={"state": "draft"},
+    ).body["items"]] == [first["id"]]
+    assert [item["id"] for item in controller.handle(
+        "list_applications", operator, query={"state": "customer_signed"},
+    ).body["items"]] == [second["id"]]
+
     first_page = controller.handle("list_applications", operator, query={"limit": "1"})
     assert first_page.status == 200 and first_page.body["next_cursor"] is not None
     second_page = controller.handle(
@@ -172,9 +187,14 @@ def test_list_applications_filters_pages_and_preserves_read_authorization(m01, o
     )
     assert set(item["id"] for item in first_page.body["items"] + second_page.body["items"]) == {first["id"], second["id"]}
     assert controller.handle("list_applications", operator, query={"state": "invented"}).status == 422
+    assert controller.handle("list_applications", operator, query={"state": ""}).status == 422
+    assert controller.handle("list_applications", operator, query={"customer_id": "not-a-uuid"}).status == 422
 
     platform_admin = ActorContext(TENANT, str(uuid4()), frozenset({"platform_admin"}), principal_type="staff")
+    sales = ActorContext(TENANT, str(uuid4()), frozenset({"sales"}), principal_type="staff")
     assert controller.handle("list_applications", platform_admin).status == 403
+    assert controller.handle("list_applications", sales).status == 403
+    assert controller.handle("list_applications", customer_context(first_customer["id"])).status == 403
     assert controller.handle("get_application", platform_admin, path={"application_id": first["id"]}).status == 404
     assert controller.handle("list_applications", None).status == 401
 
@@ -254,7 +274,7 @@ def incoming(event_type: str, producer: str, aggregate_type: str, aggregate_id: 
         "producer": producer, "aggregate_type": aggregate_type, "aggregate_id": aggregate_id,
         "aggregate_version": sequence, "sequence_no": sequence, "occurred_at": wire_time(NOW), "emitted_at": wire_time(NOW),
         "correlation_id": str(uuid4()), "causation_id": None, "idempotency_key": f"incoming-{sequence:08d}",
-        "classification": "internal" if event_type.startswith("ownership.") else "customer_confidential",
+        "classification": "internal" if event_type == "ownership.employee_departed" else "customer_confidential",
         "payload_sha256": canonical_hash(payload), "payload": payload,
     }
 
@@ -350,6 +370,104 @@ def test_consumer_projects_gate_record_ids_and_assignment_versions(m01, operator
         "effective_at": wire_time(NOW + timedelta(days=1)), "state": "released",
     })
     assert consumer.consume(released).result_code == "maintenance_owner_projected"
+    assert m01["repository"].snapshot().customers[(TENANT, customer["id"])].maintenance_owner_id is None
+
+
+def test_consumer_rejects_invalid_gate_and_assignment_enums_before_projection(m01, operator):
+    customer = create_customer(m01["service"], operator, PROOF_A, "invalid-event-enum-customer-001").data
+    app = m01["service"].create_application(
+        customer_context(customer["id"]), application_body(customer["id"]), idempotency_key="invalid-event-enum-app-001",
+    ).data
+    consumer = M01EventConsumer(m01["repository"])
+    invalid_events = (
+        (
+            "kyc.decision_recorded", "M03", "kyc_submission", str(uuid4()), "decision",
+            lambda aggregate_id: {
+                "submission_id": aggregate_id, "application_id": app["id"], "decision": "bogus", "next_review_due_at": None,
+            },
+        ),
+        (
+            "suitability.assessed", "M03", "suitability_assessment", str(uuid4()), "state",
+            lambda aggregate_id: {
+                "assessment_id": aggregate_id, "application_id": app["id"], "state": "bogus_state", "rule_version": "synthetic-v1",
+            },
+        ),
+        (
+            "business_clearance.changed", "M04", "business_clearance", str(uuid4()), "decision",
+            lambda aggregate_id: {
+                "clearance_id": aggregate_id, "application_id": app["id"], "decision": "bogus", "expires_at": None,
+            },
+        ),
+        (
+            "ownership.assignment_changed", "M11", "maintenance_assignment", str(uuid4()), "state",
+            lambda aggregate_id: {
+                "assignment_id": aggregate_id, "customer_id": customer["id"], "salesperson_id": str(uuid4()),
+                "effective_at": wire_time(NOW), "state": "bogus_state",
+            },
+        ),
+    )
+
+    for event_type, producer, aggregate_type, aggregate_id, field_name, payload_for in invalid_events:
+        with pytest.raises(ValidationError) as error:
+            consumer.consume(incoming(event_type, producer, aggregate_type, aggregate_id, 1, payload_for(aggregate_id)))
+        assert error.value.field_name == f"payload.{field_name}"
+
+    snapshot = m01["repository"].snapshot()
+    projected = snapshot.applications[(TENANT, app["id"])]
+    assert snapshot.inbox == {}
+    assert projected.kyc_submission_id is None and projected.kyc_status == "not_started"
+    assert projected.suitability_assessment_id is None and projected.suitability_status == "pending"
+    assert projected.business_clearance_id is None and projected.business_clearance == "pending"
+    assert snapshot.customers[(TENANT, customer["id"])].maintenance_owner_id is None
+
+
+def test_consumer_enforces_event_classification_from_published_contract(m01, operator):
+    customer = create_customer(m01["service"], operator, PROOF_A, "invalid-classification-customer-001").data
+    consumer = M01EventConsumer(m01["repository"])
+    assignment_id = str(uuid4())
+    envelope = incoming("ownership.assignment_changed", "M11", "maintenance_assignment", assignment_id, 1, {
+        "assignment_id": assignment_id, "customer_id": customer["id"], "salesperson_id": str(uuid4()),
+        "effective_at": wire_time(NOW), "state": "active",
+    })
+    envelope["classification"] = "internal"
+
+    with pytest.raises(ValidationError) as error:
+        consumer.consume(envelope)
+    assert error.value.code == "event_schema_invalid"
+    assert m01["repository"].snapshot().customers[(TENANT, customer["id"])].maintenance_owner_id is None
+
+
+def test_consumer_preserves_newer_assignment_when_an_older_assignment_releases(m01, operator):
+    customer = create_customer(m01["service"], operator, PROOF_A, "assignment-order-customer-001").data
+    consumer = M01EventConsumer(m01["repository"])
+    first_assignment_id, second_assignment_id = str(uuid4()), str(uuid4())
+    first_owner_id, second_owner_id = str(uuid4()), str(uuid4())
+
+    assert consumer.consume(incoming("ownership.assignment_changed", "M11", "maintenance_assignment", first_assignment_id, 1, {
+        "assignment_id": first_assignment_id, "customer_id": customer["id"], "salesperson_id": first_owner_id,
+        "effective_at": wire_time(NOW), "state": "active",
+    })).result_code == "maintenance_owner_projected"
+    assert consumer.consume(incoming("ownership.assignment_changed", "M11", "maintenance_assignment", first_assignment_id, 2, {
+        "assignment_id": first_assignment_id, "customer_id": customer["id"], "salesperson_id": first_owner_id,
+        "effective_at": wire_time(NOW + timedelta(minutes=1)), "state": "superseded",
+    })).result_code == "maintenance_owner_superseded_ignored"
+    assert m01["repository"].snapshot().customers[(TENANT, customer["id"])].maintenance_owner_id == first_owner_id
+
+    assert consumer.consume(incoming("ownership.assignment_changed", "M11", "maintenance_assignment", second_assignment_id, 1, {
+        "assignment_id": second_assignment_id, "customer_id": customer["id"], "salesperson_id": second_owner_id,
+        "effective_at": wire_time(NOW + timedelta(minutes=2)), "state": "active",
+    })).result_code == "maintenance_owner_projected"
+    late_release = consumer.consume(incoming("ownership.assignment_changed", "M11", "maintenance_assignment", first_assignment_id, 3, {
+        "assignment_id": first_assignment_id, "customer_id": customer["id"], "salesperson_id": first_owner_id,
+        "effective_at": wire_time(NOW + timedelta(minutes=3)), "state": "released",
+    }))
+    assert late_release.result_code == "maintenance_owner_clear_ignored"
+    assert m01["repository"].snapshot().customers[(TENANT, customer["id"])].maintenance_owner_id == second_owner_id
+
+    assert consumer.consume(incoming("ownership.assignment_changed", "M11", "maintenance_assignment", second_assignment_id, 2, {
+        "assignment_id": second_assignment_id, "customer_id": customer["id"], "salesperson_id": second_owner_id,
+        "effective_at": wire_time(NOW + timedelta(minutes=4)), "state": "departure",
+    })).result_code == "maintenance_owner_projected"
     assert m01["repository"].snapshot().customers[(TENANT, customer["id"])].maintenance_owner_id is None
 
 
