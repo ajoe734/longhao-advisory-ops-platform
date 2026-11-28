@@ -65,6 +65,73 @@ def test_controller_rejects_malformed_if_match(m14, operator):
     assert response.status == 422
 
 
+def test_refund_allocation_must_reference_a_line_on_the_original_payment_invoice(m14, operator, payment_adapter_ctx):
+    service = m14["service"]
+    evidence_id = "00000000-0000-0000-0000-0000000000e1"
+    m14["evidence"].add(TENANT, evidence_id)
+    customer_id, contract_id = str(uuid4()), str(uuid4())
+    paid_invoice = service.create_invoice(
+        operator,
+        invoice_body(customer_id=customer_id, contract_id=contract_id, contract_service_id=str(uuid4())),
+        idempotency_key="refund-line-paid-invoice-001",
+    ).data
+    other_invoice = service.create_invoice(
+        operator,
+        invoice_body(customer_id=customer_id, contract_id=contract_id, contract_service_id=str(uuid4())),
+        idempotency_key="refund-line-other-invoice-001",
+    ).data
+    intent = service.create_payment_intent(
+        operator,
+        {
+            "application_id": str(uuid4()),
+            "invoice_id": paid_invoice["id"],
+            "amount": money("1050"),
+            "method": "card",
+            "return_route": "application_progress",
+        },
+        idempotency_key="refund-line-payment-001",
+    ).data
+    service.receive_payment_webhook(
+        payment_adapter_ctx,
+        {
+            "event_id": str(uuid4()),
+            "provider_transaction_ref": "refund-line-payment-001",
+            "payment_intent_id": intent["id"],
+            "status": "paid",
+            "amount": money("1050"),
+            "provider_occurred_at": wire_time(NOW),
+            "evidence_asset_id": evidence_id,
+        },
+        idempotency_key="refund-line-webhook-001",
+    )
+
+    with pytest.raises(ValidationError, match="original payment invoice"):
+        service.request_refund(
+            operator,
+            {
+                "customer_id": customer_id,
+                "contract_id": contract_id,
+                "original_payment_id": intent["id"],
+                "reason_code": "service_cancelled",
+                "requested_amount": money("1050"),
+                "allocations": [
+                    {
+                        # The other invoice is deliberately used to reproduce the former
+                        # UUID-only validation gap.
+                        "invoice_line_ref": other_invoice["lines"][0]["contract_service_id"],
+                        "recognition_id": None,
+                        "unearned_amount": money("1050"),
+                        "earned_reversal_amount": money("0"),
+                        "tax_adjustment_amount": money("0"),
+                    }
+                ],
+                "calculation_policy_version": "v1",
+                "customer_request_evidence_id": evidence_id,
+            },
+            idempotency_key="refund-line-reject-001",
+        )
+
+
 def _envelope(event_type: str, producer: str, aggregate_type: str, aggregate_id: str, sequence: int, payload: dict) -> dict:
     return {
         "event_id": str(uuid4()), "event_type": event_type, "producer": producer, "tenant_id": TENANT,
