@@ -9,7 +9,17 @@ import yaml
 from modules.ownership_pool.domain import ActorContext, wire_time
 from modules.ownership_pool.http import M11Controller, ROUTES
 
-from conftest import NOW, SALES_A, SUPERVISOR_B, TENANT, current_version, seed_customer_with_contract, seed_policy
+from conftest import (
+    HR_EVIDENCE,
+    NOW,
+    SALES_A,
+    SUPERVISOR,
+    SUPERVISOR_B,
+    TENANT,
+    current_version,
+    seed_customer_with_contract,
+    seed_policy,
+)
 
 
 CUSTOMER = "d0000000-0000-0000-0000-000000000001"
@@ -194,10 +204,95 @@ def test_company_pool_policy_controller_rejects_missing_identity_and_platform_ad
     assert policy_create.status == 403
     assert policy_create.body["code"] == "forbidden"
 
+    policy = controller.handle(
+        "create_company_pool_policy",
+        supervisor,
+        body={"lapse_days": 7, "departure_immediate": True},
+        headers={"Idempotency-Key": "pool-policy-platform-admin-draft-001"},
+    )
+    policy_approval = controller.handle(
+        "approve_company_pool_policy",
+        platform_admin,
+        body={"decision": "approve"},
+        path={"policy_id": policy.body["id"]},
+        headers={"Idempotency-Key": "pool-policy-platform-admin-approve-001", "If-Match": '"1"'},
+    )
+    assert policy_approval.status == 403
+    assert policy_approval.body["code"] == "forbidden"
+
     # Existing pool reads remain restricted too; the new current-policy read
     # must not become an indirect platform-admin bypass.
     assert controller.handle("list_company_pool", platform_admin).status == 403
     assert controller.handle("get_current_company_pool_policy", platform_admin).status == 403
+
+
+def test_departed_supervisor_cannot_create_company_pool_policy(m11, supervisor, hr_operator):
+    service = m11["service"]
+    controller = M11Controller(service)
+    service.record_employee_departure(
+        hr_operator,
+        {
+            "employee_id": SUPERVISOR,
+            "effective_at": wire_time(NOW),
+            "hr_evidence_asset_id": HR_EVIDENCE,
+            "reason_code": "resignation",
+        },
+        idempotency_key="departure-policy-create-block-001",
+    )
+
+    rejected = controller.handle(
+        "create_company_pool_policy",
+        supervisor,
+        body={"lapse_days": 7, "departure_immediate": True},
+        headers={"Idempotency-Key": "pool-policy-departed-create-001"},
+    )
+
+    assert rejected.status == 403
+    assert rejected.body["code"] == "actor_departed"
+    audit = m11["repository"].snapshot().audit_events[-1]
+    assert (audit.action, audit.result, audit.reason_code) == (
+        "m11.create_company_pool_policy",
+        "rejected",
+        "actor_departed",
+    )
+
+
+def test_departed_supervisor_cannot_approve_company_pool_policy(m11, supervisor, supervisor_b, hr_operator):
+    service = m11["service"]
+    controller = M11Controller(service)
+    created = controller.handle(
+        "create_company_pool_policy",
+        supervisor,
+        body={"lapse_days": 7, "departure_immediate": True},
+        headers={"Idempotency-Key": "pool-policy-departed-approve-draft-001"},
+    )
+    service.record_employee_departure(
+        hr_operator,
+        {
+            "employee_id": SUPERVISOR_B,
+            "effective_at": wire_time(NOW),
+            "hr_evidence_asset_id": HR_EVIDENCE,
+            "reason_code": "resignation",
+        },
+        idempotency_key="departure-policy-approve-block-001",
+    )
+
+    rejected = controller.handle(
+        "approve_company_pool_policy",
+        supervisor_b,
+        body={"decision": "approve"},
+        path={"policy_id": created.body["id"]},
+        headers={"Idempotency-Key": "pool-policy-departed-approve-001", "If-Match": '"1"'},
+    )
+
+    assert rejected.status == 403
+    assert rejected.body["code"] == "actor_departed"
+    audit = m11["repository"].snapshot().audit_events[-1]
+    assert (audit.action, audit.result, audit.reason_code) == (
+        "m11.approve_company_pool_policy",
+        "rejected",
+        "actor_departed",
+    )
 
 
 def test_company_pool_policy_controller_is_tenant_scoped(m11, supervisor, supervisor_b, other_tenant_supervisor):
