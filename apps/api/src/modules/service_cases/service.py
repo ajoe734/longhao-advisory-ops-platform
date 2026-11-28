@@ -313,6 +313,10 @@ class ServiceCaseService:
         offset = self._page_offset(cursor, limit)
         as_of = as_of or self._clock()
         correlation_id = self._correlation(correlation_id)
+        # Authorize non-customer principals before the case lookup.  Otherwise
+        # an unauthorized caller can distinguish an existing case (403 after
+        # authorization) from an absent case (404 from _stored_case).
+        self._authorize_case_timeline_principal(context)
 
         def query(state: StoreState) -> _Outcome:
             case = self._stored_case(state, context.tenant_id, case_id)
@@ -360,6 +364,9 @@ class ServiceCaseService:
         offset = self._page_offset(cursor, limit)
         as_of = as_of or self._clock()
         correlation_id = self._correlation(correlation_id)
+        # Keep the same pre-lookup gate as the interaction timeline so either
+        # endpoint has an identical non-customer existence-oracle boundary.
+        self._authorize_case_timeline_principal(context)
 
         def query(state: StoreState) -> _Outcome:
             case = self._stored_case(state, context.tenant_id, case_id)
@@ -1213,8 +1220,18 @@ class ServiceCaseService:
         raise ForbiddenError("actor cannot access this case")
 
     def _authorize_case_timeline_reader(self, context: ActorContext, case: ServiceCase) -> None:
+        self._authorize_case_timeline_principal(context)
         if context.principal_type == "customer":
             self._authorize_case_actor(context, case, set())
+
+    def _authorize_case_timeline_principal(self, context: ActorContext) -> None:
+        """Reject non-readers before a case lookup can reveal its existence.
+
+        Customer authorization remains resource-bound: after a lookup it uses a
+        NotFound-shaped result for another, unlinked, cross-tenant, or missing
+        case.  Staff timeline readers are allowed to continue to that lookup.
+        """
+        if context.principal_type == "customer":
             return
         if context.principal_type == "staff" and self._authorized(context, _TIMELINE_READERS):
             return

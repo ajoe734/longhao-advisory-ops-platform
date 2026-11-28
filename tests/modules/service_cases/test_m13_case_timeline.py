@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
@@ -16,6 +17,7 @@ from tests.modules.service_cases.conftest import (
     CUSTOMER_ID_TWO,
     INTERACTION_CONTENT_ASSET,
     NOW,
+    OTHER_TENANT,
     RECEIPT_EVIDENCE,
     TENANT,
     case_body,
@@ -118,7 +120,12 @@ def test_timeline_reads_require_auth_and_preserve_customer_tenant_boundaries(m13
         service.list_case_responses(customer_context(CUSTOMER_ID_TWO), case["id"])
     with pytest.raises(NotFoundError):
         service.list_case_interactions(
-            ActorContext("10000000-0000-0000-0000-000000000099", str(uuid4()), frozenset({"service_agent"})),
+            ActorContext(OTHER_TENANT, str(uuid4()), frozenset({"service_agent"})),
+            case["id"],
+        )
+    with pytest.raises(NotFoundError):
+        service.list_case_responses(
+            ActorContext(OTHER_TENANT, str(uuid4()), frozenset({"service_agent"})),
             case["id"],
         )
     platform_admin = ActorContext(TENANT, str(uuid4()), frozenset({"platform_admin"}), principal_type="staff")
@@ -126,6 +133,25 @@ def test_timeline_reads_require_auth_and_preserve_customer_tenant_boundaries(m13
         service.list_case_interactions(platform_admin, case["id"])
     with pytest.raises(ForbiddenError):
         service.list_case_responses(platform_admin, case["id"])
+
+
+def test_timeline_reads_deny_unauthorized_noncustomers_before_case_lookup(m13, agent):
+    """Unauthorized non-customers must not use a 404 to enumerate case IDs."""
+    case = create_case(m13["service"], agent, "timeline-reader-oracle-001").data
+    controller = M13Controller(m13["service"])
+    principals = {
+        "platform_admin": ActorContext(TENANT, str(uuid4()), frozenset({"platform_admin"}), principal_type="staff"),
+        "unprivileged_staff": ActorContext(TENANT, str(uuid4()), frozenset({"operations"}), principal_type="staff"),
+        "service_principal": ActorContext(TENANT, str(uuid4()), frozenset({"service_response_service"}), principal_type="service"),
+    }
+    missing_case_id = str(uuid4())
+
+    for principal in principals.values():
+        for operation_id in ("list_case_interactions", "list_case_responses"):
+            existing = controller.handle(operation_id, principal, path={"case_id": case["id"]})
+            missing = controller.handle(operation_id, principal, path={"case_id": missing_case_id})
+            assert existing.status == missing.status == 403
+            assert existing.body["code"] == missing.body["code"] == "forbidden"
 
 
 def test_response_timeline_exposes_internal_workflow_but_only_sent_content_to_owner(m13, agent, agent_two, messaging_adapter):
@@ -160,3 +186,30 @@ def test_response_timeline_exposes_internal_workflow_but_only_sent_content_to_ow
     )
     assert via_http.status == 200
     assert via_http.body == customer_page
+
+
+def test_response_timeline_paginates_as_of_for_service_supervisor(m13, agent, agent_two, supervisor):
+    service = m13["service"]
+    case = create_case(service, agent, "timeline-responses-page-001").data
+    _approve_and_send(m13, agent, agent_two, case["id"])
+    as_of = m13["clock"]()
+
+    first = service.list_case_responses(supervisor, case["id"], limit=1, as_of=as_of).data
+    second = service.list_case_responses(
+        supervisor, case["id"], cursor=first["next_cursor"], limit=1, as_of=as_of,
+    ).data
+    third = service.list_case_responses(
+        supervisor, case["id"], cursor=second["next_cursor"], limit=1, as_of=as_of,
+    ).data
+
+    assert [page["total_estimate"] for page in (first, second, third)] == [3, 3, 3]
+    assert [page["as_of"] for page in (first, second, third)] == [wire_time(as_of)] * 3
+    assert [page["next_cursor"] for page in (first, second, third)] == ["1", "2", None]
+    assert [page["items"][0]["record_type"] for page in (first, second, third)] == ["draft", "approval", "response"]
+    _validate("CaseResponseTimelinePage", first)
+
+    before_dispatch = service.list_case_responses(
+        supervisor, case["id"], limit=10, as_of=as_of - timedelta(seconds=10),
+    ).data
+    assert before_dispatch["as_of"] == wire_time(as_of - timedelta(seconds=10))
+    assert [item["record_type"] for item in before_dispatch["items"]] == ["draft", "approval"]

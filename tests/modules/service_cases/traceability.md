@@ -19,12 +19,18 @@
 
 ## GAP-M13-CASE-TIMELINE 修復與驗證證據
 
+本輪退修基線為 reviewer 退回的候選
+`95af0fd9ac59a681cdd74b7bcc3e6795e8bf1a5c`；最終候選 SHA 以同一輪
+`ai-status.sh handoff` 的 machine-truth 記錄為準，避免在 Git commit 內嵌
+無法自我指涉的 commit SHA。
+
 | Finding／驗收項 | 原始碼依據與修改位置 | 舊版重現 → 修正版結果 | 命令、退出碼、執行版本與證據位置 | 未驗項與具體限制 |
 | --- | --- | --- | --- | --- |
-| UI-27 無法讀取互動／回覆時間軸；需 cursor 分頁與依時間排序 | `service.py`: `list_case_interactions`／`list_case_responses`；`http.py`: `ROUTES`／dispatch；`api/openapi.yaml`: 兩個 GET operation 與 page schema | `origin/dev` 靜態檢索沒有 `list_case_interactions`／`list_case_responses` operation；修正版以正式 `M13Controller.handle` 和 service query 驗證跨通路互動及 draft→approval→dispatch 時序、`limit`／`next_cursor` | `python3 -m pytest tests/modules/service_cases/test_m13_case_timeline.py tests/modules/service_cases/test_m13_contract_worker_http.py -q` → exit 0，19 passed；完整 module 檢查見下 | 未啟動 UI／browser：本 task 只負責後端和契約，且 VM 禁止啟動 preview/browser server；管理介面由 PR #33 另行整合 |
-| 客戶只能讀本人可公開內容；禁止 internal note、草稿／核准證據、跨 tenant／platform admin 越權 | `domain.py`: customer projection；`service.py`: `_authorize_case_timeline_reader`、customer response filter；`test_m13_case_timeline.py`: 401／403／NotFound 與欄位 deny-list | 舊契約無兩個讀取端點；新測試確認 customer 只能看 inbound/outbound 摘要及 provider `sent` 的精確文字，internal/queued/draft/approval/hash/provider metadata 不回傳；陌生 customer／跨 tenant 為 NotFound、platform_admin 為 Forbidden | `python3 -m pytest tests/modules/service_cases -q` → exit 0，48 passed；`python3 scripts/validate_contracts.py` → exit 0，142 operations／197 schemas；`python3 scripts/validate_docs.py` → exit 0 | 外部訊息 provider 仍為 fake adapter；測試驗證 provider-confirmed dispatch state，不宣稱外部實際串接已通過 |
+| UI-27 無法讀取互動／回覆時間軸；需 cursor 分頁與依時間排序 | `service.py`: `list_case_interactions`／`list_case_responses`；`http.py`: `ROUTES`／dispatch；`api/openapi.yaml`: 兩個 GET operation 與 page schema；`test_m13_case_timeline.py`: supervisor 的 response `cursor`／`limit`／固定 `as_of` 分頁 | `origin/dev` 靜態檢索沒有 `list_case_interactions`／`list_case_responses` operation；修正版以正式 `M13Controller.handle` 和 service query 驗證跨通路互動及 draft→approval→dispatch 時序、`limit`／`next_cursor`，且 supervisor 的三頁 response timeline 與 `as_of` 截止頁一致 | `python3 -m pytest tests/modules/service_cases/test_m13_case_timeline.py tests/modules/service_cases/test_m13_contract_worker_http.py -q` → exit 0，21 passed（Python 3.12.3）；完整 module 檢查見下 | 未啟動 UI／browser：本 task 只負責後端和契約，且 VM 禁止啟動 preview/browser server；管理介面由 PR #33 另行整合 |
+| F1 security：未授權 non-customer 以存在／不存在 `case_id` 得到 403／404，可枚舉案件 | `service.py`: 兩個 timeline query 在 `_stored_case` 前呼叫 `_authorize_case_timeline_principal`；customer 保持 `_authorize_case_timeline_reader` → `_authorize_case_actor` 的 NotFound 歸屬檢查；`test_m13_case_timeline.py`: `test_timeline_reads_deny_unauthorized_noncustomers_before_case_lookup` | 基線 `95af0fd`：正式 `M13Controller.handle` 對存在 case 回 403、隨機 UUID 回 404（最小重現失敗：`AssertionError: assert 403 == 404`）。修正版：platform_admin、無權 staff、service principal 對兩種 ID 與兩個讀取 endpoint 皆為 403/`forbidden`；customer 與跨 tenant staff 維持 404 | `python3 -m pytest tests/modules/service_cases/test_m13_case_timeline.py -q` → exit 0，5 passed；`python3 -m pytest tests/modules/service_cases -q` → exit 0，50 passed（Python 3.12.3） | 外部 provider 仍為 fake adapter；此修復僅改本平台授權查詢邊界，不宣稱真實串接 |
+| 客戶只能讀本人可公開內容；禁止 internal note、草稿／核准證據、跨 tenant／platform admin 越權 | `domain.py`: customer projection；`service.py`: `_authorize_case_timeline_principal`／`_authorize_case_timeline_reader`、customer response filter；`test_m13_case_timeline.py`: 401／403／NotFound 與欄位 deny-list | 舊契約無兩個讀取端點；新測試確認 customer 只能看 inbound/outbound 摘要及 provider `sent` 的精確文字，internal/queued/draft/approval/hash/provider metadata 不回傳；陌生 customer／跨 tenant 為 NotFound，platform_admin／其他無權 non-customer 為存在性無差異的 Forbidden | `python3 -m pytest tests/modules/service_cases -q` → exit 0，50 passed；`python3 scripts/validate_contracts.py` → exit 0，142 operations／203 schemas；`python3 scripts/validate_docs.py` → exit 0 | 外部訊息 provider 仍為 fake adapter；測試驗證 provider-confirmed dispatch state，不宣稱外部實際串接已通過 |
 
-額外控制由 `test_m13_contract_worker_http.py` 驗 14 route、OpenAPI/event schema、consumer
+額外控制由 `test_m13_contract_worker_http.py` 驗 16 route、OpenAPI/event schema、consumer
 hash/sequence-gap/tenant isolation、outbox 與 response-dispatch worker 的
 lease/retry/unknown-result-lookup（含永不落入非合約列舉值 `retry`）、
 webhook Idempotency-Key/timestamp/nonce/signature 驗證、router prefix 不重複、
