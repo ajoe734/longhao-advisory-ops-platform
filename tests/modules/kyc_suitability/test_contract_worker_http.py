@@ -9,8 +9,8 @@ from jsonschema import Draft202012Validator, FormatChecker
 import pytest
 import yaml
 
-from modules.kyc_suitability.domain import ConflictError, NotFoundError, ValidationError, canonical_hash, wire_time
-from modules.kyc_suitability.http import M03Controller, ROUTES
+from modules.kyc_suitability.domain import ActorContext, ConflictError, NotFoundError, ValidationError, canonical_hash, wire_time
+from modules.kyc_suitability.http import M03Controller, ROUTES, create_fastapi_router
 from modules.kyc_suitability.ports import ScanOutcome
 
 from workers.tasks.kyc_suitability.consumer import M03EventConsumer
@@ -36,10 +36,11 @@ from conftest import (
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_all_8_openapi_operations_have_http_routes():
+def test_all_10_openapi_operations_have_http_routes():
     assert {operation for _, _, operation in ROUTES} == {
         "create_kyc_submission", "request_kyc_upload", "submit_kyc", "get_kyc_submission",
-        "decide_kyc", "assess_suitability", "request_due_diligence_refresh", "get_document_status",
+        "decide_kyc", "assess_suitability", "list_suitability_assessments", "get_suitability_assessment",
+        "request_due_diligence_refresh", "get_document_status",
     }
 
 
@@ -64,6 +65,113 @@ def test_controller_returns_etag_problem_and_replay_headers(m03, kyc_reviewer):
     assert replay.headers["ETag"] == '"1"'  # a replayed response still carries the resource's ETag
     assert stale.status == 404
     assert stale.headers["Content-Type"] == "application/problem+json"
+
+
+def test_suitability_read_queries_are_reviewer_only_tenant_scoped_and_masked(m03, kyc_reviewer, suitability_reviewer):
+    service = m03["service"]
+    decided = approve_full_cycle(service, kyc_reviewer, APPLICATION_A, SIGNATURE_A, "read-query")
+    assessment = service.assess_suitability(
+        suitability_reviewer,
+        APPLICATION_A,
+        {
+            "kyc_submission_id": decided.data["id"],
+            "questionnaire_version": "m03-suitability-questionnaire-v1",
+            "rule_version": "m03-suitability-rule-v1",
+            "answers": suitability_answers("low", "1"),
+            "service_codes": ["annual_advisory"],
+            "decision": "suitable",
+            "conditions": [],
+            "reason_code": "rule_pass",
+            "next_review_due_at": "2027-05-23T00:00:00.000000Z",
+        },
+        expected_version=1,
+        idempotency_key="read-query-assess-001",
+    )
+    controller = M03Controller(service)
+
+    listed = controller.handle(
+        "list_suitability_assessments",
+        suitability_reviewer,
+        path={"application_id": APPLICATION_A},
+    )
+    detail = controller.handle(
+        "get_suitability_assessment",
+        suitability_reviewer,
+        path={"assessment_id": assessment.data["id"]},
+    )
+
+    assert listed.status == 200
+    assert [item["id"] for item in listed.body["items"]] == [assessment.data["id"]]
+    assert detail.status == 200
+    assert detail.headers["ETag"] == assessment.etag
+    assert detail.body == listed.body["items"][0]
+    assert not {
+        "answers", "answers_sha256", "computed_decision", "reason_code", "service_codes", "overridden"
+    } & set(detail.body)
+
+    platform_admin = ActorContext(
+        TENANT,
+        "20000000-0000-0000-0000-000000000088",
+        frozenset({"platform_admin"}),
+        principal_type="staff",
+    )
+    denied_detail = controller.handle(
+        "get_suitability_assessment",
+        platform_admin,
+        path={"assessment_id": assessment.data["id"]},
+    )
+    denied_list = controller.handle(
+        "list_suitability_assessments",
+        platform_admin,
+        path={"application_id": APPLICATION_A},
+    )
+    assert denied_detail.status == denied_list.status == 403
+
+    other_tenant_reviewer = ActorContext(
+        "10000000-0000-0000-0000-000000000099",
+        "20000000-0000-0000-0000-000000000089",
+        frozenset({"suitability_reviewer"}),
+        principal_type="staff",
+    )
+    cross_tenant = controller.handle(
+        "get_suitability_assessment",
+        other_tenant_reviewer,
+        path={"assessment_id": assessment.data["id"]},
+    )
+    cross_tenant_list = controller.handle(
+        "list_suitability_assessments",
+        other_tenant_reviewer,
+        path={"application_id": APPLICATION_A},
+    )
+    assert cross_tenant.status == 404
+    assert cross_tenant_list.status == 200 and cross_tenant_list.body == {"items": []}
+
+
+def test_suitability_read_routes_reject_an_unauthenticated_request(m03):
+    from fastapi import FastAPI, HTTPException, Request
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+
+    def resolve_context(request: Request):
+        if not request.headers.get("authorization"):
+            raise HTTPException(status_code=401, detail="authentication required")
+        return ActorContext(
+            TENANT,
+            "20000000-0000-0000-0000-000000000090",
+            frozenset({"suitability_reviewer"}),
+            principal_type="staff",
+        )
+
+    app.include_router(create_fastapi_router(m03["service"], resolve_context))
+    client = TestClient(app)
+    unauthenticated = client.get(f"/api/v1/applications/{APPLICATION_A}/suitability-assessments")
+    authenticated = client.get(
+        f"/api/v1/applications/{APPLICATION_A}/suitability-assessments",
+        headers={"Authorization": "Bearer test-suitability-reviewer"},
+    )
+    assert unauthenticated.status_code == 401
+    assert authenticated.status_code == 200 and authenticated.json() == {"items": []}
 
 
 def test_m03_producer_envelopes_validate_against_shared_json_schemas(m03, kyc_reviewer, suitability_reviewer):
@@ -141,6 +249,11 @@ def test_wire_responses_validate_against_openapi_1_0(m03, kyc_reviewer, suitabil
         expected_version=1, idempotency_key="wire-assess-0001",
     )
     validate("SuitabilityAssessment", assessed.data)
+    listed_assessments = service.list_suitability_assessments(suitability_reviewer, APPLICATION_A)
+    read_assessment = service.get_suitability_assessment(suitability_reviewer, assessed.data["id"])
+    validate("SuitabilityAssessmentList", listed_assessments.data)
+    validate("SuitabilityAssessment", read_assessment.data)
+    assert read_assessment.etag == assessed.etag
     status = service.get_document_status(kyc_reviewer, uploaded.data["asset_id"])
     validate("DocumentStatus", status.data)
     assert status.etag == '"2"'  # ETag present on a get_document_status 200 (version bumped by the clean scan)

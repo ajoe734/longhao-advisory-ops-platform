@@ -1,6 +1,15 @@
 # M03 共用契約相容新增提案
 
-此檔不直接修改 `api/openapi.yaml` 或 `events/registry.json`，由 integration steward 合併：
+本提案的相容 API 增加已在本候選的 `api/openapi.yaml` 實作；需要 API schema steward review。既有欄位、operation 與事件 schema 均未改名、刪除或重新定義。
+
+## GAP-M03-SUITABILITY-READ · 已實作的相容讀取契約
+
+1. `GET /applications/{application_id}/suitability-assessments`（`list_suitability_assessments`）回傳該已驗證 tenant 內、指定 application 的不可變評估歷史，依 assessment version 升冪排序；無資料時回傳空 `items`，不以跨模組 application lookup 洩漏存在性。
+2. `GET /suitability-assessments/{assessment_id}`（`get_suitability_assessment`）回傳單筆評估與其 ETag；不同 tenant 對該 id 一律取得 404。
+3. 兩端點只接受 `staffBearer` 的 `suitability_reviewer`；`platform_admin`、sales、service agent 與 customer 都不因其他角色取得資料。輸出重用既有 `SuitabilityAssessment` 投影，因此不包含原問卷答案、answers hash、規則計算細節、reason code、service codes 或 override 證據。每次讀取或拒絕都保留 M03 audit。
+4. `SuitabilityAssessmentList` 是新增 response wrapper，不變更既有 `SuitabilityAssessment` 欄位，故對既有 POST client 向下相容；不新增 migration 或事件。
+
+## 待 API steward 協調的其他提案
 
 1. `DocumentStatus` 可選新增欄位對應 `scan_rejection_code`/`classification` 已足夠表達目前 UAT；暫不需 wire 變更。
 2. 新增查詢型 operation（暫名 `get_kyc_document_conflicts`）：`GET /kyc-submissions/{submission_id}/document-conflicts`，角色 `kyc_reviewer`，回傳 OCR 欄位抽取與客戶原答的差異列表（`question_id`、`ocr_value`、`customer_value`、`confidence`、`conflicts_with_customer_answer`），不包含原始文件內容；供審核工作台取代目前只能透過程式介面（`OcrAutomationService`）查詢的限制。
