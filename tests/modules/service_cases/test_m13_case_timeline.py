@@ -98,6 +98,11 @@ def test_interaction_timeline_is_time_sorted_paginated_and_customer_safe(m13, ag
     assert [item["summary"] for item in staff_page["items"]] == ["客戶先提出問題", "客服已回電", "內部調查筆記"]
     assert staff_page["items"][2]["content_asset_id"] == INTERACTION_CONTENT_ASSET
     _validate("CaseInteractionTimelinePage", staff_page)
+    via_http = M13Controller(service).handle(
+        "list_case_interactions", agent, path={"case_id": case["id"]}, query={"limit": "1"},
+    )
+    assert via_http.status == 200
+    assert via_http.body["items"] == staff_page["items"][:1]
 
 
 def test_timeline_reads_require_auth_and_preserve_customer_tenant_boundaries(m13, agent):
@@ -150,3 +155,8 @@ def test_response_timeline_exposes_internal_workflow_but_only_sent_content_to_ow
     assert public["text"] == draft["text"]
     assert {"draft_id", "approval_id", "content_sha256", "provider_message_ref", "tenant_id"}.isdisjoint(public)
     _validate("CaseResponseTimelinePage", customer_page)
+    via_http = M13Controller(service).handle(
+        "list_case_responses", customer_context(), path={"case_id": case["id"]}, query={"limit": "1"},
+    )
+    assert via_http.status == 200
+    assert via_http.body == customer_page

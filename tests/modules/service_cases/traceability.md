@@ -17,6 +17,13 @@
 
 | GAP-M13-CASE-TIMELINE | `list_case_interactions` / `list_case_responses`: ordered cursor pages, internal draft/approval/dispatch visibility, customer-safe projections | `test_m13_case_timeline.py` |
 
+## GAP-M13-CASE-TIMELINE 修復與驗證證據
+
+| Finding／驗收項 | 原始碼依據與修改位置 | 舊版重現 → 修正版結果 | 命令、退出碼、執行版本與證據位置 | 未驗項與具體限制 |
+| --- | --- | --- | --- | --- |
+| UI-27 無法讀取互動／回覆時間軸；需 cursor 分頁與依時間排序 | `service.py`: `list_case_interactions`／`list_case_responses`；`http.py`: `ROUTES`／dispatch；`api/openapi.yaml`: 兩個 GET operation 與 page schema | `origin/dev` 靜態檢索沒有 `list_case_interactions`／`list_case_responses` operation；修正版以正式 `M13Controller.handle` 和 service query 驗證跨通路互動及 draft→approval→dispatch 時序、`limit`／`next_cursor` | `python3 -m pytest tests/modules/service_cases/test_m13_case_timeline.py tests/modules/service_cases/test_m13_contract_worker_http.py -q` → exit 0，19 passed；完整 module 檢查見下 | 未啟動 UI／browser：本 task 只負責後端和契約，且 VM 禁止啟動 preview/browser server；管理介面由 PR #33 另行整合 |
+| 客戶只能讀本人可公開內容；禁止 internal note、草稿／核准證據、跨 tenant／platform admin 越權 | `domain.py`: customer projection；`service.py`: `_authorize_case_timeline_reader`、customer response filter；`test_m13_case_timeline.py`: 401／403／NotFound 與欄位 deny-list | 舊契約無兩個讀取端點；新測試確認 customer 只能看 inbound/outbound 摘要及 provider `sent` 的精確文字，internal/queued/draft/approval/hash/provider metadata 不回傳；陌生 customer／跨 tenant 為 NotFound、platform_admin 為 Forbidden | `python3 -m pytest tests/modules/service_cases -q` → exit 0，48 passed；`python3 scripts/validate_contracts.py` → exit 0，142 operations／197 schemas；`python3 scripts/validate_docs.py` → exit 0 | 外部訊息 provider 仍為 fake adapter；測試驗證 provider-confirmed dispatch state，不宣稱外部實際串接已通過 |
+
 額外控制由 `test_m13_contract_worker_http.py` 驗 14 route、OpenAPI/event schema、consumer
 hash/sequence-gap/tenant isolation、outbox 與 response-dispatch worker 的
 lease/retry/unknown-result-lookup（含永不落入非合約列舉值 `retry`）、
