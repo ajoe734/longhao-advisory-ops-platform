@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
+
+from jsonschema import Draft202012Validator, FormatChecker
+import yaml
 
 from modules.ownership_pool.domain import ActorContext, wire_time
-from modules.ownership_pool.http import M11Controller
+from modules.ownership_pool.http import M11Controller, ROUTES
 
 from conftest import NOW, SALES_A, SUPERVISOR_B, TENANT, current_version, seed_customer_with_contract, seed_policy
 
 
 CUSTOMER = "d0000000-0000-0000-0000-000000000001"
 CONTRACT = "e0000000-0000-0000-0000-000000000001"
+ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_assign_via_controller_sets_etag_and_replay_header(m11, supervisor):
@@ -225,3 +230,39 @@ def test_company_pool_policy_controller_is_tenant_scoped(m11, supervisor, superv
     other_tenant_current = controller.handle("get_current_company_pool_policy", other_tenant_supervisor)
     assert other_tenant_current.status == 404
     assert other_tenant_current.body["code"] == "current_policy_not_found"
+
+
+def test_company_pool_policy_operations_and_live_response_match_openapi(m11, supervisor, supervisor_b):
+    spec = yaml.safe_load((ROOT / "api" / "openapi.yaml").read_text())
+    expected = {
+        "create_company_pool_policy": ("/ownership/company-pool-policies", "post"),
+        "approve_company_pool_policy": ("/ownership/company-pool-policies/{policy_id}/approval", "post"),
+        "get_current_company_pool_policy": ("/ownership/company-pool-policies/current", "get"),
+    }
+    route_operations = {operation_id for _, _, operation_id in ROUTES}
+    for operation_id, (path, method) in expected.items():
+        operation = spec["paths"][path][method]
+        assert operation["operationId"] == operation_id
+        assert operation["x-allowed-roles"] == ["sales_supervisor"]
+        assert operation["x-audit-action"] == f"m11.{operation_id}"
+        assert operation_id in route_operations
+
+    controller = M11Controller(m11["service"])
+    created = controller.handle(
+        "create_company_pool_policy",
+        supervisor,
+        body={"lapse_days": 7, "departure_immediate": True},
+        headers={"Idempotency-Key": "pool-policy-contract-001"},
+    )
+    approved = controller.handle(
+        "approve_company_pool_policy",
+        supervisor_b,
+        body={"decision": "approve"},
+        path={"policy_id": created.body["id"]},
+        headers={"Idempotency-Key": "pool-policy-contract-002", "If-Match": '"1"'},
+    )
+    validator = Draft202012Validator(
+        {"$ref": "#/components/schemas/CompanyPoolPolicyVersion", "components": spec["components"]},
+        format_checker=FormatChecker(),
+    )
+    assert list(validator.iter_errors(approved.body)) == []
