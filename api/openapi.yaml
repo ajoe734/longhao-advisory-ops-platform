@@ -5299,6 +5299,182 @@ paths:
           $ref: '#/components/responses/Error429'
         '503':
           $ref: '#/components/responses/Error503'
+  /ownership/company-pool-policies:
+    post:
+      operationId: create_company_pool_policy
+      summary: 建立公司Pool中斷規則政策版本
+      tags:
+      - M11
+      security:
+      - staffBearer: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      x-module: M11
+      x-allowed-roles:
+      - sales_supervisor
+      x-resource-ownership: tenant_and_scope
+      x-audit-action: m11.create_company_pool_policy
+      x-idempotency-required: true
+      description: 建立草稿版次；僅異位業務主管可核准，草稿不會成為生效政策或開啟自動回Pool。
+      responses:
+        '201':
+          description: 成功
+          headers:
+            X-Correlation-Id:
+              schema: *id001
+            ETag:
+              schema:
+                type: string
+                pattern: ^"[1-9][0-9]*"$
+            Idempotency-Replayed:
+              schema: *id002
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyPoolPolicyVersion'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '412':
+          $ref: '#/components/responses/Error412'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '428':
+          $ref: '#/components/responses/Error428'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompanyPoolPolicyVersionCreate'
+  /ownership/company-pool-policies/{policy_id}/approval:
+    post:
+      operationId: approve_company_pool_policy
+      summary: 異位業務主管核准公司Pool政策版本
+      tags:
+      - M11
+      security:
+      - staffBearer: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - in: path
+        name: policy_id
+        required: true
+        schema: *id001
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/IfMatch'
+      x-module: M11
+      x-allowed-roles:
+      - sales_supervisor
+      x-resource-ownership: tenant_and_scope
+      x-audit-action: m11.approve_company_pool_policy
+      x-idempotency-required: true
+      description: 製作者不得自行核准；以政策版本強ETag作compare-and-set，核准後才成為可讀取的目前生效政策。
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Correlation-Id:
+              schema: *id001
+            ETag:
+              schema:
+                type: string
+                pattern: ^"[1-9][0-9]*"$
+            Idempotency-Replayed:
+              schema: *id002
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyPoolPolicyVersion'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '412':
+          $ref: '#/components/responses/Error412'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '428':
+          $ref: '#/components/responses/Error428'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompanyPoolPolicyVersionApproval'
+  /ownership/company-pool-policies/current:
+    get:
+      operationId: get_current_company_pool_policy
+      summary: 讀取目前生效的公司Pool政策
+      tags:
+      - M11
+      security:
+      - staffBearer: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      x-module: M11
+      x-allowed-roles:
+      - sales_supervisor
+      x-resource-ownership: tenant_and_scope
+      x-audit-action: m11.get_current_company_pool_policy
+      x-idempotency-required: false
+      description: 僅回傳同tenant中版本最高且已核准的公司Pool政策；draft不會遮蔽既有生效版本。
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Correlation-Id:
+              schema: *id001
+            ETag:
+              schema:
+                type: string
+                pattern: ^"[1-9][0-9]*"$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyPoolPolicyVersion'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '412':
+          $ref: '#/components/responses/Error412'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '428':
+          $ref: '#/components/responses/Error428'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
   /ownership/company-pool:
     get:
       operationId: list_company_pool
@@ -13502,6 +13678,88 @@ components:
       - as_of
       - attribution_policy_version
       - data_complete_through
+    CompanyPoolPolicyVersionCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        lapse_days:
+          type: integer
+          minimum: 1
+        departure_immediate:
+          type: boolean
+      required:
+      - lapse_days
+      - departure_immediate
+    CompanyPoolPolicyVersionApproval:
+      type: object
+      additionalProperties: false
+      properties:
+        decision:
+          type: string
+          const: approve
+      required:
+      - decision
+    CompanyPoolPolicyVersion:
+      type: object
+      additionalProperties: false
+      properties:
+        id: *id001
+        tenant_id: *id001
+        version: *id005
+        created_at: *id003
+        updated_at: *id003
+        allowed_actions:
+          type: array
+          items:
+            type: string
+            maxLength: 100
+            description: 後端依角色、狀態、資格與SoD計算的operation_id
+          minItems: 0
+          maxItems: 40
+        policy_code:
+          type: string
+          const: company_pool_lapse
+        policy_version:
+          type: string
+          maxLength: 80
+        approval_status:
+          type: string
+          enum:
+          - draft
+          - approved
+        lapse_basis:
+          type: string
+          const: proposed_all_paid_services_ended
+        lapse_days:
+          type: integer
+          minimum: 1
+        departure_immediate:
+          type: boolean
+        proposed_by: *id001
+        approved_by:
+          anyOf:
+          - *id001
+          - type: 'null'
+        approved_at:
+          anyOf:
+          - *id003
+          - type: 'null'
+      required:
+      - id
+      - tenant_id
+      - version
+      - created_at
+      - updated_at
+      - allowed_actions
+      - policy_code
+      - policy_version
+      - approval_status
+      - lapse_basis
+      - lapse_days
+      - departure_immediate
+      - proposed_by
+      - approved_by
+      - approved_at
     MaintenanceAssignmentRequest:
       type: object
       additionalProperties: false
