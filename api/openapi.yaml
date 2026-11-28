@@ -600,6 +600,65 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/ApplicationCreate'
+    get:
+      operationId: list_applications
+      summary: 依申辦狀態與客戶篩選申請佇列
+      tags:
+      - M01
+      security:
+      - staffBearer: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/AsOf'
+      - in: query
+        name: state
+        required: false
+        schema:
+          type: string
+          enum:
+          - draft
+          - customer_signed
+          - due_diligence_pending
+          - review_in_progress
+          - accepted
+          - rejected
+          - withdrawn
+        description: 只允許申請狀態列舉，不允許任意查詢語法。
+      - in: query
+        name: customer_id
+        required: false
+        schema: *id001
+      x-module: M01
+      x-allowed-roles:
+      - cms_operator
+      x-resource-ownership: tenant_and_scope
+      x-audit-action: m01.list_applications
+      x-idempotency-required: false
+      description: 後台申請佇列；僅回傳目前 tenant，platform_admin 不因全域角色而取得讀取權。
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Correlation-Id:
+              schema: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationPage'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
   /applications/{application_id}:
     get:
       operationId: get_application
@@ -9889,6 +9948,22 @@ components:
           anyOf:
           - *id003
           - type: 'null'
+        customer_signature_id:
+          anyOf:
+          - *id001
+          - type: 'null'
+        kyc_submission_id:
+          anyOf:
+          - *id001
+          - type: 'null'
+        suitability_assessment_id:
+          anyOf:
+          - *id001
+          - type: 'null'
+        business_clearance_id:
+          anyOf:
+          - *id001
+          - type: 'null'
         kyc_status:
           type: string
           enum:
@@ -16550,6 +16625,31 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Customer'
+          minItems: 0
+          maxItems: 200
+        next_cursor:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+        as_of: *id003
+        total_estimate:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+      required:
+      - items
+      - next_cursor
+      - as_of
+    ApplicationPage:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Application'
           minItems: 0
           maxItems: 200
         next_cursor:

@@ -194,6 +194,10 @@ class Application:
     state: str = "draft"
     customer_signed_at: datetime | None = None
     company_accepted_at: datetime | None = None
+    customer_signature_id: str | None = None
+    kyc_submission_id: str | None = None
+    suitability_assessment_id: str | None = None
+    business_clearance_id: str | None = None
     kyc_status: str = "not_started"
     suitability_status: str = "pending"
     business_clearance: str = "pending"
@@ -218,6 +222,10 @@ class Application:
             "state": self.state,
             "customer_signed_at": wire_time(self.customer_signed_at) if self.customer_signed_at else None,
             "company_accepted_at": wire_time(self.company_accepted_at) if self.company_accepted_at else None,
+            "customer_signature_id": self.customer_signature_id,
+            "kyc_submission_id": self.kyc_submission_id,
+            "suitability_assessment_id": self.suitability_assessment_id,
+            "business_clearance_id": self.business_clearance_id,
             "kyc_status": self.kyc_status,
             "suitability_status": self.suitability_status,
             "business_clearance": self.business_clearance,
@@ -369,6 +377,7 @@ class InboxReceipt:
     event_type: str
     payload_sha256: str
     aggregate_id: str
+    aggregate_version: int
     sequence_no: int
     status: str
     result_code: str
