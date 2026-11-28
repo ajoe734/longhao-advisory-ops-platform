@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from modules.ownership_pool.domain import wire_time
+from modules.ownership_pool.domain import ActorContext, wire_time
 from modules.ownership_pool.http import M11Controller
 
-from conftest import NOW, SALES_A, current_version, seed_customer_with_contract, seed_policy
+from conftest import NOW, SALES_A, SUPERVISOR_B, TENANT, current_version, seed_customer_with_contract, seed_policy
 
 
 CUSTOMER = "d0000000-0000-0000-0000-000000000001"
@@ -102,3 +102,126 @@ def test_idempotency_replay_keeps_the_original_etag(m11, supervisor):
     replay = controller.handle("assign_maintenance_owner", supervisor, body=body, path={"customer_id": CUSTOMER}, headers=headers)
     assert replay.headers["Idempotency-Replayed"] == "true"
     assert replay.headers["ETag"] == first.headers["ETag"] == '"1"'
+
+
+def test_company_pool_policy_lifecycle_is_published_audited_and_current(m11, supervisor, supervisor_b):
+    controller = M11Controller(m11["service"])
+    create_headers = {"Idempotency-Key": "pool-policy-create-001"}
+    create_body = {"lapse_days": 7, "departure_immediate": True}
+
+    created = controller.handle("create_company_pool_policy", supervisor, body=create_body, headers=create_headers)
+    assert created.status == 201
+    assert created.headers["ETag"] == '"1"'
+    assert created.headers["Idempotency-Replayed"] == "false"
+    assert created.body["policy_code"] == "company_pool_lapse"
+    assert created.body["approval_status"] == "draft"
+    assert created.body["allowed_actions"] == []  # maker cannot review their own version
+
+    replay = controller.handle("create_company_pool_policy", supervisor, body=create_body, headers=create_headers)
+    assert replay.status == 201
+    assert replay.headers["Idempotency-Replayed"] == "true"
+    assert replay.body["id"] == created.body["id"]
+
+    denied_self_review = controller.handle(
+        "approve_company_pool_policy",
+        supervisor,
+        body={"decision": "approve"},
+        path={"policy_id": created.body["id"]},
+        headers={"Idempotency-Key": "pool-policy-self-approve-001", "If-Match": '"1"'},
+    )
+    assert denied_self_review.status == 403
+    assert denied_self_review.body["code"] == "approval_requires_separate_actor"
+
+    approved = controller.handle(
+        "approve_company_pool_policy",
+        supervisor_b,
+        body={"decision": "approve"},
+        path={"policy_id": created.body["id"]},
+        headers={"Idempotency-Key": "pool-policy-approve-001", "If-Match": '"1"'},
+    )
+    assert approved.status == 200
+    assert approved.headers["ETag"] == '"2"'
+    assert approved.body["approval_status"] == "approved"
+    assert approved.body["approved_by"] == SUPERVISOR_B
+
+    # A later draft is not yet effective and must not replace the approved
+    # version returned by the current-policy read.
+    controller.handle(
+        "create_company_pool_policy",
+        supervisor,
+        body={"lapse_days": 14, "departure_immediate": True},
+        headers={"Idempotency-Key": "pool-policy-create-002"},
+    )
+    current = controller.handle("get_current_company_pool_policy", supervisor_b)
+    assert current.status == 200
+    assert current.body["id"] == created.body["id"]
+    assert current.body["policy_version"] == "company_pool_lapse:1"
+
+    actions = [event.action for event in m11["repository"].snapshot().audit_events]
+    assert "m11.create_company_pool_policy" in actions
+    assert "m11.approve_company_pool_policy" in actions
+    assert "m11.get_current_company_pool_policy" in actions
+
+
+def test_company_pool_policy_controller_rejects_missing_identity_and_platform_admin(m11, supervisor):
+    controller = M11Controller(m11["service"])
+    unauthenticated = controller.handle(
+        "create_company_pool_policy",
+        None,
+        body={"lapse_days": 7, "departure_immediate": True},
+        headers={"Idempotency-Key": "pool-policy-authn-001"},
+    )
+    assert unauthenticated.status == 401
+    assert unauthenticated.body["code"] == "authentication_required"
+
+    platform_admin = ActorContext(
+        TENANT,
+        "20000000-0000-0000-0000-000000000099",
+        frozenset({"platform_admin"}),
+        principal_type="staff",
+    )
+    policy_create = controller.handle(
+        "create_company_pool_policy",
+        platform_admin,
+        body={"lapse_days": 7, "departure_immediate": True},
+        headers={"Idempotency-Key": "pool-policy-platform-admin-001"},
+    )
+    assert policy_create.status == 403
+    assert policy_create.body["code"] == "forbidden"
+
+    # Existing pool reads remain restricted too; the new current-policy read
+    # must not become an indirect platform-admin bypass.
+    assert controller.handle("list_company_pool", platform_admin).status == 403
+    assert controller.handle("get_current_company_pool_policy", platform_admin).status == 403
+
+
+def test_company_pool_policy_controller_is_tenant_scoped(m11, supervisor, supervisor_b, other_tenant_supervisor):
+    controller = M11Controller(m11["service"])
+    created = controller.handle(
+        "create_company_pool_policy",
+        supervisor,
+        body={"lapse_days": 7, "departure_immediate": True},
+        headers={"Idempotency-Key": "pool-policy-tenant-create-001"},
+    )
+
+    cross_tenant_approval = controller.handle(
+        "approve_company_pool_policy",
+        other_tenant_supervisor,
+        body={"decision": "approve"},
+        path={"policy_id": created.body["id"]},
+        headers={"Idempotency-Key": "pool-policy-tenant-approve-001", "If-Match": '"1"'},
+    )
+    assert cross_tenant_approval.status == 404
+
+    approved = controller.handle(
+        "approve_company_pool_policy",
+        supervisor_b,
+        body={"decision": "approve"},
+        path={"policy_id": created.body["id"]},
+        headers={"Idempotency-Key": "pool-policy-tenant-approve-002", "If-Match": '"1"'},
+    )
+    assert approved.status == 200
+
+    other_tenant_current = controller.handle("get_current_company_pool_policy", other_tenant_supervisor)
+    assert other_tenant_current.status == 404
+    assert other_tenant_current.body["code"] == "current_policy_not_found"
