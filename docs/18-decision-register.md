@@ -42,6 +42,14 @@
 
 Python3.12、FastAPI、React/TypeScript、PostgreSQL16、私有加密object storage、modular monolith、durable worker、transactional outbox/inbox、module ownership、API/event契約先定、十四worktree。這是本平台技術設計；外部專案不必採相同技術。
 
+### ENG-CONTRACT-01｜M14 發票明細識別碼與共用契約產物（2026-11-28）
+
+`InvoiceLineCreate` 保持建立帳單的 request schema，不要求 client 提供資料庫識別碼；建立或讀取帳單的 `Invoice.lines[]` 則必須回傳既有 `finance.invoice_line.id` 為 `invoice_line_id`。退款的 `allocations[].invoice_line_ref` 只能引用同一 tenant、且屬於 `original_payment` 所對應發票的明細；不得以 `contract_service_id` 或任意 UUID 替代。這是 M14 帳單與退款可稽核對應的工程契約決定，不涉及含稅／未稅、GL、認列期間或退款核准等尚待財會核定的業務政策。
+
+`api/build_contracts.py` 是 `api/openapi.yaml`、`api/operation-catalog.json`、`api/schema-index.json` 與 `mocks/fixtures.json` 的共同產生來源；任何上述 schema 的語意變更，API schema steward 必須先更新產生器，再以同一變更集重生產全部四個產物並執行 `python3 scripts/validate_contracts.py`。M14 模組不得只手改其中一個生成檔，也不得把缺少 `invoice_line_id` 的 shared fixture 視為可接受的暫時相容方案。
+
+此路由的最小後續範圍是 `api/build_contracts.py` 和其四個生成產物；不新增 migration、不改外部系統、也不變更 M14 的付款／退款業務規則。完成該 scope 後，`GAP-M14-FINANCE-READS` 需合併生成契約，重跑 `python3 scripts/validate_contracts.py` 與 `python3 -m pytest tests/modules/finance_control -q`，再以新 SHA 交審。
+
 ## 4. 變更紀錄方式
 
 新決策包含request、理由、owner、影響module/API/schema/UAT、舊新行為與生效日期。已簽/已送/已關帳歷史依原版本保存。業務政策變更不能混在一般bugfix默默改既有計算；外部project修改永遠不在本任務範圍。
