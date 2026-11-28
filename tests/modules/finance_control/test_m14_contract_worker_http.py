@@ -156,7 +156,7 @@ def test_refund_allocation_must_reference_a_line_on_the_original_payment_invoice
     assert accepted["allocations"][0]["invoice_line_ref"] == paid_invoice["lines"][0]["invoice_line_id"]
 
 
-def test_finance_lists_are_paginated_filtered_and_role_isolated(m14, operator):
+def test_finance_lists_are_paginated_filtered_and_role_isolated(m14, operator, service_agent):
     service = m14["service"]
     controller = M14Controller(service)
     evidence_id = "00000000-0000-0000-0000-0000000000e2"
@@ -205,6 +205,7 @@ def test_finance_lists_are_paginated_filtered_and_role_isolated(m14, operator):
             dry_run=False,
             prepared_by=operator.actor_id,
             status="posted",
+            calculation_manifest_sha256="b" * 64,
             created_at=NOW,
             updated_at=NOW,
         )
@@ -246,15 +247,40 @@ def test_finance_lists_are_paginated_filtered_and_role_isolated(m14, operator):
     assert revenue_page.body["items"][0]["id"] == run_id
     assert export_page.body["items"][0]["id"] == export_id
     assert export_page.body["items"][0]["period_start"] == "2026-02-01"
+    assert export_page.body["items"][0]["period_end"] == "2026-03-01"
     assert close_page.body["items"] == [{"close_key": "2026-02-01:2026-03-01", "period_start": "2026-02-01", "period_end": "2026-03-01", "state": "closed", "revenue_run_ids": [run_id], "accounting_export_ids": [export_id], "unresolved_reconciliation_count": 0}]
 
-    unauthenticated = controller.handle("list_refunds", None)
     platform_admin = ActorContext(TENANT, str(uuid4()), frozenset({"platform_admin"}))
-    forbidden = controller.handle("list_refunds", platform_admin)
-    other_tenant = controller.handle("list_refunds", ActorContext(OTHER_TENANT, str(uuid4()), frozenset({"finance_operator"})))
-    assert unauthenticated.status == 401
-    assert forbidden.status == 403
-    assert other_tenant.status == 200 and other_tenant.body["items"] == []
+    other_tenant_operator = ActorContext(OTHER_TENANT, str(uuid4()), frozenset({"finance_operator"}))
+    for operation_id in ("list_refunds", "list_revenue_runs", "list_accounting_exports", "list_period_closes"):
+        assert controller.handle(operation_id, None).status == 401
+        assert controller.handle(operation_id, platform_admin).status == 403
+        assert controller.handle(operation_id, service_agent).status == 403
+        other_tenant = controller.handle(operation_id, other_tenant_operator)
+        assert other_tenant.status == 200 and other_tenant.body["items"] == []
+
+    unposted_run_id = str(uuid4())
+
+    def seed_unposted_revenue_run(state):
+        state.revenue_runs[(TENANT, unposted_run_id)] = RevenueRun(
+            id=unposted_run_id,
+            tenant_id=TENANT,
+            run_key="finance-list-unposted-run",
+            period_start=period_start,
+            period_end=period_end,
+            recognition_policy_version="service_period_straight_line_v1",
+            cutoff_at=NOW,
+            dry_run=False,
+            prepared_by=operator.actor_id,
+            status="review_pending",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+
+    m14["repository"].atomic(seed_unposted_revenue_run)
+    close_readiness = controller.handle("list_period_closes", operator, query={"period_start": "2026-02-01", "period_end": "2026-03-01"})
+    assert close_readiness.status == 200
+    assert close_readiness.body["items"] == [{"close_key": "2026-02-01:2026-03-01", "period_start": "2026-02-01", "period_end": "2026-03-01", "state": "revenue_pending", "revenue_run_ids": sorted([run_id, unposted_run_id]), "accounting_export_ids": [export_id], "unresolved_reconciliation_count": 0}]
 
 
 def _envelope(event_type: str, producer: str, aggregate_type: str, aggregate_id: str, sequence: int, payload: dict) -> dict:
@@ -326,6 +352,7 @@ def test_wire_responses_validate_against_openapi_1_0(m14, operator, checker, ser
     m14["evidence"].add(TENANT, "00000000-0000-0000-0000-0000000000f1")
     customer_id, contract_id, contract_service_id = str(uuid4()), str(uuid4()), str(uuid4())
     invoice = service.create_invoice(operator, invoice_body(customer_id=customer_id, contract_id=contract_id, contract_service_id=contract_service_id), idempotency_key="wire-inv-001").data
+    assert invoice["lines"][0]["invoice_line_id"]
     validate("Invoice", invoice)
 
     intent = service.create_payment_intent(
@@ -348,15 +375,64 @@ def test_wire_responses_validate_against_openapi_1_0(m14, operator, checker, ser
     ).data
     validate("Refund", refund)
 
+    period_start, period_end = date(2026, 1, 1), date(2026, 2, 1)
+    run_id, export_id = str(uuid4()), str(uuid4())
+
+    def seed_non_empty_read_pages(state):
+        state.revenue_runs[(TENANT, run_id)] = RevenueRun(
+            id=run_id,
+            tenant_id=TENANT,
+            run_key="wire-read-page-run",
+            period_start=period_start,
+            period_end=period_end,
+            recognition_policy_version="service_period_straight_line_v1",
+            cutoff_at=NOW,
+            dry_run=False,
+            prepared_by=operator.actor_id,
+            status="posted",
+            calculation_manifest_sha256="b" * 64,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        state.accounting_exports[(TENANT, export_id)] = AccountingExport(
+            id=export_id,
+            tenant_id=TENANT,
+            destination="generic_erp_v1",
+            period_start=period_start,
+            period_end=period_end,
+            journal_ids=[],
+            account_mapping_version="coa-v1",
+            tax_mapping_version="tax-v1",
+            export_format="json_v1",
+            prepared_by=operator.actor_id,
+            currency="TWD",
+            debit_total=Decimal("0"),
+            credit_total=Decimal("0"),
+            entry_count=0,
+            export_asset_id=str(uuid4()),
+            export_sha256="a" * 64,
+            status="acknowledged",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+
+    m14["repository"].atomic(seed_non_empty_read_pages)
+    revenue_run_page = service.list_revenue_runs(operator).data
+    accounting_export_page = service.list_accounting_exports(operator).data
+    period_close_page = service.list_period_closes(operator).data
+    assert revenue_run_page["items"][0]["id"] == run_id
+    assert accounting_export_page["items"][0]["period_start"] == "2026-01-01"
+    assert accounting_export_page["items"][0]["period_end"] == "2026-02-01"
+
     # a maker/checker violation raised inside the command transaction must still leave a wire-valid audit trail.
     with pytest.raises(Exception):
         service.approve_refund(operator, refund["id"], {"decision": "approve", "reason_code": "self"}, expected_version=1, idempotency_key="wire-approve-fail-001")
     validate("AuditEventPage", service.list_audit_events(auditor).data)
     validate("ReconciliationItemPage", service.list_reconciliation_items(operator).data)
     validate("RefundPage", service.list_refunds(operator).data)
-    validate("RevenueRunPage", service.list_revenue_runs(operator).data)
-    validate("AccountingExportPage", service.list_accounting_exports(operator).data)
-    validate("PeriodClosePage", service.list_period_closes(operator).data)
+    validate("RevenueRunPage", revenue_run_page)
+    validate("AccountingExportPage", accounting_export_page)
+    validate("PeriodClosePage", period_close_page)
 
     hold = service.create_legal_hold(
         ActorContext(TENANT, str(uuid4()), frozenset({"compliance_supervisor"})),
