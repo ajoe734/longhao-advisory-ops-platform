@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+from jsonschema import Draft202012Validator, FormatChecker
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "apps" / "api" / "src"))
@@ -150,6 +152,16 @@ def test_http_get_contract_exposes_invoiceable_services_without_relaxing_access(
     result = m02["controller"].handle("get_contract", operator_ctx(), path={"contract_id": contract_id})
 
     assert result.status == 200
+    specification = yaml.safe_load((ROOT / "api" / "openapi.yaml").read_text(encoding="utf-8"))
+    contract_schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$ref": "#/components/schemas/Contract",
+        "components": specification["components"],
+    }
+    schema_errors = list(
+        Draft202012Validator(contract_schema, format_checker=FormatChecker()).iter_errors(result.body)
+    )
+    assert schema_errors == [], [f"Contract: {error.json_path}: {error.message}" for error in schema_errors]
     assert result.body["services"] == [{
         "contract_service_id": stored_service.id,
         "service_code": stored_service.service_code,

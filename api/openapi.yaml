@@ -9443,13 +9443,6 @@ components:
           anyOf:
           - *id001
           - type: 'null'
-        services:
-          type: array
-          description: 此契約下所有服務期；`contract_service_id` 可直接用於 M14 InvoiceLineCreate。
-          items:
-            $ref: '#/components/schemas/ContractServiceRead'
-          minItems: 1
-          maxItems: 200
       required:
       - customer_id
       - package_version_id
@@ -10002,6 +9995,13 @@ components:
           anyOf:
           - *id001
           - type: 'null'
+        services:
+          type: array
+          description: 此契約下所有服務期；`contract_service_id` 可直接用於 M14 InvoiceLineCreate。
+          items:
+            $ref: '#/components/schemas/ContractServiceRead'
+          minItems: 1
+          maxItems: 200
       required:
       - id
       - tenant_id
