@@ -43,6 +43,9 @@ def main(argv: list[str] | None = None) -> int:
         summary = seed_app(app, runtime)
         print(json.dumps({
             "seeded_customers": [{k: row.get(k) for k in ("display_name", "stage", "customer_id")} for row in summary["customers"]],
+            "published_research": [row.get("publication_id") for row in summary["research"]],
+            "month_close": {k: summary["month_close"].get(k) for k in ("recognized", "commission_state")},
+            "service_cases": [row.get("stage") for row in summary["service_cases"]],
             "requests": summary["requests"],
             "relayed_events": summary["relayed_events"],
             "failures": len(summary["failures"]),

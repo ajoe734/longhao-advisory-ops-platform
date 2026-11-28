@@ -109,6 +109,7 @@ PERSONAS: tuple[SyntheticPersona, ...] = (
     _p("sales", "業務甲", "業務與歸屬", "sales"),
     _p("sales-2", "業務乙", "業務與歸屬", "sales"),
     _p("sales-supervisor", "業務主管", "業務與歸屬", "sales_supervisor"),
+    _p("sales-supervisor-2", "業務主管乙", "業務與歸屬", "sales_supervisor"),
     _p("marketing", "行銷", "業務與歸屬", "marketing"),
     _p("hr-operator", "人資作業員", "業務與歸屬", "hr_operator"),
     # 獎金與財會（M12、M14）

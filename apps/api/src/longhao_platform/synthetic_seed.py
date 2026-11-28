@@ -4,8 +4,9 @@ Every business record is created by the persona whose role the module checks,
 through the FastAPI app (authentication, RBAC, idempotency, If-Match, workers
 and the event relay all apply). Only what the modules model as external fake
 ports is stubbed, through the synthetic world: identity-provider proofs,
-provider callbacks (signature, screening, payment), uploaded files and finance
-configuration such as approved tax mappings.
+provider callbacks (signature, screening, payment), uploaded files and
+configuration that has no published API (approved tax mappings, the company
+pool policy, the service knowledge base and customer channel bindings).
 
     longhao-api --seed demo        # seed, then serve (development only)
     python -m longhao_platform.synthetic_seed   # seed a throwaway runtime and print a summary
@@ -20,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from longhao_platform.synthetic_identities import PERSONAS_BY_KEY
+from longhao_platform.synthetic_identities import PERSONAS_BY_KEY, SYNTHETIC_TENANT_ID
 from longhao_platform.synthetic_world import SyntheticWorld, existing_world, latest_event
 
 SERVICE_CODE = "RESEARCH_ACCESS"
@@ -136,11 +137,16 @@ def _consent(s: Seeder, customer: str, purpose: str, label: str) -> str:
 
 
 def onboard_customer(s: Seeder, config: dict[str, Any], member: str, display_name: str, phone: str,
-                     *, annual_fee: str = "36000.00", stop_after: str | None = None) -> dict[str, Any]:
+                     *, annual_fee: str = "36000.00", stop_after: str | None = None,
+                     salesperson: str | None = None) -> dict[str, Any]:
     """LegendFlow sign-up through an effective contract with an active entitlement.
 
     ``stop_after`` leaves the application at an intermediate stage so the work
     queues have something to show: "signed", "kyc", "screening" or "accepted".
+    ``salesperson`` follows the customer up while the application is open (an
+    opportunity and a two-way meeting recorded before the payment) and, once
+    the contract is effective, claims the conversion for the sales supervisor
+    to decide.
     """
     from modules.customer_identity_application.ports import VerifiedIdentity
 
@@ -164,6 +170,8 @@ def onboard_customer(s: Seeder, config: dict[str, Any], member: str, display_nam
                                 "tax_mapping_version": TAX_MAPPING_VERSION}],
     }).body["id"]
     out["application_id"] = application
+    if salesperson:
+        out.update(_follow_up(s, customer, salesperson))
 
     # customer signs the contract package (M02 signing session + provider callback)
     esign = _consent(s, customer, "electronic_signing", "electronic signing consent")
@@ -287,8 +295,46 @@ def onboard_customer(s: Seeder, config: dict[str, Any], member: str, display_nam
         "evidence_asset_id": receipt.asset_id,
     }, headers=s.webhook_headers("payment-provider-01"))
     s.world.tick()  # entitlement recheck activates the entitlement and the contract becomes effective
-    out.update(invoice_id=invoice, payment_intent_id=intent, contract_service_id=service_row.id, stage="effective")
+    payment = latest_event(s.world, "finance.payment_confirmed", application_id=application)["payload"]["payment_id"]
+    out.update(invoice_id=invoice, payment_intent_id=intent, payment_id=payment, contract_service_id=service_row.id,
+               stage="effective")
+    if salesperson:
+        out.update(_claim_conversion(s, out, salesperson))
     return out
+
+
+# ----------------------------------------------------------------- sales (M10)
+def _follow_up(s: Seeder, customer: str, salesperson: str) -> dict[str, Any]:
+    """The salesperson tracks the open application and meets the customer before it closes."""
+    opportunity = s.call(salesperson, "POST", "/crm/opportunities", {
+        "customer_id": customer, "type": "new_subscription", "service_code": SERVICE_CODE,
+        "reason_code": "signup_followup", "owner_id": s.actor(salesperson), "due_at": iso(s.now + timedelta(days=5)),
+    })
+    notes = s.asset(f"meeting notes {customer}", content=f"synthetic meeting notes {customer}", customer_id=customer)
+    reply = s.asset(f"customer reply {customer}", content=f"synthetic customer reply {customer}", customer_id=customer)
+    activity = s.call(salesperson, "POST", f"/crm/opportunities/{opportunity.body['id']}/activities", {
+        "activity_type": "meeting", "occurred_at": iso(s.now - timedelta(hours=2)),
+        "customer_response_evidence_id": reply.asset_id, "activity_evidence_asset_id": notes.asset_id,
+        "needs_summary": "客戶想訂閱年度研究服務，詢問報告頻率與通知方式", "next_action": "協助完成申辦",
+        "next_action_due_at": iso(s.now + timedelta(days=1)), "outcome": "proposal_requested",
+    }, etag=opportunity.etag)
+    return {"opportunity_id": opportunity.body["id"], "sales_activity_id": activity.body["id"]}
+
+
+def _claim_conversion(s: Seeder, onboarded: dict[str, Any], salesperson: str) -> dict[str, Any]:
+    opportunity = s.call(salesperson, "GET", f"/crm/opportunities/{onboarded['opportunity_id']}")
+    claim = s.call(salesperson, "POST", f"/crm/opportunities/{onboarded['opportunity_id']}/conversion-claims", {
+        "application_id": onboarded["application_id"], "contract_id": onboarded["contract_service_id"],
+        "finance_transaction_ref": onboarded["payment_id"], "sales_activity_ids": [onboarded["sales_activity_id"]],
+        "conversion_type": "new_subscription", "claimed_salesperson_id": s.actor(salesperson),
+        "reason_code": "closed_new_subscription",
+    }, etag=opportunity.etag)
+    causality = s.asset(f"conversion review {claim.body['id']}", content=f"synthetic causality review {claim.body['id']}")
+    decided = s.call("sales-supervisor", "POST", f"/crm/conversions/{claim.body['id']}/decision", {
+        "decision": "approve", "reason_code": "evidence_sufficient", "approved_salesperson_id": s.actor(salesperson),
+        "qualifying_activity_ids": [onboarded["sales_activity_id"]], "causality_evidence_asset_id": causality.asset_id,
+    }, etag=claim.etag)
+    return {"conversion_id": claim.body["id"], "conversion_state": decided.body["state"]}
 
 
 # ------------------------------------------------- research -> publication
@@ -429,17 +475,154 @@ def publish_research(s: Seeder, *, instrument: str = "2330", title: str = "台�
     return out
 
 
+# ------------------------------------------- business configuration (M11-M13)
+KNOWLEDGE_VERSION = "service-kb-2026.11"
+
+
+def _staff_context(module: str, persona: str) -> Any:
+    domain = __import__(f"modules.{module}.domain", fromlist=["ActorContext"])
+    person = PERSONAS_BY_KEY[persona]
+    return domain.ActorContext(str(SYNTHETIC_TENANT_ID), str(person.id), frozenset(person.roles), principal_type="staff")
+
+
+def seed_business_configuration(s: Seeder) -> dict[str, Any]:
+    """Pool policy (M11), commission policy (M12) and the service knowledge base (M13)."""
+    # M11 has no published command for its pool policy; two sales supervisors propose and approve it.
+    pool = s.service("M11", "service")
+    proposed = pool.propose_policy_version(_staff_context("ownership_pool", "sales-supervisor"), lapse_days=7)
+    pool.approve_policy_version(_staff_context("ownership_pool", "sales-supervisor-2"), proposed.data["id"], expected_version=1)
+
+    year_start = s.now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    policy = s.call("commission-operator", "POST", "/commissions/policies", {
+        "policy_code": f"standard-{s.now.year}", "effective_from": iso(year_start), "base_pool_rate": "0.10",
+        "marketing_year_1": "1.0", "marketing_year_2": "0.5", "marketing_year_3_auto": "0.25",
+        "assisted_marketing_share": "0.3", "assisted_sales_share": "0.7",
+        "allocation_interpretation": "marketing_decay_only", "age_anchor": "first_paid_effective_start",
+        "service_lineage_rule": "sticky_assisted_share", "year3_assisted_marketing_rule": "zero_unless_continuous_auto",
+        "pool_policy_version": f"pool-v{proposed.data['policy_version']}",
+        "recognition_policy_version": "service_period_straight_line_v1",
+        "rounding_mode": "ROUND_HALF_UP", "rounding_scale": 2,
+    })
+    decision = s.asset(f"commission parameter decision {policy.body['id']}", content="synthetic decision: base pool 10%")
+    s.call("commission-approver", "POST", f"/commissions/policies/{policy.body['id']}/approval", {
+        "decision": "approve", "policy_sha256": policy.body["policy_sha256"], "approved_base_pool_rate": "0.10",
+        "parameter_decision_evidence_asset_id": decision.asset_id, "effective_from": policy.body["effective_from"],
+        "reason_code": "finance_approved",
+    }, etag=policy.etag)
+
+    knowledge = s.asset("service knowledge: billing and renewal", content="synthetic approved billing FAQ")
+    s.service("M13", "knowledge_base").approve(s.world.tenant_id, KNOWLEDGE_VERSION, knowledge.asset_id)
+    return {"pool_policy_version": proposed.data["policy_version"], "commission_policy_id": policy.body["id"],
+            "knowledge_source_ref": knowledge.asset_id}
+
+
+# ------------------------------------------------ ownership and the month close
+def _month(now: datetime) -> tuple[str, str]:
+    start = now.date().replace(day=1)
+    end = start.replace(year=start.year + 1, month=1) if start.month == 12 else start.replace(month=start.month + 1)
+    return start.isoformat(), end.isoformat()
+
+
+FIRST_ASSIGNMENT_ETAG = '"1"'  # M11 treats "no assignment yet" as version 1
+
+
+def assign_owner(s: Seeder, customer: str, salesperson: str) -> str:
+    """The sales supervisor makes the converting salesperson the maintenance owner (M11)."""
+    assigned = s.call("sales-supervisor", "POST", f"/customers/{customer}/maintenance-assignments", {
+        "salesperson_id": s.actor(salesperson), "effective_from": iso(datetime.now(timezone.utc)),
+        "reason_code": "converted_by_salesperson",
+    }, etag=FIRST_ASSIGNMENT_ETAG)
+    return assigned.body["id"]
+
+
+def close_month(s: Seeder, business: dict[str, Any]) -> dict[str, Any]:
+    """Revenue recognition (M14), the commission run built on it (M12) and its payout batch."""
+    period_start, period_end = _month(s.now)
+    revenue = s.call("finance-operator", "POST", "/finance/revenue-runs", {
+        "period_start": period_start, "period_end": period_end,
+        "recognition_policy_version": "service_period_straight_line_v1",
+        "cutoff_at": iso(datetime.now(timezone.utc)), "dry_run": False,
+    })
+    review = s.asset(f"revenue run review {revenue.body['id']}", content=f"synthetic revenue review {revenue.body['id']}")
+    s.call("finance-checker", "POST", f"/finance/revenue-runs/{revenue.body['id']}/approval", {
+        "decision": "approve", "calculation_manifest_sha256": revenue.body["calculation_manifest_sha256"],
+        "reason_code": "schedule_reconciled", "review_evidence_id": review.asset_id,
+    }, etag=revenue.etag)
+    s.world.tick()
+
+    run = s.call("commission-operator", "POST", "/commissions/runs", {
+        "policy_id": business["commission_policy_id"], "period_start": period_start, "period_end": period_end,
+        "revenue_cutoff_at": iso(datetime.now(timezone.utc)),
+    })
+    s.world.tick()  # the commission job calculates the run
+    calculated = s.call("commission-approver", "GET", f"/commissions/runs/{run.body['id']}")
+    s.call("commission-approver", "POST", f"/commissions/runs/{run.body['id']}/approval",
+           {"decision": "approve", "reason_code": "reviewed"}, etag=calculated.etag)
+    batch = s.call("payroll-operator", "POST", "/commissions/payout-batches", {
+        "approved_run_ids": [run.body["id"]], "payout_period": period_start[:7], "payroll_mapping_version": "payroll-v1",
+    })
+    s.world.tick()  # the batch job prepares the control totals
+    # The batch is left awaiting the commission approver, so UI-27 has a decision to make.
+    return {"revenue_run_id": revenue.body["id"], "recognized": revenue.body["recognized_untaxed_total"],
+            "commission_run_id": run.body["id"], "commission_state": calculated.body.get("state"),
+            "payout_batch_id": batch.body["id"]}
+
+
+# --------------------------------------------------------- service cases (M13)
+def service_case(s: Seeder, onboarded: dict[str, Any], business: dict[str, Any], *, answer: bool) -> dict[str, Any]:
+    """A member asks about the invoice; with ``answer`` the case is assigned, drafted, approved and sent."""
+    member, customer = onboarded["member"], onboarded["customer_id"]
+    case = s.call(member, "POST", "/service-cases", {
+        "customer_id": customer, "intake_channel": "web", "category": "billing", "subject": "帳單與服務期間",
+        "description": "請問年費的服務期間從哪一天開始計算？", "priority": "normal",
+    })
+    out: dict[str, Any] = {"case_id": case.body["id"], "stage": "opened"}
+    if not answer:
+        return out
+    s.call("service-supervisor", "POST", f"/service-cases/{case.body['id']}/assignment",
+           {"assignee_id": s.actor("service-agent"), "reason_code": "billing_queue"}, etag=case.etag)
+    current = s.call("service-agent", "GET", f"/service-cases/{case.body['id']}")
+    draft = s.call("service-agent", "POST", f"/service-cases/{case.body['id']}/response-drafts", {
+        "knowledge_version": KNOWLEDGE_VERSION, "approved_source_refs": [business["knowledge_source_ref"]],
+        "intent": "billing_explanation", "requested_tone": "professional", "model_policy_version": "policy-v1",
+    }, etag=current.etag)
+    text = s.call("service-agent", "GET", f"/service-response-drafts/{draft.body['id']}")
+    digest = sha256_text(text.body["text"])
+    valid_until = iso(s.now + timedelta(days=7))
+    approval = s.call("service-agent-2", "POST", f"/service-response-drafts/{draft.body['id']}/approval", {
+        "draft_content_sha256": digest, "decision": "approve", "approval_mode": "human_reviewed",
+        "template_version": "manual", "policy_version": "policy-v1", "reason_code": "facts_checked",
+        "publication_reference_ids": [], "valid_until": valid_until,
+    }, etag=text.etag)
+    binding = str(uuid4())
+    s.service("M13", "channel_bindings").add(s.world.tenant_id, binding, customer, "email")
+    current = s.call("service-agent", "GET", f"/service-cases/{case.body['id']}")
+    sent = s.call("service-agent", "POST", f"/service-cases/{case.body['id']}/responses", {
+        "draft_id": draft.body["id"], "draft_content_sha256": digest, "channel_binding_id": binding, "channel": "email",
+        "approval_mode": "human_reviewed", "approval_id": approval.body["id"], "template_version": "manual",
+        "publication_reference_ids": [], "valid_until": valid_until,
+    }, etag=current.etag)
+    s.world.tick()  # the dispatch worker hands the response to the messaging provider
+    out.update(draft_id=draft.body["id"], response_id=sent.body["id"], stage="responded")
+    return out
+
+
 # ----------------------------------------------------------------------- run
 def run(client: Any, world: SyntheticWorld) -> dict[str, Any]:
     s = Seeder(client, world)
     config = seed_configuration(s)
+    business = seed_business_configuration(s)
     customers = [
-        onboard_customer(s, config, "member-a", "合成客戶甲", "+886900000101"),
+        onboard_customer(s, config, "member-a", "合成客戶甲", "+886900000101", salesperson="sales"),
         onboard_customer(s, config, "member-b", "合成客戶乙", "+886900000102", stop_after="kyc"),
     ]
+    customers[0]["maintenance_assignment_id"] = assign_owner(s, customers[0]["customer_id"], "sales")
     research = [publish_research(s)]
+    month = close_month(s, business)
+    cases = [service_case(s, customers[0], business, answer=True), service_case(s, customers[1], business, answer=False)]
     world.tick()
-    return {"configuration": config, "customers": customers, "research": research, "requests": len(s.log),
+    return {"configuration": config, "business": business, "customers": customers, "research": research,
+            "month_close": month, "service_cases": cases, "requests": len(s.log),
             "relayed_events": world.status()["relayed_events"], "failures": list(world.failures)}
 
 

@@ -395,3 +395,82 @@ def _clear_next_attempt(repository) -> None:
             event.next_attempt_at = None
 
     repository.atomic(lambda state: (clear(state), None)[1])
+
+
+def _resolved_items(service, actors, customer_id):
+    page = service.list_crm_worklists(actors.supervisor(), state_filter=None, cursor=None, limit=50, as_of=None)
+    return {item["worklist"]: item["state"] for item in page.data["items"] if item["customer_id"] == customer_id}
+
+
+def test_pending_review_item_completes_once_the_company_decides(consumer, service, sweep_worker, actors):
+    from envelope import make_envelope
+
+    customer_id, application_id = str(uuid4()), str(uuid4())
+    common = {"tenant_id": actors.tenant_id, "aggregate_type": "application", "aggregate_id": application_id}
+    assert consumer.consume(make_envelope(event_type="application.created", producer="M01", **common, payload={
+        "application_id": application_id, "customer_id": customer_id, "package_version_id": str(uuid4()), "intent": "new"})).status == "applied"
+    assert consumer.consume(make_envelope(event_type="application.customer_signed", producer="M02", **common, payload={
+        "application_id": application_id, "customer_signature_id": str(uuid4()), "package_version_id": str(uuid4()),
+        "document_sha256": "d" * 64, "customer_signed_at": "2026-11-20T00:00:00.000000Z"})).status == "applied"
+    service.sweep_worklists(actors.tenant_id)
+    assert _resolved_items(service, actors, customer_id) == {"pending_review": "open"}
+
+    assert consumer.consume(make_envelope(event_type="application.company_decided", producer="M02", sequence_no=2, aggregate_version=2, **common, payload={
+        "application_id": application_id, "acceptance_id": str(uuid4()), "decision": "accept", "contract_id": str(uuid4())})).status == "applied"
+    assert _resolved_items(service, actors, customer_id) == {"pending_review": "completed"}
+    # a later sweep must not reopen it
+    service.sweep_worklists(actors.tenant_id)
+    assert _resolved_items(service, actors, customer_id) == {"pending_review": "completed"}
+
+
+def test_converted_opportunity_completes_its_follow_up_item(service, actors, evidence):
+    from datetime import datetime, timedelta, timezone
+
+    def at(delta):
+        return (datetime.now(timezone.utc) + delta).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+    customer_id = str(uuid4())
+    opportunity = service.create_opportunity(actors.sales(), {
+        "customer_id": customer_id, "type": "new_subscription", "service_code": "advisory-basic",
+        "reason_code": "signup_followup", "owner_id": actors.sales_id, "due_at": at(timedelta(days=5)),
+    }, idempotency_key=f"conv-item-opp-{uuid4()}").data
+    notes, reply, causality = str(uuid4()), str(uuid4()), str(uuid4())
+    for asset in (notes, reply, causality):
+        evidence.register(actors.tenant_id, asset)
+    activity = service.record_sales_activity(actors.sales(), opportunity["id"], {
+        "activity_type": "meeting", "occurred_at": at(-timedelta(hours=2)), "customer_response_evidence_id": reply,
+        "activity_evidence_asset_id": notes, "needs_summary": "wants the annual plan", "next_action": "help apply",
+        "next_action_due_at": at(timedelta(days=1)), "outcome": "proposal_requested",
+    }, expected_version=1, idempotency_key=f"conv-item-act-{uuid4()}").data
+    assert _resolved_items(service, actors, customer_id) == {"incomplete_application": "open"}
+
+    version = service.get_opportunity(actors.sales(), opportunity["id"]).data["version"]
+    claim = service.claim_conversion(actors.sales(), opportunity["id"], {
+        "application_id": str(uuid4()), "contract_id": str(uuid4()), "finance_transaction_ref": str(uuid4()),
+        "sales_activity_ids": [activity["id"]], "conversion_type": "new_subscription",
+        "claimed_salesperson_id": actors.sales_id, "reason_code": "closed",
+    }, expected_version=version, idempotency_key=f"conv-item-claim-{uuid4()}").data
+    service.decide_conversion(actors.supervisor(), claim["id"], {
+        "decision": "approve", "reason_code": "evidence_sufficient", "approved_salesperson_id": actors.sales_id,
+        "qualifying_activity_ids": [activity["id"]], "causality_evidence_asset_id": causality,
+    }, expected_version=1, idempotency_key=f"conv-item-decide-{uuid4()}")
+    assert _resolved_items(service, actors, customer_id) == {"incomplete_application": "completed"}
+
+
+def test_assigned_owner_completes_the_company_pool_item(consumer, service, actors):
+    from envelope import make_envelope
+
+    customer_id, entry_id, assignment_id = str(uuid4()), str(uuid4()), str(uuid4())
+    assert consumer.consume(make_envelope(
+        event_type="ownership.pool_entered", tenant_id=actors.tenant_id, producer="M11", aggregate_type="pool_entry",
+        aggregate_id=entry_id,
+        payload={"pool_entry_id": entry_id, "customer_id": customer_id, "entry_reason": "unassigned_web", "policy_version": "pool-v1"},
+    )).status == "applied"
+    assert _resolved_items(service, actors, customer_id) == {"company_pool": "open"}
+    assert consumer.consume(make_envelope(
+        event_type="ownership.assignment_changed", tenant_id=actors.tenant_id, producer="M11",
+        aggregate_type="maintenance_assignment", aggregate_id=assignment_id,
+        payload={"assignment_id": assignment_id, "customer_id": customer_id, "salesperson_id": actors.sales_id,
+                 "effective_at": "2026-11-20T00:00:00.000000Z", "state": "active"},
+    )).status == "applied"
+    assert _resolved_items(service, actors, customer_id) == {"company_pool": "completed"}

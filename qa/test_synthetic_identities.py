@@ -84,6 +84,7 @@ def test_every_module_human_role_has_an_identity():
     ("aml-officer", "aml-officer-2"),
     ("analyst", "analyst-2"),
     ("sales", "sales-2"),
+    ("sales-supervisor", "sales-supervisor-2"),
     ("service-agent", "service-agent-2"),
     ("finance-operator", "finance-checker"),
     ("commission-operator", "commission-approver"),

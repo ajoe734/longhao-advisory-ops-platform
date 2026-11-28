@@ -279,9 +279,80 @@ def project_entitlement_to_m09(world: SyntheticWorld, envelope: dict[str, Any]) 
         entitlements.set(world.tenant_id, status)
 
 
+# ------------------------------------------------------------- commissions
+def _current_owner(world: SyntheticWorld, customer_id: str) -> str | None:
+    def reader(state: Any) -> str | None:
+        assignment_id = state.current_assignment.get((world.tenant_id, customer_id))
+        assignment = state.assignments.get((world.tenant_id, assignment_id)) if assignment_id else None
+        return None if assignment is None or assignment.valid_until is not None else assignment.owner_actor_id
+    return _read(world, "M11", reader)
+
+
+def _customer_year(world: SyntheticWorld, customer_id: str) -> int:
+    """Years since the customer's first effective contract (M02), starting at 1."""
+    def reader(state: Any) -> list[datetime]:
+        return [row.effective_at for (tenant, _), row in state.contracts.items()
+                if tenant == world.tenant_id and row.customer_id == customer_id and getattr(row, "effective_at", None)]
+    starts = _read(world, "M02", reader) or []
+    if not starts:
+        return 1
+    from datetime import timezone
+    first = min(starts)
+    return max(1, (datetime.now(timezone.utc) - first).days // 365 + 1)
+
+
+def _set_cohort(world: SyntheticWorld, customer_id: str) -> None:
+    ownership = world.service("M12", "ownership")
+    if ownership is None or not customer_id:
+        return
+    from modules.commissions.ports import CohortFact
+
+    customer = _read(world, "M01", lambda state: state.customers.get((world.tenant_id, customer_id)))
+    ownership.set(world.tenant_id, CohortFact(
+        customer_id=customer_id,
+        customer_year=_customer_year(world, customer_id),
+        # a first-year customer has not renewed yet; renewal history is not modelled in the dev world
+        continuous_auto_renew=False,
+        current_owner_id=_current_owner(world, customer_id),
+        marketing_attribution_id=getattr(customer, "original_marketing_attribution_id", None),
+    ))
+
+
+def project_recognition_to_m12(world: SyntheticWorld, envelope: dict[str, Any]) -> None:
+    """M12 reads finance-confirmed revenue, the customer cohort and any approved sales conversion."""
+    revenue = world.service("M12", "revenue")
+    conversions = world.service("M12", "conversions")
+    payload = envelope["payload"]
+    if revenue is None or conversions is None:
+        return
+    recognition = _read(world, "M14", lambda state: state.revenue_recognitions.get((world.tenant_id, payload["recognition_id"])))
+    contract = _read(world, "M14", lambda state: state.contracts.get((world.tenant_id, payload["contract_id"])))
+    if recognition is None or contract is None or not contract.customer_id or not recognition.commission_eligible:
+        return
+    from modules.commissions.ports import ConversionFact, RecognitionFact
+
+    revenue.add_recognition(world.tenant_id, RecognitionFact(
+        recognition.id, payload["contract_id"], contract.customer_id, recognition.recognized_at,
+        recognition.untaxed_amount, recognition.currency,
+    ))
+    _set_cohort(world, contract.customer_id)
+    conversion = _read(world, "M10", lambda state: next(
+        (row for (tenant, _), row in state.conversions.items()
+         if tenant == world.tenant_id and row.contract_service_id == payload.get("contract_service_id")
+         and row.decision_status == "approved" and row.sales_actor_id), None))
+    if conversion is not None:
+        conversions.set(world.tenant_id, recognition.id, ConversionFact(conversion.id, conversion.sales_actor_id, True))
+
+
+def project_assignment_to_m12(world: SyntheticWorld, envelope: dict[str, Any]) -> None:
+    _set_cohort(world, envelope["payload"].get("customer_id"))
+
+
 EARLY_PROJECTIONS: dict[str, tuple[Callable[[SyntheticWorld, dict[str, Any]], None], ...]] = {
     "report.signature_verified": (project_signed_report_to_m08,),
     "publication.created": (project_publication_to_m09,),
+    "finance.revenue_recognized": (project_recognition_to_m12,),
+    "ownership.assignment_changed": (project_assignment_to_m12,),
 }
 
 

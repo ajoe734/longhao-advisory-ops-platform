@@ -42,6 +42,7 @@ from .domain import (
     Suppression,
     SupportCaseProjection,
     ValidationError,
+    WORK_ITEM_OPEN_DB_STATUSES,
     WORKLISTS,
     canonical_hash,
     new_id,
@@ -611,6 +612,10 @@ class CrmService:
             opportunity.converted_at = now
             opportunity.version += 1
             opportunity.updated_at = now
+            # the follow-up work this opportunity generated is finished once it converts
+            for item in list(state.work_items.values()):
+                if item.tenant_id == context.tenant_id and item.opportunity_id == opportunity.id:
+                    self._complete_work_item(item, now)
             self._emit_opportunity_changed(state, opportunity, correlation_id)
             self._emit_conversion_decided(state, conversion, "approved", approved_salesperson_id, causality_evidence_asset_id, correlation_id)
             return self._conversion_outcome(conversion, context, 200)
@@ -857,6 +862,15 @@ class CrmService:
         if application is not None:
             application.company_decision = decision
             application.contract_id = contract_id
+            # The "awaiting company decision" follow-up no longer applies once no
+            # signed application of this customer is still undecided.
+            undecided = any(
+                row.customer_signed and row.company_decision is None
+                for (tenant, _), row in state.applications.items()
+                if tenant == tenant_id and row.customer_id == application.customer_id
+            )
+            if not undecided:
+                self._close_work_item(state, tenant_id, application.customer_id, "pending_review")
 
     def record_contract_effective(self, state: StoreState, tenant_id: str, contract_id: str, customer_id: str, effective_at: datetime, service_ends_at: datetime) -> None:
         state.contracts[(tenant_id, contract_id)] = ContractProjection(
@@ -886,6 +900,9 @@ class CrmService:
         state.ownership[(tenant_id, customer_id)] = OwnershipProjection(
             tenant_id=tenant_id, customer_id=customer_id, salesperson_id=salesperson_id, state=decision_state, updated_at=now,
         )
+        if salesperson_id and decision_state == "active":
+            # a customer with an active maintenance owner is no longer waiting in the company pool
+            self._close_work_item(state, tenant_id, customer_id, "company_pool")
 
     def record_ownership_pool_entered(self, state: StoreState, tenant_id: str, customer_id: str, entry_reason: str, now: datetime) -> None:
         projection = state.ownership.get((tenant_id, customer_id))
@@ -940,6 +957,11 @@ class CrmService:
             payment.status = "confirmed"
             payment.customer_id = customer_id or payment.customer_id
             payment.confirmed_at = confirmed_at
+        if customer_id is not None and not any(
+            row.status == "failed" for (tenant, _), row in state.payments.items()
+            if tenant == tenant_id and row.customer_id == customer_id
+        ):
+            self._close_work_item(state, tenant_id, customer_id, "unpaid")
 
     def record_payment_failed(self, state: StoreState, tenant_id: str, application_id: str, customer_id: str, reason_code: str, now: datetime) -> None:
         state.payments[(tenant_id, application_id)] = PaymentProjection(tenant_id=tenant_id, application_id=application_id, status="failed", customer_id=customer_id, reason_code=reason_code)
@@ -1020,6 +1042,25 @@ class CrmService:
         return f"conversions_reversed:{reversed_count}" if reversed_count else "no_approved_conversion_for_contract"
 
     # ---- work item upsert helper (UAT-M10-012) -----------------------------
+
+    def _close_work_item(self, state: StoreState, tenant_id: str, customer_id: str, worklist: str) -> None:
+        """Complete a rule-generated work item whose triggering condition has been resolved.
+
+        Items someone already started (in_progress) keep their owner's status;
+        completed and cancelled items are left as they are.
+        """
+        existing_id = state.work_item_by_dedupe.get((tenant_id, f"{customer_id}:{worklist}"))
+        item = state.work_items.get((tenant_id, existing_id)) if existing_id else None
+        if item is not None:
+            self._complete_work_item(item, self._clock())
+
+    @staticmethod
+    def _complete_work_item(item: CrmWorkItem, now: datetime) -> None:
+        if item.status not in WORK_ITEM_OPEN_DB_STATUSES:
+            return
+        item.status = "done"
+        item.version += 1
+        item.updated_at = now
 
     def _upsert_work_item(
         self,
