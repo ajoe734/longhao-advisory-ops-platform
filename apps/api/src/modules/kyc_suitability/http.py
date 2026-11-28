@@ -120,6 +120,10 @@ class M03Controller:
             return self.service.assess_suitability(
                 context, path["application_id"], body, expected_version=version, idempotency_key=key, correlation_id=correlation_id
             )
+        if operation_id == "list_suitability_assessments":
+            return self.service.list_suitability_assessments(context, path["application_id"], correlation_id=correlation_id)
+        if operation_id == "get_suitability_assessment":
+            return self.service.get_suitability_assessment(context, path["assessment_id"], correlation_id=correlation_id)
         if operation_id == "request_due_diligence_refresh":
             return self.service.request_due_diligence_refresh(
                 context, path["customer_id"], body, expected_version=version, idempotency_key=key, correlation_id=correlation_id
@@ -144,6 +148,8 @@ ROUTES: tuple[tuple[str, str, str], ...] = (
     ("GET", "/kyc-submissions/{submission_id}", "get_kyc_submission"),
     ("POST", "/kyc-submissions/{submission_id}/decision", "decide_kyc"),
     ("POST", "/applications/{application_id}/suitability-assessments", "assess_suitability"),
+    ("GET", "/applications/{application_id}/suitability-assessments", "list_suitability_assessments"),
+    ("GET", "/suitability-assessments/{assessment_id}", "get_suitability_assessment"),
     ("POST", "/customers/{customer_id}/due-diligence-refreshes", "request_due_diligence_refresh"),
     ("GET", "/documents/{asset_id}/status", "get_document_status"),
 )
