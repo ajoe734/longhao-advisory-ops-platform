@@ -18,3 +18,16 @@
 
 - `report.report_version.supersedes_version_id`、`required_review_ids`、`report.review_decision.reason_code`、`report.signature_request.redirect_url`/`last_receipt_id`、`report.revocation.publication_withdrawal_event_id` 均只是 DB 端補充欄位，不改變 OpenAPI/events 對外契約，已在 `001_report_signature.sql` 處理，不在此重複列為待辦。
 - `GET /reports/{report_id}` 與 `GET /reports/{report_id}/versions` 是向下相容的 M07 read operation 新增；兩者沿用既有 `analyst`／`analyst_reviewer`／`compliance_reviewer` tenant-and-scope 檢查，並明確不授權 `platform_admin`。版本列表的 cursor 只可指向同一 report 的同 tenant 版本。
+
+## GAP-M07-M08-VERSION-LINK 修復與驗證證據
+
+| Finding／觸發情境 | 原始碼依據與修改位置 | 舊版定位 → 修正版結果 | 命令與結果 | 未驗項／限制 |
+| --- | --- | --- | --- | --- |
+| UI-15 讀取 report 或版本列表 | `api/openapi.yaml` 的 `get_report`／`list_report_versions`；`service.py` 同名 query；`http.py::ROUTES` | `d5b707d:.../http.py` 的 `ROUTES` 只有 `get_report_version`，沒有兩個 report read operation；新實作回傳 report、以同 report cursor 分頁，並拒絕 service principal（401）、`platform_admin`（403）和跨 tenant（404）。 | `python3 -m pytest tests/modules/report_signature -q`：56 passed（含 `test_report_read_and_version_list_preserve_existing_staff_and_tenant_boundaries`）。 | 是 in-memory repository／controller 驗證；真實 FastAPI auth resolver、PostgreSQL RLS 待 integration 環境。 |
+| M07／M08 互相等待 server-generated version ID | `RecommendationVersionCreate.client_version_id`；`publication/service.py::create_recommendation_version`；兩份 `contract-changes.md` 的建立順序 | `44ce808:.../publication/service.py` 只以 `new_id()` 建議版本；新流程由呼叫端預先產生 UUID，M07 先凍結該 UUID，M08 以相同 UUID 建立版本並以 tenant 範圍回 `409 client_version_id_conflict` 拒絕重用。 | `python3 -m pytest tests/modules/publication -q`：48 passed（含 `test_client_supplied_recommendation_version_id_supports_prior_m07_manifest_link`）。 | M07/M08 仍以 adapter／fake 串接；外部 provider 尚未接線。 |
+| M08 fake 重算 manifest digest，與 M07 已簽 manifest 不一致 | `publication/ports.py::FakeReportBundleRegistry.register`；`test_m07_contract_worker_http.py::test_verified_m07_manifest_digest_drives_m08_publication_with_client_stable_version_id` | `44ce808:.../ports.py::report_bundle_manifest_sha256` 從 tenant/report/content 重新計算；新 fake 強制呼叫端提供 M07 已驗簽 digest，並在 publish 時與 `report.signature_verified` payload 的同一值比對。 | `python3 -m pytest tests/modules/report_signature -q`：56 passed；跨模組測試從真 M07 outbox envelope 消費並成功發布。 | 所驗證的是本 repo fake/adapter contract；真 M07 provider adapter 為 `NOT_CONNECTED`。 |
+
+同一輪亦執行 `python3 scripts/validate_contracts.py`（passed：142 operations、193 schemas）與
+`python3 scripts/validate_docs.py`（passed：14 modules、142 operations、182 acceptance cases）。直接一次執行
+`python3 -m pytest tests/modules/report_signature tests/modules/publication -q` 會因兩個既有同名 `conftest.py`
+收集到錯誤的 module 而於 collection 失敗；上表所列分模組命令為本 task 規定且實際成功的驗證入口。
