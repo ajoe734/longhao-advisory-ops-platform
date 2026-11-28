@@ -822,6 +822,56 @@ class CustomerIdentityApplicationService:
                 raise NotFoundError("application was not found") from None
             raise
 
+    def list_applications(
+        self,
+        context: ActorContext,
+        *,
+        state_filter: str | None = None,
+        customer_id: str | None = None,
+        cursor: str | None = None,
+        limit: int = 50,
+        as_of: datetime | None = None,
+        correlation_id: str | None = None,
+    ) -> ServiceResponse:
+        """List the staff application queue without widening M01 read roles."""
+        self._authorize_staff(context, {"cms_operator"})
+        if state_filter and state_filter not in {
+            "draft", "customer_signed", "due_diligence_pending", "review_in_progress",
+            "accepted", "rejected", "withdrawn",
+        }:
+            raise ValidationError("state filter is not supported", field_name="state")
+        if customer_id is not None:
+            customer_id = require_uuid(customer_id, "customer_id")
+        if not 1 <= limit <= 200:
+            raise ValidationError("limit must be between 1 and 200", field_name="limit")
+        correlation_id = self._correlation(correlation_id)
+        snapshot_at = as_of or self._clock()
+
+        def query(store: StoreState) -> ServiceResponse:
+            rows = sorted(
+                (
+                    item for (tenant, _), item in store.applications.items()
+                    if tenant == context.tenant_id
+                    and item.created_at <= snapshot_at
+                    and (state_filter is None or item.state == state_filter)
+                    and (customer_id is None or item.customer_id == customer_id)
+                    and (not cursor or item.id > cursor)
+                ),
+                key=lambda item: item.id,
+            )
+            page = rows[:limit]
+            self._audit(store, context, "list_applications", "application", None, None, correlation_id, "succeeded")
+            return ServiceResponse(
+                {
+                    "items": [item.to_api(self._application_actions(item, context)) for item in page],
+                    "next_cursor": page[-1].id if len(rows) > limit else None,
+                    "as_of": wire_time(snapshot_at),
+                    "total_estimate": len(rows),
+                }
+            )
+
+        return self.repository.atomic(query)
+
     def list_customer_merges(
         self,
         context: ActorContext,

@@ -7,7 +7,7 @@ import re
 from time import perf_counter
 from typing import Any, Callable
 
-from .domain import ActorContext, DomainError, ValidationError, new_id
+from .domain import ActorContext, DomainError, UnauthorizedError, ValidationError, new_id
 from .service import CustomerIdentityApplicationService, ServiceResponse
 from .telemetry import M01Telemetry
 
@@ -32,7 +32,7 @@ class M01Controller:
     def handle(
         self,
         operation_id: str,
-        context: ActorContext,
+        context: ActorContext | None,
         *,
         body: dict[str, Any] | None = None,
         path: dict[str, str] | None = None,
@@ -46,6 +46,8 @@ class M01Controller:
         correlation_id = headers.get("x-correlation-id") or new_id()
         started = perf_counter()
         try:
+            if context is None:
+                raise UnauthorizedError("authentication is required")
             response = self._dispatch(operation_id, context, body, path, query, headers, correlation_id)
             response_headers = {"X-Correlation-Id": correlation_id}
             if response.etag:
@@ -136,6 +138,16 @@ class M01Controller:
             return self.service.decide_customer_merge(context, path["merge_case_id"], body, expected_version=version, idempotency_key=key, correlation_id=correlation_id)
         if operation_id == "create_application":
             return self.service.create_application(context, body, idempotency_key=key, correlation_id=correlation_id)
+        if operation_id == "list_applications":
+            return self.service.list_applications(
+                context,
+                state_filter=query.get("state"),
+                customer_id=query.get("customer_id"),
+                cursor=query.get("cursor"),
+                limit=self._limit(query.get("limit")),
+                as_of=self._as_of(query.get("as_of")),
+                correlation_id=correlation_id,
+            )
         if operation_id == "get_application":
             return self.service.get_application(context, path["application_id"], correlation_id=correlation_id)
         if operation_id == "withdraw_application":
@@ -183,6 +195,7 @@ ROUTES: tuple[tuple[str, str, str], ...] = (
     ("GET", "/customer-merges/{merge_case_id}", "get_customer_merge"),
     ("POST", "/customer-merges/{merge_case_id}/decision", "decide_customer_merge"),
     ("POST", "/applications", "create_application"),
+    ("GET", "/applications", "list_applications"),
     ("GET", "/applications/{application_id}", "get_application"),
     ("POST", "/applications/{application_id}/withdrawal", "withdraw_application"),
     ("POST", "/customers/{customer_id}/consents", "record_consent"),

@@ -28,12 +28,46 @@ _CONTRACTS: dict[str, tuple[str, str, set[str]]] = {
         "application",
         {"application_id", "acceptance_id", "decision", "contract_id"},
     ),
+    "kyc.decision_recorded": (
+        "M03",
+        "kyc_submission",
+        {"submission_id", "application_id", "decision", "next_review_due_at"},
+    ),
+    "kyc.refresh_required": (
+        "M03",
+        "kyc_submission",
+        {"customer_id", "submission_id", "refresh_case_id", "due_at"},
+    ),
+    "suitability.assessed": (
+        "M03",
+        "suitability_assessment",
+        {"assessment_id", "application_id", "state", "rule_version"},
+    ),
+    "business_clearance.changed": (
+        "M04",
+        "business_clearance",
+        {"clearance_id", "application_id", "decision", "expires_at"},
+    ),
+    "ownership.assignment_changed": (
+        "M11",
+        "maintenance_assignment",
+        {"assignment_id", "customer_id", "salesperson_id", "effective_at", "state"},
+    ),
     "ownership.employee_departed": (
         "M11",
         "employee",
         {"employee_id", "departure_id", "effective_at"},
     ),
 }
+
+_PARTIAL_VERSIONED_EVENTS = {
+    "kyc.decision_recorded",
+    "kyc.refresh_required",
+    "suitability.assessed",
+    "business_clearance.changed",
+    "ownership.assignment_changed",
+}
+_ASSIGNMENT_CLEARED_STATES = {"released", "departure"}
 
 
 @dataclass(frozen=True)
@@ -70,10 +104,24 @@ class M01EventConsumer:
                 ),
                 default=0,
             )
-            if envelope["sequence_no"] > last_sequence + 1:
+            last_aggregate_version = max(
+                (
+                    receipt.aggregate_version for receipt in state.inbox.values()
+                    if receipt.tenant_id == tenant_id
+                    and receipt.producer == envelope["producer"]
+                    and receipt.aggregate_id == envelope["aggregate_id"]
+                    and receipt.status == "applied"
+                ),
+                default=0,
+            )
+            if envelope["event_type"] in _PARTIAL_VERSIONED_EVENTS:
+                if envelope["aggregate_version"] <= last_aggregate_version:
+                    state.inbox[key] = self._receipt(envelope, "applied", "stale_aggregate_version_ignored", utc_now())
+                    return ConsumeResult("applied", "stale_aggregate_version_ignored")
+            elif envelope["sequence_no"] > last_sequence + 1:
                 state.inbox[key] = self._receipt(envelope, "retry", "sequence_gap", None)
                 return ConsumeResult("retry", "sequence_gap")
-            if envelope["sequence_no"] <= last_sequence:
+            if envelope["event_type"] not in _PARTIAL_VERSIONED_EVENTS and envelope["sequence_no"] <= last_sequence:
                 state.inbox[key] = self._receipt(envelope, "applied", "stale_sequence_ignored", utc_now())
                 return ConsumeResult("applied", "stale_sequence_ignored")
 
@@ -110,12 +158,20 @@ class M01EventConsumer:
                 raise NotFoundError("application referenced by event was not found")
             if app.package_version_id != payload["package_version_id"]:
                 raise ConflictError("signed package version does not match application", code="signed_package_mismatch")
+            if app.customer_signature_id and app.customer_signature_id != payload["customer_signature_id"]:
+                raise ConflictError("application already has a different customer signature", code="customer_signature_conflict")
             if app.state == "draft":
                 app.state = "customer_signed"
                 app.customer_signed_at = self._time(payload["customer_signed_at"])
+                app.customer_signature_id = payload["customer_signature_id"]
                 app.version += 1
                 app.updated_at = utc_now()
                 return "customer_signature_applied"
+            if app.customer_signature_id is None:
+                app.customer_signature_id = payload["customer_signature_id"]
+                app.version += 1
+                app.updated_at = utc_now()
+                return "customer_signature_evidence_projected"
             return "customer_signature_already_projected"
         if event_type == "application.company_decided":
             app = state.applications.get((tenant_id, payload["application_id"]))
@@ -137,6 +193,54 @@ class M01EventConsumer:
             app.version += 1
             app.updated_at = utc_now()
             return "company_decision_applied"
+        if event_type == "kyc.decision_recorded":
+            app = self._application(state, tenant_id, payload["application_id"])
+            if app.state == "withdrawn":
+                return "withdrawn_application_ignored"
+            app.kyc_submission_id = payload["submission_id"]
+            app.kyc_status = {"approved": "approved", "rejected": "rejected", "incomplete": "pending"}[payload["decision"]]
+            app.version += 1
+            app.updated_at = utc_now()
+            return "kyc_gate_projected"
+        if event_type == "kyc.refresh_required":
+            app = self._application_for_customer(state, tenant_id, payload["submission_id"], payload["customer_id"])
+            if app.state == "withdrawn":
+                return "withdrawn_application_ignored"
+            app.kyc_submission_id = payload["submission_id"]
+            app.kyc_status = "refresh_required"
+            app.version += 1
+            app.updated_at = utc_now()
+            return "kyc_refresh_projected"
+        if event_type == "suitability.assessed":
+            app = self._application(state, tenant_id, payload["application_id"])
+            if app.state == "withdrawn":
+                return "withdrawn_application_ignored"
+            app.suitability_assessment_id = payload["assessment_id"]
+            app.suitability_status = payload["state"]
+            app.version += 1
+            app.updated_at = utc_now()
+            return "suitability_gate_projected"
+        if event_type == "business_clearance.changed":
+            app = self._application(state, tenant_id, payload["application_id"])
+            if app.state == "withdrawn":
+                return "withdrawn_application_ignored"
+            app.business_clearance_id = payload["clearance_id"]
+            app.business_clearance = payload["decision"]
+            app.version += 1
+            app.updated_at = utc_now()
+            return "business_clearance_projected"
+        if event_type == "ownership.assignment_changed":
+            customer = state.customers.get((tenant_id, payload["customer_id"]))
+            if not customer:
+                raise NotFoundError("customer referenced by assignment was not found")
+            if payload["state"] == "superseded":
+                return "maintenance_owner_superseded_ignored"
+            customer.maintenance_owner_id = (
+                None if payload["state"] in _ASSIGNMENT_CLEARED_STATES else payload["salesperson_id"]
+            )
+            customer.version += 1
+            customer.updated_at = utc_now()
+            return "maintenance_owner_projected"
         if event_type == "ownership.employee_departed":
             changed = 0
             for (tenant, _), customer in state.customers.items():
@@ -170,11 +274,48 @@ class M01EventConsumer:
         if envelope["event_type"].startswith("application."):
             if envelope["aggregate_id"] != envelope["payload"]["application_id"]:
                 raise ValidationError("aggregate_id does not match application_id", code="event_aggregate_mismatch")
+        elif envelope["event_type"] == "kyc.decision_recorded":
+            if envelope["aggregate_id"] != envelope["payload"]["submission_id"]:
+                raise ValidationError("aggregate_id does not match submission_id", code="event_aggregate_mismatch")
+        elif envelope["event_type"] == "kyc.refresh_required":
+            if envelope["aggregate_id"] != envelope["payload"]["submission_id"]:
+                raise ValidationError("aggregate_id does not match submission_id", code="event_aggregate_mismatch")
+        elif envelope["event_type"] == "suitability.assessed":
+            if envelope["aggregate_id"] != envelope["payload"]["assessment_id"]:
+                raise ValidationError("aggregate_id does not match assessment_id", code="event_aggregate_mismatch")
+        elif envelope["event_type"] == "business_clearance.changed":
+            if envelope["aggregate_id"] != envelope["payload"]["clearance_id"]:
+                raise ValidationError("aggregate_id does not match clearance_id", code="event_aggregate_mismatch")
+        elif envelope["event_type"] == "ownership.assignment_changed":
+            if envelope["aggregate_id"] != envelope["payload"]["assignment_id"]:
+                raise ValidationError("aggregate_id does not match assignment_id", code="event_aggregate_mismatch")
         elif envelope["event_type"] == "ownership.employee_departed":
             if envelope["aggregate_id"] != envelope["payload"]["employee_id"]:
                 raise ValidationError("aggregate_id does not match employee_id", code="event_aggregate_mismatch")
         if not isinstance(envelope["sequence_no"], int) or envelope["sequence_no"] < 1:
             raise ValidationError("sequence_no must be positive", field_name="sequence_no")
+        if not isinstance(envelope["aggregate_version"], int) or envelope["aggregate_version"] < 1:
+            raise ValidationError("aggregate_version must be positive", field_name="aggregate_version")
+
+    @staticmethod
+    def _application(state: StoreState, tenant_id: str, application_id: str):
+        app = state.applications.get((tenant_id, application_id))
+        if not app:
+            raise NotFoundError("application referenced by event was not found")
+        return app
+
+    @staticmethod
+    def _application_for_customer(state: StoreState, tenant_id: str, submission_id: str, customer_id: str):
+        app = next(
+            (
+                item for (tenant, _), item in state.applications.items()
+                if tenant == tenant_id and item.customer_id == customer_id and item.kyc_submission_id == submission_id
+            ),
+            None,
+        )
+        if not app:
+            raise NotFoundError("application referenced by KYC refresh was not found")
+        return app
 
     @staticmethod
     def _receipt(envelope: dict[str, Any], status: str, code: str, applied_at: datetime | None) -> InboxReceipt:
@@ -186,6 +327,7 @@ class M01EventConsumer:
             event_type=envelope["event_type"],
             payload_sha256=envelope["payload_sha256"],
             aggregate_id=envelope["aggregate_id"],
+            aggregate_version=envelope["aggregate_version"],
             sequence_no=envelope["sequence_no"],
             status=status,
             result_code=code,
