@@ -87,6 +87,23 @@ def test_suitability_read_queries_are_reviewer_only_tenant_scoped_and_masked(m03
         expected_version=1,
         idempotency_key="read-query-assess-001",
     )
+    later_assessment = service.assess_suitability(
+        suitability_reviewer,
+        APPLICATION_A,
+        {
+            "kyc_submission_id": decided.data["id"],
+            "questionnaire_version": "m03-suitability-questionnaire-v1",
+            "rule_version": "m03-suitability-rule-v1",
+            "answers": suitability_answers("low", "1"),
+            "service_codes": ["annual_advisory"],
+            "decision": "suitable",
+            "conditions": [],
+            "reason_code": "rule_pass",
+            "next_review_due_at": "2027-05-23T00:00:00.000000Z",
+        },
+        expected_version=1,
+        idempotency_key="read-query-assess-002",
+    )
     controller = M03Controller(service)
 
     listed = controller.handle(
@@ -101,7 +118,8 @@ def test_suitability_read_queries_are_reviewer_only_tenant_scoped_and_masked(m03
     )
 
     assert listed.status == 200
-    assert [item["id"] for item in listed.body["items"]] == [assessment.data["id"]]
+    assert [item["id"] for item in listed.body["items"]] == [assessment.data["id"], later_assessment.data["id"]]
+    assert [item["version"] for item in listed.body["items"]] == [1, 2]
     assert detail.status == 200
     assert detail.headers["ETag"] == assessment.etag
     assert detail.body == listed.body["items"][0]
@@ -109,23 +127,26 @@ def test_suitability_read_queries_are_reviewer_only_tenant_scoped_and_masked(m03
         "answers", "answers_sha256", "computed_decision", "reason_code", "service_codes", "overridden"
     } & set(detail.body)
 
-    platform_admin = ActorContext(
-        TENANT,
-        "20000000-0000-0000-0000-000000000088",
-        frozenset({"platform_admin"}),
-        principal_type="staff",
+    denied_contexts = (
+        ActorContext(TENANT, "20000000-0000-0000-0000-000000000088", frozenset({"platform_admin"}), principal_type="staff"),
+        ActorContext(TENANT, "20000000-0000-0000-0000-000000000089", frozenset({"kyc_reviewer"}), principal_type="staff"),
+        ActorContext(TENANT, "20000000-0000-0000-0000-000000000090", frozenset({"sales"}), principal_type="staff"),
+        ActorContext(TENANT, "20000000-0000-0000-0000-000000000091", frozenset({"service_agent"}), principal_type="staff"),
+        ActorContext(TENANT, "20000000-0000-0000-0000-000000000092", frozenset(), principal_type="customer", customer_id=CUSTOMER_A),
+        ActorContext(TENANT, "20000000-0000-0000-0000-000000000093", frozenset({"suitability_authorizer"}), principal_type="staff"),
     )
-    denied_detail = controller.handle(
-        "get_suitability_assessment",
-        platform_admin,
-        path={"assessment_id": assessment.data["id"]},
-    )
-    denied_list = controller.handle(
-        "list_suitability_assessments",
-        platform_admin,
-        path={"application_id": APPLICATION_A},
-    )
-    assert denied_detail.status == denied_list.status == 403
+    for denied_context in denied_contexts:
+        denied_detail = controller.handle(
+            "get_suitability_assessment",
+            denied_context,
+            path={"assessment_id": assessment.data["id"]},
+        )
+        denied_list = controller.handle(
+            "list_suitability_assessments",
+            denied_context,
+            path={"application_id": APPLICATION_A},
+        )
+        assert denied_detail.status == denied_list.status == 403
 
     other_tenant_reviewer = ActorContext(
         "10000000-0000-0000-0000-000000000099",
