@@ -654,6 +654,94 @@ class KycSuitabilityService:
             self._audit_failure(context, "get_kyc_submission", correlation_id, exc.code, submission_id)
             raise
 
+    def list_suitability_assessments(
+        self, context: ActorContext, application_id: str, *, correlation_id: str | None = None
+    ) -> ServiceResponse:
+        """Return immutable assessment history for one application.
+
+        Suitability evidence is customer-confidential: unlike the deliberately
+        masked KYC business view, it has no sales or platform-admin projection.
+        The verified tenant context is part of every lookup, so a reviewer in
+        another tenant observes an empty collection rather than another
+        tenant's assessment history.
+        """
+        application_id = require_uuid(application_id, "application_id")
+        correlation_id = self._correlation(correlation_id)
+
+        def query(state: StoreState) -> ServiceResponse:
+            self._authorize_staff(context, {"suitability_reviewer"})
+            assessments = sorted(
+                (
+                    assessment
+                    for (tenant_id, _), assessment in state.assessments.items()
+                    if tenant_id == context.tenant_id and assessment.application_id == application_id
+                ),
+                key=lambda assessment: assessment.version,
+            )
+            self._audit(
+                state,
+                context,
+                "list_suitability_assessments",
+                "suitability_assessment_collection",
+                application_id,
+                None,
+                correlation_id,
+                "succeeded",
+            )
+            return ServiceResponse(
+                {"items": [assessment.to_api(self._assessment_actions(assessment, context)) for assessment in assessments]}
+            )
+
+        try:
+            return self.repository.atomic(query)
+        except DomainError as exc:
+            self._audit_failure(
+                context,
+                "list_suitability_assessments",
+                correlation_id,
+                exc.code,
+                application_id,
+                aggregate_type="suitability_assessment_collection",
+            )
+            raise
+
+    def get_suitability_assessment(
+        self, context: ActorContext, assessment_id: str, *, correlation_id: str | None = None
+    ) -> ServiceResponse:
+        assessment_id = require_uuid(assessment_id, "assessment_id")
+        correlation_id = self._correlation(correlation_id)
+
+        def query(state: StoreState) -> ServiceResponse:
+            self._authorize_staff(context, {"suitability_reviewer"})
+            assessment = self._stored_assessment(state, context.tenant_id, assessment_id)
+            self._audit(
+                state,
+                context,
+                "get_suitability_assessment",
+                "suitability_assessment",
+                assessment.id,
+                assessment.version,
+                correlation_id,
+                "succeeded",
+            )
+            return ServiceResponse(
+                assessment.to_api(self._assessment_actions(assessment, context)),
+                etag=self._etag(assessment.version),
+            )
+
+        try:
+            return self.repository.atomic(query)
+        except DomainError as exc:
+            self._audit_failure(
+                context,
+                "get_suitability_assessment",
+                correlation_id,
+                exc.code,
+                assessment_id,
+                aggregate_type="suitability_assessment",
+            )
+            raise
+
     def get_document_status(self, context: ActorContext, asset_id: str, *, correlation_id: str | None = None) -> ServiceResponse:
         asset_id = require_uuid(asset_id, "asset_id")
         correlation_id = self._correlation(correlation_id)
@@ -924,6 +1012,13 @@ class KycSuitabilityService:
         return document
 
     @staticmethod
+    def _stored_assessment(state: StoreState, tenant_id: str, assessment_id: str) -> SuitabilityAssessment:
+        assessment = state.assessments.get((tenant_id, assessment_id))
+        if not assessment:
+            raise NotFoundError("suitability assessment was not found")
+        return assessment
+
+    @staticmethod
     def _latest_submission(state: StoreState, tenant_id: str, application_id: str) -> KycSubmission | None:
         rows = [row for (tenant, _), row in state.submissions.items() if tenant == tenant_id and row.application_id == application_id]
         return max(rows, key=lambda row: row.submission_version) if rows else None
@@ -1025,10 +1120,12 @@ class KycSuitabilityService:
         correlation_id: str | None,
         reason_code: str,
         aggregate_id: str | None = None,
+        *,
+        aggregate_type: str = "kyc_submission",
     ) -> None:
         correlation = self._correlation(correlation_id)
 
         def record(state: StoreState) -> None:
-            self._audit(state, context, action, "security" if aggregate_id is None else "kyc_submission", aggregate_id, None, correlation, "rejected", reason_code)
+            self._audit(state, context, action, "security" if aggregate_id is None else aggregate_type, aggregate_id, None, correlation, "rejected", reason_code)
 
         self.repository.atomic(record)
