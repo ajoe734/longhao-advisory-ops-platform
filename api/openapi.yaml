@@ -1865,6 +1865,56 @@ paths:
             schema:
               $ref: '#/components/schemas/KycDecisionRequest'
   /applications/{application_id}/suitability-assessments:
+    get:
+      operationId: list_suitability_assessments
+      summary: 依申請列出適合度評估歷史
+      tags:
+      - M03
+      security:
+      - staffBearer: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - in: path
+        name: application_id
+        required: true
+        schema: *id001
+      x-module: M03
+      x-allowed-roles:
+      - suitability_reviewer
+      x-resource-ownership: tenant_and_scope
+      x-audit-action: m03.list_suitability_assessments
+      x-idempotency-required: false
+      description: 僅回傳已驗證 tenant 內的不可變評估歷史；輸出採既有資料分級投影，不包含原問卷、規則計算細節或人工例外證據。
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Correlation-Id:
+              schema: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuitabilityAssessmentList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '412':
+          $ref: '#/components/responses/Error412'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '428':
+          $ref: '#/components/responses/Error428'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
     post:
       operationId: assess_suitability
       summary: 適合度評估使用固定問卷與規則版本
@@ -1929,6 +1979,61 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/SuitabilityRequest'
+  /suitability-assessments/{assessment_id}:
+    get:
+      operationId: get_suitability_assessment
+      summary: 取得單筆適合度評估
+      tags:
+      - M03
+      security:
+      - staffBearer: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - in: path
+        name: assessment_id
+        required: true
+        schema: *id001
+      x-module: M03
+      x-allowed-roles:
+      - suitability_reviewer
+      x-resource-ownership: tenant_and_scope
+      x-audit-action: m03.get_suitability_assessment
+      x-idempotency-required: false
+      description: 僅限適合度審查角色讀取；不同 tenant 的 assessment id 不揭露存在性。
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Correlation-Id:
+              schema: *id001
+            ETag:
+              schema:
+                type: string
+                pattern: ^"[1-9][0-9]*"$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuitabilityAssessment'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '412':
+          $ref: '#/components/responses/Error412'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '428':
+          $ref: '#/components/responses/Error428'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
   /customers/{customer_id}/due-diligence-refreshes:
     post:
       operationId: request_due_diligence_refresh
@@ -10086,6 +10191,13 @@ components:
           anyOf:
           - *id001
           - type: 'null'
+        services:
+          type: array
+          description: 此契約下所有服務期；`contract_service_id` 可直接用於 M14 InvoiceLineCreate。
+          items:
+            $ref: '#/components/schemas/ContractServiceRead'
+          minItems: 1
+          maxItems: 200
       required:
       - id
       - tenant_id
@@ -10105,6 +10217,35 @@ components:
       - terminated_at
       - service_selections
       - preceding_contract_id
+    ContractServiceRead:
+      type: object
+      additionalProperties: false
+      description: M02 contract.contract_service 的可開立發票讀取投影；status 為相應 entitlement 的目前安全狀態。
+      properties:
+        contract_service_id: *id001
+        service_code:
+          type: string
+          maxLength: 80
+        service_period_start: *id003
+        service_period_end: *id003
+        untaxed_service_amount:
+          $ref: '#/components/schemas/Money'
+        status:
+          type: string
+          enum:
+          - locked
+          - eligible
+          - active
+          - suspended
+          - expired
+          - revoked
+      required:
+      - contract_service_id
+      - service_code
+      - service_period_start
+      - service_period_end
+      - untaxed_service_amount
+      - status
     AmendmentRequest:
       type: object
       additionalProperties: false
@@ -10770,6 +10911,16 @@ components:
       - assessed_by
       - assessed_at
       - next_review_due_at
+    SuitabilityAssessmentList:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SuitabilityAssessment'
+      required:
+      - items
     RefreshRequest:
       type: object
       additionalProperties: false
