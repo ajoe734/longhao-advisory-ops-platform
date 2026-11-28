@@ -422,3 +422,25 @@ def test_production_composition_refuses_fake_adapters():
             repository, identity, evidence, sources,
             hmac_key=b"a" * 32, environment="production",
         )
+
+
+def test_company_acceptance_establishes_the_customer(m01, operator):
+    customer = create_customer(m01["service"], operator, PROOF_A, "establish-create-001").data
+    app = m01["service"].create_application(customer_context(customer["id"]), application_body(customer["id"]), idempotency_key="establish-app-001").data
+    assert m01["repository"].snapshot().customers[(TENANT, customer["id"])].status == "applicant"
+    consumer = M01EventConsumer(m01["repository"])
+    signed = {"application_id": app["id"], "customer_signature_id": str(uuid4()), "package_version_id": PACKAGE,
+              "document_sha256": "d" * 64, "customer_signed_at": wire_time(NOW)}
+    assert consumer.consume(incoming("application.customer_signed", "M02", "application", app["id"], 1, signed)).status == "applied"
+    decision = {"application_id": app["id"], "acceptance_id": str(uuid4()), "decision": "accept", "contract_id": str(uuid4())}
+    assert consumer.consume(incoming("application.company_decided", "M02", "application", app["id"], 2, decision)).status == "applied"
+    assert m01["repository"].snapshot().customers[(TENANT, customer["id"])].status == "active"
+
+
+def test_company_rejection_keeps_the_customer_an_applicant(m01, operator):
+    customer = create_customer(m01["service"], operator, PROOF_A, "reject-create-001").data
+    app = m01["service"].create_application(customer_context(customer["id"]), application_body(customer["id"]), idempotency_key="reject-app-001").data
+    consumer = M01EventConsumer(m01["repository"])
+    decision = {"application_id": app["id"], "acceptance_id": str(uuid4()), "decision": "reject", "contract_id": None}
+    assert consumer.consume(incoming("application.company_decided", "M02", "application", app["id"], 1, decision)).status == "applied"
+    assert m01["repository"].snapshot().customers[(TENANT, customer["id"])].status == "applicant"

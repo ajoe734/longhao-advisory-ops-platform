@@ -138,6 +138,15 @@ class M01EventConsumer:
             app.contract_id = payload["contract_id"] if decision == "accept" else None
             app.version += 1
             app.updated_at = utc_now()
+            if decision == "accept":
+                # The company accepting a signed application is the authoritative
+                # applicant -> established fact M01 receives (customer.status
+                # "active"); restricted/merged/inactive customers keep their status.
+                customer = state.customers.get((tenant_id, app.customer_id))
+                if customer is not None and customer.status in {"prospect", "applicant"}:
+                    customer.status = "active"
+                    customer.version += 1
+                    customer.updated_at = utc_now()
             return "company_decision_applied"
         if event_type == "ownership.employee_departed":
             changed = 0

@@ -23,6 +23,7 @@ router；production 因尚無真實 `core.object_asset` adapter，`CrmService` �
   `sweep_worklists`（REQ-M10-001/005/012 的定時名單計算入口）、各
   `record_*`／`reverse_conversion_for_refund` 上游事件投影方法，以及
   `_upsert_work_item`（UAT-M10-012 的待辦去重/回收邏輯）。
+  規則產生的待辦在成因解除後由 `_close_work_item`／`_complete_work_item` 標為完成：公司已決定（`pending_review`）、付款確認（`unpaid`）、商機成交（該商機的待辦）、指派維護業務（`company_pool`）；已開始處理（in_progress）的待辦保留原狀。
 - `automation.py`：`daily_contact_draft`（唯一核准 LLM 能力）——只整理待辦為
   非決策性聯絡草稿，不可自行指派owner、改名單資格或核准任何歸因/計獎。
 - `http.py`：framework-neutral controller；`create_fastapi_router` 延遲匯入
