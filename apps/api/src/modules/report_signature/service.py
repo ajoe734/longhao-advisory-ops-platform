@@ -701,6 +701,84 @@ class ReportSignatureService:
 
     # ---- public queries --------------------------------------------------
 
+    def get_report(self, context: ActorContext, report_id: str, *, correlation_id: str | None = None) -> ServiceResponse:
+        report_id = require_uuid(report_id, "report_id")
+        correlation_id = self._correlation(correlation_id)
+        try:
+            self._authorize_staff(context, {"analyst", "analyst_reviewer", "compliance_reviewer"})
+        except DomainError as exc:
+            self._audit_failure(context, "get_report", correlation_id, exc.code, report_id)
+            raise
+
+        def query(state: StoreState) -> ServiceResponse:
+            report = self._stored_report(state, context.tenant_id, report_id)
+            state_label = self._report_state_label(state, report)
+            self._audit(state, context, "get_report", "report", report.id, report.version, correlation_id, "succeeded")
+            return ServiceResponse(
+                report.to_api(self._report_actions(context, state_label), state_label),
+                etag=self._etag(report.version),
+            )
+
+        try:
+            return self.repository.atomic(query)
+        except DomainError as exc:
+            self._audit_failure(context, "get_report", correlation_id, exc.code, report_id)
+            raise
+
+    def list_report_versions(
+        self,
+        context: ActorContext,
+        report_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 50,
+        correlation_id: str | None = None,
+    ) -> ServiceResponse:
+        report_id = require_uuid(report_id, "report_id")
+        if cursor is not None:
+            cursor = require_uuid(cursor, "cursor")
+        if not 1 <= limit <= 200:
+            raise ValidationError("limit must be between 1 and 200", field_name="limit")
+        correlation_id = self._correlation(correlation_id)
+        try:
+            self._authorize_staff(context, {"analyst", "analyst_reviewer", "compliance_reviewer"})
+        except DomainError as exc:
+            self._audit_failure(context, "list_report_versions", correlation_id, exc.code, report_id)
+            raise
+
+        def query(state: StoreState) -> ServiceResponse:
+            report = self._stored_report(state, context.tenant_id, report_id)
+            rows = sorted(
+                (
+                    item
+                    for (tenant_id, _), item in state.versions.items()
+                    if tenant_id == context.tenant_id and item.report_id == report.id
+                ),
+                key=lambda item: (item.version_number, item.id),
+            )
+            if cursor is not None:
+                try:
+                    start = next(index + 1 for index, item in enumerate(rows) if item.id == cursor)
+                except StopIteration as exc:
+                    raise ValidationError("cursor does not identify a version of this report", code="invalid_cursor", field_name="cursor") from exc
+                rows = rows[start:]
+            page = rows[:limit]
+            self._audit(state, context, "list_report_versions", "report", report.id, report.version, correlation_id, "succeeded")
+            return ServiceResponse(
+                {
+                    "items": [item.to_api(self._version_actions(context, item)) for item in page],
+                    "next_cursor": page[-1].id if len(rows) > limit else None,
+                    "as_of": wire_time(self._clock()),
+                    "total_estimate": len(rows),
+                }
+            )
+
+        try:
+            return self.repository.atomic(query)
+        except DomainError as exc:
+            self._audit_failure(context, "list_report_versions", correlation_id, exc.code, report_id)
+            raise
+
     def get_report_version(self, context: ActorContext, report_version_id: str, *, correlation_id: str | None = None) -> ServiceResponse:
         report_version_id = require_uuid(report_version_id, "report_version_id")
         correlation_id = self._correlation(correlation_id)
@@ -861,6 +939,8 @@ class ReportSignatureService:
     def _authorize_staff(self, context: ActorContext, roles: set[str]) -> None:
         if self._staff(context, roles):
             return
+        if context.principal_type != "staff":
+            raise UnauthorizedError("staff authentication is required for this operation")
         raise ForbiddenError("staff role is not allowed for this operation")
 
     def _authorize_service(self, context: ActorContext, roles: set[str]) -> None:

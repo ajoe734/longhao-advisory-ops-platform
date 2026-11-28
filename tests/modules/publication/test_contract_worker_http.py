@@ -177,11 +177,31 @@ def test_consumer_detects_sequence_gap_and_recovers(m08, analyst):
         "verified_at": wire_time(NOW), "valid_until": wire_time(NOW + timedelta(hours=6)),
     }
     seq2 = incoming("report.signature_verified", "M07", "report_version", REPORT_A, 2, payload_seq2)
-    assert consumer.consume(seq2).status == "retry"
-    payload_seq1 = {**payload_seq2, "signature_id": "90000000-0000-0000-0000-000000000099"}
-    seq1 = incoming("report.signature_verified", "M07", "report_version", REPORT_A, 1, payload_seq1)
-    assert consumer.consume(seq1).status == "applied"
+    # M07 can emit non-M08 event types for the same aggregate before the first
+    # signature_verified notification, so the first subscribed event need not
+    # start at sequence 1.
     assert consumer.consume(seq2).status == "applied"
+    seq4 = incoming("report.signature_verified", "M07", "report_version", REPORT_A, 4, payload_seq2)
+    assert consumer.consume(seq4).status == "retry"
+    payload_seq3 = {**payload_seq2, "signature_id": "90000000-0000-0000-0000-000000000099"}
+    seq3 = incoming("report.signature_verified", "M07", "report_version", REPORT_A, 3, payload_seq3)
+    assert consumer.consume(seq3).status == "applied"
+    assert consumer.consume(seq4).status == "applied"
+
+
+def test_client_supplied_recommendation_version_id_supports_prior_m07_manifest_link(m08, analyst):
+    series = create_series(m08["service"], analyst, "client-version-id-series").data
+    client_version_id = "80000000-0000-0000-0000-000000000099"
+    body = {**version_body(REPORT_A), "client_version_id": client_version_id}
+    created = m08["service"].create_recommendation_version(
+        analyst, series["id"], body, expected_version=1, idempotency_key="client-version-id-create",
+    ).data
+    assert created["id"] == client_version_id
+    with pytest.raises(ConflictError) as duplicate:
+        m08["service"].create_recommendation_version(
+            analyst, series["id"], body, expected_version=2, idempotency_key="client-version-id-duplicate",
+        )
+    assert duplicate.value.code == "client_version_id_conflict"
 
 
 def test_outbox_worker_uses_lease_bounded_retry_and_no_duplicate_publish(m08, analyst):

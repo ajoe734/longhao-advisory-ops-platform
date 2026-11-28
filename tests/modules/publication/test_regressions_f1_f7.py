@@ -130,8 +130,8 @@ def test_f2_multi_report_publication_binds_to_primary_report_not_last(m08, analy
     version = m08["service"].create_recommendation_version(
         analyst, series["id"], body, expected_version=1, idempotency_key="f2d-version",
     ).data
-    manifest_a = register_bundle_for(m08, version["id"], REPORT_A)
-    manifest_b = register_bundle_for(m08, version["id"], REPORT_B)
+    manifest_a = register_bundle_for(m08, version["id"], REPORT_A, bundle_manifest_sha256="b" * 64)
+    manifest_b = register_bundle_for(m08, version["id"], REPORT_B, bundle_manifest_sha256="d" * 64)
     assert manifest_a != manifest_b
     set_audience_for_series(m08, series["id"], default_candidates(1))
     consumer = M08EventConsumer(m08["service"])
@@ -141,7 +141,7 @@ def test_f2_multi_report_publication_binds_to_primary_report_not_last(m08, analy
     first_round = worker.run_once("worker-f2d")
     assert (first_round.processed, first_round.retried, first_round.dead_lettered) == (0, 0, 0)
 
-    consumer.consume(signature_event(REPORT_B, SIGNATURE_B))
+    consumer.consume(signature_event(REPORT_B, SIGNATURE_B, bundle_manifest_sha256=manifest_b))
     second_round = worker.run_once("worker-f2d")
     assert second_round.processed == 1
 

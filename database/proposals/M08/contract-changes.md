@@ -2,20 +2,24 @@
 
 此檔不直接修改 `api/openapi.yaml`、`events/registry.json` 或 `database/README.md`，由 integration steward 合併。
 
-## 1. OpenAPI request／response 既有缺口
+## 1. M07/M08 循環版本引用的相容建立順序
 
-`RecommendationVersionCreate.supporting_report_version_ids` 允許空陣列（`minItems: 0`），但
-`RecommendationVersion` 回應 schema 要求至少 1 項（`minItems: 1`）。任務包第4節描述「尚未產生正式報告時，
-draft 可先記 `source_candidate_id` 並保留空 `supporting_report_version_ids`」，但本次 6 個已發布
-operationId 中沒有任何一個會回傳「空陣列且 state=draft」的 `RecommendationVersion`（沒有
-`get_recommendation_version`/`list_recommendation_versions`），所以沒有安全的方式同時滿足「接受空陣列」
-與「回應永遠符合 schema」。
+**GAP-M07-M08-VERSION-LINK；需 API schema steward review。** `RecommendationVersionCreate` 相容新增
+可選 UUID `client_version_id`。它解開 M07 與 M08 都需要另一方 server ID 的循環，而不放寬 M08 已有的
+`supporting_report_version_ids` 至少一項規則：
 
-本次實作選擇：`create_recommendation_version` 在業務層要求 `supporting_report_version_ids` 至少 1 項
-（422 `supporting_report_version_required`），比 OpenAPI 的 `minItems: 0` 更嚴格但不違反它；純草稿流程
-需要 API/Event steward 另外決定要新增 `create_recommendation_version_draft`（回應不含完整
-`RecommendationVersion`）還是放寬 `RecommendationVersion.supporting_report_version_ids` 允許 0 項並補上
-明確的 `draft` 語意。未核定前不自行假設答案。
+1. 呼叫端先產生 `client_version_id`。
+2. M07 `create_report_version` 在既有 `recommendation_version_ids` 填入這個 UUID，建立完整、不可變的
+   manifest；M07 只保存該參照，絕不跨模組寫 M08 資料。
+3. 呼叫端收到 M07 `report_version_id` 後，呼叫 M08 `create_recommendation_version`，同時帶
+   `client_version_id` 和該 `supporting_report_version_id`。M08 將 client UUID 作為自己的 version ID，並以
+   tenant 範圍唯一性拒絕重複值（`409 client_version_id_conflict`）。
+4. M07 驗簽事件的 `bundle_manifest_sha256` 是唯一發布依據。M08 adapter/fake 必須由
+   `report.signature_verified` 的簽章結果登錄原值；不可由 tenant、report ID 或 content hash 推導另一個 digest。
+
+既有請求省略 `client_version_id` 時仍由 M08 產生 ID，保持相容，但不能用在上述循環關聯流程。此變更也取代了
+先前「接受空 supporting reports 的 draft operation」待決方案：目前沒有對應 draft read/write operation，故不以
+空集合繞過已簽報告依據要求。
 
 ## 2. API／資料表 mapper 新增列（併入 `database/README.md` 共用表）
 
